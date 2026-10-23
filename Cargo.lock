@@ -599,6 +599,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "benilla-lambo"
+version = "0.2.0"
+dependencies = [
+ "benilla-assets",
+ "benilla-formats",
+ "benilla-world",
+ "bevy",
+]
+
+[[package]]
 name = "benilla-lua"
 version = "0.2.0"
 dependencies = [
