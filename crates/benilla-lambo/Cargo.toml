@@ -1,0 +1,26 @@
+[package]
+name = "benilla-lambo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A crate on top of benilla: drive a Lamborghini through The Barrens on the world engine, with no game attached"
+
+[lints]
+workspace = true
+
+[features]
+# The dev/player seam, as `benilla-world` has it: `benilla-formats` and `-assets` come in without
+# default features and their `dev` is forwarded, or unification would put it back in a player build.
+default = ["dev"]
+dev = ["benilla-world/dev", "benilla-formats/dev", "benilla-assets/dev"]
+
+[dependencies]
+benilla-assets = { path = "../benilla-assets", default-features = false }
+benilla-formats = { path = "../benilla-formats", default-features = false }
+# Only the engine, never `benilla-app`: nothing of the 1.12.1 game is wanted here.
+benilla-world = { path = "../benilla-world", default-features = false }
+bevy.workspace = true
+
+[[bin]]
+name = "benilla-lambo"
+path = "src/main.rs"
