@@ -428,12 +428,13 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
     let rot = car.rotation();
     let mut contacts = [None::<Vec3>; 4];
     let mut touching = 0;
+    let down_dir = Dir3::new(-car.up).unwrap_or(Dir3::NEG_Y);
     for (i, (sx, sz)) in WHEELS.iter().enumerate() {
         let mount = car.pos + rot * Vec3::new(sx * WHEEL_X, -(RIDE - WHEEL_R), sz * WHEEL_Z);
-        let origin = mount + Vec3::Y;
-        if let Some(hit) = world.ray_body(origin, Dir3::NEG_Y, 2.2) {
-            contacts[i] = Some(origin - Vec3::Y * hit.distance);
-            if hit.distance <= 1.0 + WHEEL_R + 0.15 {
+        let origin = mount + car.up * 1.0;
+        if let Some(hit) = world.ray_body(origin, down_dir, 2.6) {
+            contacts[i] = Some(origin + down_dir.as_vec3() * hit.distance);
+            if hit.distance <= 1.0 + WHEEL_R + 0.25 {
                 touching += 1;
             }
         }
@@ -448,13 +449,39 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
     car.lost = if !ground_below { car.lost + dt } else { 0.0 };
     let grounded = touching >= 2;
 
-    // The ground plane through the four contacts; in the air the body eases level.
-    if let [Some(fl), Some(fr), Some(rl), Some(rr)] = contacts {
-        let forward = (fl + fr) * 0.5 - (rl + rr) * 0.5;
-        let right = (fr + rr) * 0.5 - (fl + rl) * 0.5;
-        let normal = right.cross(forward).normalize_or_zero();
-        if normal.y > 0.3 {
-            car.up = car.up.lerp(normal, smooth(dt, 10.0)).normalize_or(Vec3::Y);
+    // Ground plane normal through contacts: supports 4-wheel or 3-wheel fit on ramp transitions.
+    let normal = match contacts {
+        [Some(fl), Some(fr), Some(rl), Some(rr)] => {
+            let forward = (fl + fr) * 0.5 - (rl + rr) * 0.5;
+            let right = (fr + rr) * 0.5 - (fl + rl) * 0.5;
+            Some(right.cross(forward).normalize_or_zero())
+        }
+        [Some(fl), Some(fr), Some(rl), None] => {
+            let forward = fl - rl;
+            let right = fr - fl;
+            Some(right.cross(forward).normalize_or_zero())
+        }
+        [Some(fl), Some(fr), None, Some(rr)] => {
+            let forward = fr - rr;
+            let right = fr - fl;
+            Some(right.cross(forward).normalize_or_zero())
+        }
+        [Some(fl), None, Some(rl), Some(rr)] => {
+            let forward = fl - rl;
+            let right = rr - rl;
+            Some(right.cross(forward).normalize_or_zero())
+        }
+        [None, Some(fr), Some(rl), Some(rr)] => {
+            let forward = fr - rr;
+            let right = rr - rl;
+            Some(right.cross(forward).normalize_or_zero())
+        }
+        _ => None,
+    };
+
+    if let Some(norm) = normal {
+        if norm.y > 0.05 {
+            car.up = car.up.lerp(norm, smooth(dt, 12.0)).normalize_or(Vec3::Y);
         }
     } else if !grounded {
         car.up = car.up.lerp(Vec3::Y, smooth(dt, 1.5)).normalize_or(Vec3::Y);
@@ -523,6 +550,13 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
     car.vel.y -= GRAVITY * dt;
 
     if grounded {
+        // High-speed downforce keeps wheels pressed against steep ramps and half-pipes.
+        let speed = car.speed();
+        if speed > 8.0 {
+            let downforce = (speed / TOP_SPEED).clamp(0.0, 1.4) * 16.0;
+            car.vel -= car.up * downforce * dt;
+        }
+
         let points: Vec<Vec3> = contacts.iter().flatten().copied().collect();
         let avg = points.iter().sum::<Vec3>() / points.len() as f32;
         let h = (car.pos - avg).dot(car.up);
@@ -546,31 +580,56 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
     hit_walls(car, dt, world);
 }
 
-/// Stops the nose against steep faces (cliffs, walls, trunks): three rays along the travel
-/// direction, and a face steeper than about 57° kills the speed into it.
+/// Stops the nose against steep faces (cliffs, walls, trunks), but allows riding up steep ramps
+/// and half pipes if the car has enough speed.
 fn hit_walls(car: &mut Car, dt: f32, world: &WorldCollision) {
-    let flat = Vec3::new(car.vel.x, 0.0, car.vel.z);
-    let speed = flat.length();
+    let speed = car.speed();
     if speed < 2.0 {
         return;
     }
-    let dir = flat / speed;
+    let flat = Vec3::new(car.vel.x, 0.0, car.vel.z);
+    let flat_speed = flat.length();
+    let dir = if flat_speed > 1.0 {
+        flat / flat_speed
+    } else {
+        let (fwd, _) = car.basis();
+        Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(fwd)
+    };
     let Ok(ray_dir) = Dir3::new(dir) else { return };
     let side = dir.cross(Vec3::Y);
+
     for offset in [-0.9, 0.0, 0.9] {
-        let origin = car.pos + Vec3::Y * 0.5 + side * offset;
+        let origin = car.pos + Vec3::Y * 0.45 + side * offset;
         let Some(hit) = world.ray_body(origin, ray_dir, NOSE + speed * dt) else {
             continue;
         };
-        if hit.normal.y.abs() > 0.55 || hit.distance >= NOSE + speed * dt {
+        if hit.distance >= NOSE + speed * dt {
             continue;
         }
-        let n = Vec3::new(hit.normal.x, 0.0, hit.normal.z).normalize_or_zero();
-        let into = car.vel.dot(n);
-        if into < 0.0 {
-            car.vel -= n * into * 1.3;
-            car.vel *= 0.85;
+
+        // Steeper ramp threshold scaling with speed:
+        // At low speed (<= 5 yd/s): normal.y >= 0.55 (up to ~57° slope).
+        // At high speed (>= 35 yd/s): normal.y >= 0.08 (up to ~85° slope, like a half pipe).
+        let speed_ratio = (speed / 35.0).clamp(0.0, 1.0);
+        let min_ramp_normal_y = 0.55 - speed_ratio * 0.47;
+
+        if hit.normal.y >= min_ramp_normal_y && hit.normal.y > 0.05 {
+            // Drivable ramp! Transition velocity up the slope instead of crashing
+            let into = car.vel.dot(hit.normal);
+            if into < 0.0 {
+                car.vel -= hit.normal * into;
+            }
+            car.pos += hit.normal * (NOSE - hit.distance).clamp(0.0, 0.5);
+            car.up = car.up.lerp(hit.normal, smooth(dt, 16.0)).normalize_or(Vec3::Y);
+        } else if hit.normal.y.abs() <= 0.55 {
+            // Impassable wall or cliff steeper than current speed can climb
+            let n = Vec3::new(hit.normal.x, 0.0, hit.normal.z).normalize_or_zero();
+            let into = car.vel.dot(n);
+            if into < 0.0 {
+                car.vel -= n * into * 1.3;
+                car.vel *= 0.85;
+            }
+            car.pos += n * (NOSE - hit.distance).clamp(0.0, 0.5);
         }
-        car.pos += n * (NOSE - hit.distance).clamp(0.0, 0.5);
     }
 }
