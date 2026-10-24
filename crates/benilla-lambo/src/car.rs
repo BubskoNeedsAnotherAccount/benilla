@@ -39,9 +39,8 @@ const ENGINE_ACCEL: f32 = 24.0;
 const BRAKE_DECEL: f32 = 45.0;
 const REVERSE_ACCEL: f32 = 12.0;
 const REVERSE_MAX: f32 = 22.0;
-/// Top speed in yd/s (about 280 km/h); boost raises both it and the pull.
+/// Top speed in yd/s (about 280 km/h); nitro boosts it even further.
 pub const TOP_SPEED: f32 = 95.0;
-const BOOST: f32 = 1.5;
 const GRIP: f32 = 7.0;
 const GRIP_HANDBRAKE: f32 = 1.2;
 
@@ -63,9 +62,23 @@ pub struct Car {
     /// Wheel roll angle, for the visuals.
     pub spin: f32,
     /// The car has found the ground since it was last (re)placed.
-    placed: bool,
+    pub placed: bool,
     /// Seconds with no wheel ray finding anything, as when driving ahead of the streamer.
     lost: f32,
+    /// Cooldown until nitro can be triggered again (seconds).
+    pub nitro_cooldown: f32,
+    /// Active nitro boost timer (seconds remaining in 1s burst).
+    pub nitro_timer: f32,
+    /// Flag set for one frame when nitro is engaged (triggers sound).
+    pub just_used_nitro: bool,
+    /// Whether wheels are currently touching terrain.
+    pub grounded: bool,
+    /// Driver's current throttle input (-1.0 to 1.0).
+    pub throttle_input: f32,
+    /// Driver's handbrake state.
+    pub handbrake_input: bool,
+    /// Absolute lateral speed in yards/sec (for skid detection).
+    pub lateral_speed: f32,
 }
 
 impl Car {
@@ -79,6 +92,13 @@ impl Car {
             spin: 0.0,
             placed: false,
             lost: 0.0,
+            nitro_cooldown: 0.0,
+            nitro_timer: 0.0,
+            just_used_nitro: false,
+            grounded: false,
+            throttle_input: 0.0,
+            handbrake_input: false,
+            lateral_speed: 0.0,
         }
     }
 
@@ -121,7 +141,6 @@ struct Input {
     throttle: f32,
     steer: f32,
     handbrake: bool,
-    boost: bool,
 }
 
 impl Input {
@@ -137,7 +156,6 @@ impl Input {
                 &[KeyCode::KeyA, KeyCode::ArrowLeft],
             ),
             handbrake: keys.pressed(KeyCode::Space),
-            boost: keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight),
         }
     }
 }
@@ -367,6 +385,23 @@ pub fn drive(
         return;
     }
 
+    car.just_used_nitro = false;
+    car.nitro_cooldown = (car.nitro_cooldown - dt).max(0.0);
+    car.nitro_timer = (car.nitro_timer - dt).max(0.0);
+
+    let nitro_pressed = keys.just_pressed(KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight);
+    if nitro_pressed && car.nitro_cooldown <= 0.0 && car.placed {
+        car.nitro_cooldown = 10.0;
+        car.nitro_timer = 1.0;
+        car.just_used_nitro = true;
+        let (fwd, _) = car.basis();
+        let v_f = car.vel.dot(fwd);
+        if v_f < 0.0 {
+            car.vel -= fwd * v_f;
+        }
+        car.vel += fwd * 40.0;
+    }
+
     let input = Input::read(&keys);
     let sub_dt = dt / SUBSTEPS as f32;
     for _ in 0..SUBSTEPS {
@@ -442,19 +477,28 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
     let (new_fwd, right) = car.basis();
     fwd = new_fwd;
 
+    car.grounded = grounded;
+    car.throttle_input = input.throttle;
+    car.handbrake_input = input.handbrake;
+    if !grounded {
+        car.lateral_speed = car.vel.dot(right).abs();
+    }
+
     if grounded {
         let mut v_f = car.vel.dot(fwd);
         let mut v_r = car.vel.dot(right);
         let v_u = car.vel.dot(car.up);
+        car.lateral_speed = v_r.abs();
 
-        let boost = if input.boost { BOOST } else { 1.0 };
-        let top = TOP_SPEED * if input.boost { 1.15 } else { 1.0 };
+        let is_nitro = car.nitro_timer > 0.0;
+        let top = if is_nitro { TOP_SPEED * 1.55 } else { TOP_SPEED };
         let mut a = 0.0;
-        if input.throttle > 0.0 {
+        if input.throttle > 0.0 || is_nitro {
             a = if v_f < -1.0 {
                 BRAKE_DECEL
             } else {
-                ENGINE_ACCEL * boost * (1.0 - v_f / top).clamp(0.0, 1.0)
+                let accel_mult = if is_nitro { 2.5 } else { 1.0 };
+                ENGINE_ACCEL * accel_mult * (1.0 - v_f / top).clamp(0.0, 1.0)
             };
         } else if input.throttle < 0.0 {
             a = if v_f > 1.0 {
@@ -466,7 +510,7 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
         // Rolling and air drag.
         a -= v_f * 0.15 + v_f * v_f.abs() * 0.0004;
         v_f += a * dt;
-        if input.throttle == 0.0 && v_f.abs() < 0.5 {
+        if input.throttle == 0.0 && !is_nitro && v_f.abs() < 0.5 {
             v_f = 0.0;
         }
         if input.handbrake {

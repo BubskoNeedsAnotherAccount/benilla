@@ -102,12 +102,18 @@ pub fn chase(
     tf.look_at(look, Vec3::Y);
 
     if let Projection::Perspective(p) = &mut *proj {
-        let fov = BASE_FOV + (speed / TOP_SPEED).clamp(0.0, 1.0) * 0.25;
-        p.fov += (fov - p.fov) * smooth(dt, 3.0);
+        let nitro_fov = if car.nitro_timer > 0.0 {
+            (car.nitro_timer / 1.0) * 0.35
+        } else {
+            0.0
+        };
+        let fov = BASE_FOV + (speed / TOP_SPEED).clamp(0.0, 1.0) * 0.25 + nitro_fov;
+        let rate = if car.nitro_timer > 0.0 { 8.0 } else { 3.0 };
+        p.fov += (fov - p.fov) * smooth(dt, rate);
     }
 }
 
-/// Shows the speed in the window title, five times a second.
+/// Shows the speed and nitro cooldown in the window title, five times a second.
 pub fn speedometer(
     time: Res<Time>,
     car: Query<&Car>,
@@ -124,5 +130,10 @@ pub fn speedometer(
     };
     // Yards to metres, then m/s to km/h.
     let kmh = car.speed() * 0.9144 * 3.6;
-    window.title = format!("benilla lambo — {kmh:.0} km/h — WASD drive, Space handbrake, Shift boost, C look back, R reset");
+    let nitro_str = if car.nitro_cooldown <= 0.0 {
+        " [NITRO READY (Shift)]".to_string()
+    } else {
+        format!(" [NITRO {:.1}s]", car.nitro_cooldown)
+    };
+    window.title = format!("benilla lambo — {kmh:.0} km/h{nitro_str} — WASD drive, Space handbrake, Shift nitro, C look back, R reset");
 }

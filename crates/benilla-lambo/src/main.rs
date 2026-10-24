@@ -11,6 +11,7 @@
 
 mod camera;
 mod car;
+mod sound;
 
 use bevy::prelude::*;
 
@@ -77,6 +78,11 @@ fn main() -> AppExit {
     .add_plugins(benilla_world::world_plugins::WorldPlugins)
     .add_plugins(bevy::gltf::GltfPlugin::default());
 
+    // Initialize audio system if sounds are present.
+    if let Some(audio) = sound::CarAudio::new() {
+        app.insert_resource(audio);
+    }
+
     // The world is always live: there is no session to say otherwise.
     app.insert_resource(WorldLive(true));
 
@@ -90,7 +96,14 @@ fn main() -> AppExit {
             .chain()
             .in_set(WorldStage::Input),
     )
-    .add_systems(Update, (camera::speedometer, car::prepare_car_materials));
+    .add_systems(
+        Update,
+        (
+            camera::speedometer,
+            car::prepare_car_materials,
+            sound::update_car_audio,
+        ),
+    );
 
     // After `AssetPlugin`: the loaders go into the live `AssetServer`.
     benilla_assets::register_asset_loaders(&mut app);
