@@ -372,8 +372,8 @@ pub fn drive(
     for _ in 0..SUBSTEPS {
         step(&mut car, &input, sub_dt, &world);
     }
-    // Driven off the end of what has streamed: wait in the air for the ground to arrive.
-    if car.lost > 2.0 {
+    // Driven off the edge of the world into the void: wait in the air for ground to arrive.
+    if car.lost > 6.0 {
         car.placed = false;
         car.pos.y += 300.0;
         car.vel = Vec3::ZERO;
@@ -404,7 +404,13 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
         }
     }
     let found = contacts.iter().flatten().count();
-    car.lost = if found == 0 { car.lost + dt } else { 0.0 };
+    // Only accumulate `lost` if there is NO terrain at all beneath the car within 2000 yards.
+    // Jumping high in the air above valid ground will not reset the car.
+    let ground_below = found > 0
+        || world
+            .ray_body(car.pos + Vec3::Y * 2.0, Dir3::NEG_Y, 2000.0)
+            .is_some();
+    car.lost = if !ground_below { car.lost + dt } else { 0.0 };
     let grounded = touching >= 2;
 
     // The ground plane through the four contacts; in the air the body eases level.

@@ -193,7 +193,6 @@ fn detect_glb_transform(full_path: &std::path::Path) -> GlbHints {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes[20..20 + json_len]) else {
         return hints;
     };
-    let v = sanitize_glb_if_needed(full_path, &bytes, v).unwrap_or(v);
 
     let mut min_v = [f32::INFINITY; 3];
     let mut max_v = [f32::NEG_INFINITY; 3];
@@ -256,8 +255,8 @@ fn detect_glb_transform(full_path: &std::path::Path) -> GlbHints {
 
         let max_dim = extent_x.max(extent_y).max(extent_z);
         if max_dim > 0.05 {
-            // Target car size is ~4.8 yards long
-            hints.scale = 4.8 / max_dim;
+            // Target car size is ~4.8 yards long, scaled 1.5x bigger per user request
+            hints.scale = (4.8 / max_dim) * 1.5;
         }
 
         // If length is along X, rotate 90 deg around Y so it points forward along -Z
