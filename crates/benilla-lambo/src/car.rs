@@ -35,12 +35,12 @@ const GRAVITY: f32 = 19.291_105;
 /// Lowest the body centre may sink toward the ground plane.
 const MIN_HEIGHT: f32 = 0.44;
 
-const ENGINE_ACCEL: f32 = 24.0;
+const ENGINE_ACCEL: f32 = 36.0;
 const BRAKE_DECEL: f32 = 45.0;
 const REVERSE_ACCEL: f32 = 12.0;
 const REVERSE_MAX: f32 = 22.0;
-/// Top speed in yd/s (about 280 km/h); nitro boosts it even further.
-pub const TOP_SPEED: f32 = 95.0;
+/// Top speed in yd/s. nitro boosts it even further.
+pub const TOP_SPEED: f32 = 110.0;
 const GRIP: f32 = 7.0;
 const GRIP_HANDBRAKE: f32 = 1.2;
 
