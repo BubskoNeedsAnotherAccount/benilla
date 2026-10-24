@@ -606,6 +606,7 @@ dependencies = [
  "benilla-formats",
  "benilla-world",
  "bevy",
+ "serde_json",
 ]
 
 [[package]]

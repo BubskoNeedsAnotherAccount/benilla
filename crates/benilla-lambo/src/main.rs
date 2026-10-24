@@ -43,7 +43,7 @@ fn main() -> AppExit {
         ),
     }
 
-    let (asset_root, model_file) = resolve_car_model();
+    let (asset_root, model_file, hints) = resolve_car_model();
     if let Some(ref file) = model_file {
         eprintln!("benilla-lambo: loading 3D car model: {asset_root}/{file}");
     } else {
@@ -53,6 +53,9 @@ fn main() -> AppExit {
     }
     app.insert_resource(car::LamboModelConfig {
         model_path: model_file,
+        auto_scale: hints.scale,
+        auto_yaw: hints.yaw,
+        auto_offset: hints.offset,
     });
 
     let background = benilla_world::bgwin::background_run();
@@ -87,7 +90,7 @@ fn main() -> AppExit {
             .chain()
             .in_set(WorldStage::Input),
     )
-    .add_systems(Update, camera::speedometer);
+    .add_systems(Update, (camera::speedometer, car::prepare_car_materials));
 
     // After `AssetPlugin`: the loaders go into the live `AssetServer`.
     benilla_assets::register_asset_loaders(&mut app);
@@ -95,9 +98,26 @@ fn main() -> AppExit {
     app.run()
 }
 
+#[derive(Clone, Copy, Debug)]
+struct GlbHints {
+    scale: f32,
+    yaw: f32,
+    offset: Vec3,
+}
+
+impl Default for GlbHints {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            yaw: 0.0,
+            offset: Vec3::new(0.0, -0.48, 0.0),
+        }
+    }
+}
+
 /// Discovers a GLB model file: checks `LAMBO_MODEL`, then common filenames in crate assets
-/// and workspace assets. Returns `(asset_root, Option<relative_file_path>)`.
-fn resolve_car_model() -> (String, Option<String>) {
+/// and workspace assets. Returns `(asset_root, Option<relative_file_path>, GlbHints)`.
+fn resolve_car_model() -> (String, Option<String>, GlbHints) {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
     if let Ok(env_path) = std::env::var("LAMBO_MODEL") {
@@ -110,7 +130,8 @@ fn resolve_car_model() -> (String, Option<String>) {
                 .to_string();
             let file = p.file_name().unwrap_or_default().to_string_lossy().to_string();
             let root = if parent.is_empty() { ".".to_string() } else { parent };
-            return (root, Some(file));
+            let hints = detect_glb_transform(p);
+            return (root, Some(file), hints);
         } else {
             eprintln!("benilla-lambo: LAMBO_MODEL={env_path} not found on disk");
         }
@@ -120,20 +141,137 @@ fn resolve_car_model() -> (String, Option<String>) {
 
     // 1. Check crate's own assets folder (crates/benilla-lambo/assets)
     for file in candidates {
-        if manifest.join("assets").join(file).exists() {
-            return ("assets".to_string(), Some(file.replace('\\', "/")));
+        let full = manifest.join("assets").join(file);
+        if full.exists() {
+            let hints = detect_glb_transform(&full);
+            return ("assets".to_string(), Some(file.replace('\\', "/")), hints);
         }
     }
 
     // 2. Check repo root assets folder (../../assets or ./assets)
     for file in candidates {
-        if manifest.join("../../assets").join(file).exists() {
-            return ("../../assets".to_string(), Some(file.replace('\\', "/")));
+        let full_repo = manifest.join("../../assets").join(file);
+        if full_repo.exists() {
+            let hints = detect_glb_transform(&full_repo);
+            return (
+                "../../assets".to_string(),
+                Some(file.replace('\\', "/")),
+                hints,
+            );
         }
-        if std::path::Path::new("assets").join(file).exists() {
-            return ("assets".to_string(), Some(file.replace('\\', "/")));
+        let full_local = std::path::Path::new("assets").join(file);
+        if full_local.exists() {
+            let hints = detect_glb_transform(&full_local);
+            return (
+                "assets".to_string(),
+                Some(file.replace('\\', "/")),
+                hints,
+            );
         }
     }
 
-    ("assets".to_string(), None)
+    ("assets".to_string(), None, GlbHints::default())
+}
+
+/// Inspects the GLB model geometry to determine its real dimensions, orientation, and ground contact.
+/// Normalizes ANY car model to around 4.8 yards long and aligns its forward axis with -Z.
+fn detect_glb_transform(full_path: &std::path::Path) -> GlbHints {
+    let mut hints = GlbHints::default();
+
+    let Ok(bytes) = std::fs::read(full_path) else {
+        return hints;
+    };
+    if bytes.len() <= 20 || &bytes[0..4] != b"glTF" {
+        return hints;
+    }
+
+    let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap_or_default()) as usize;
+    if bytes.len() < 20 + json_len {
+        return hints;
+    }
+
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes[20..20 + json_len]) else {
+        return hints;
+    };
+    let v = sanitize_glb_if_needed(full_path, &bytes, v).unwrap_or(v);
+
+    let mut min_v = [f32::INFINITY; 3];
+    let mut max_v = [f32::NEG_INFINITY; 3];
+    if let Some(meshes) = v.get("meshes").and_then(|m| m.as_array()) {
+        for mesh in meshes {
+            if let Some(primitives) = mesh.get("primitives").and_then(|p| p.as_array()) {
+                for prim in primitives {
+                    if let Some(pos_idx) = prim
+                        .get("attributes")
+                        .and_then(|a| a.get("POSITION"))
+                        .and_then(|p| p.as_u64())
+                    {
+                        if let Some(acc) = v.get("accessors").and_then(|a| a.get(pos_idx as usize))
+                        {
+                            if let (Some(min_arr), Some(max_arr)) = (
+                                acc.get("min").and_then(|m| m.as_array()),
+                                acc.get("max").and_then(|m| m.as_array()),
+                            ) {
+                                if min_arr.len() == 3 && max_arr.len() == 3 {
+                                    for i in 0..3 {
+                                        let min_val =
+                                            min_arr[i].as_f64().unwrap_or(0.0) as f32;
+                                        let max_val =
+                                            max_arr[i].as_f64().unwrap_or(0.0) as f32;
+                                        min_v[i] = min_v[i].min(min_val);
+                                        max_v[i] = max_v[i].max(max_val);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if root nodes apply an FBX unit matrix (e.g. 0.01 scale)
+    let mut node_scale = 1.0f32;
+    if let Some(nodes) = v.get("nodes").and_then(|n| n.as_array()) {
+        for node in nodes {
+            if let Some(matrix) = node.get("matrix").and_then(|m| m.as_array()) {
+                if matrix.len() == 16 {
+                    let m0 = matrix[0].as_f64().unwrap_or(1.0) as f32;
+                    let m1 = matrix[1].as_f64().unwrap_or(0.0) as f32;
+                    let m2 = matrix[2].as_f64().unwrap_or(0.0) as f32;
+                    let sx = (m0 * m0 + m1 * m1 + m2 * m2).sqrt();
+                    if sx > 0.005 && sx < 0.05 {
+                        node_scale = sx;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if min_v[0].is_finite() && max_v[0].is_finite() {
+        let extent_x = (max_v[0] - min_v[0]) * node_scale;
+        let extent_y = (max_v[1] - min_v[1]) * node_scale;
+        let extent_z = (max_v[2] - min_v[2]) * node_scale;
+
+        let max_dim = extent_x.max(extent_y).max(extent_z);
+        if max_dim > 0.05 {
+            // Target car size is ~4.8 yards long
+            hints.scale = 4.8 / max_dim;
+        }
+
+        // If length is along X, rotate 90 deg around Y so it points forward along -Z
+        if extent_x > extent_z {
+            hints.yaw = 90.0;
+        } else {
+            hints.yaw = 0.0;
+        }
+
+        eprintln!(
+            "benilla-lambo: model bounds: [{:.2}, {:.2}, {:.2}] -> auto_scale: {:.2}x, auto_yaw: {:.0}°",
+            extent_x, extent_y, extent_z, hints.scale, hints.yaw
+        );
+    }
+
+    hints
 }

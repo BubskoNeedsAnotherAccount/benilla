@@ -143,9 +143,23 @@ impl Input {
 }
 
 /// Configuration for loading a 3D GLB model for the car.
-#[derive(Resource, Clone, Debug, Default)]
+#[derive(Resource, Clone, Debug)]
 pub struct LamboModelConfig {
     pub model_path: Option<String>,
+    pub auto_scale: f32,
+    pub auto_yaw: f32,
+    pub auto_offset: Vec3,
+}
+
+impl Default for LamboModelConfig {
+    fn default() -> Self {
+        Self {
+            model_path: None,
+            auto_scale: 1.0,
+            auto_yaw: 0.0,
+            auto_offset: Vec3::ZERO,
+        }
+    }
 }
 
 /// Spawns the car: either a loaded GLB 3D model, or the procedural fallback body of coloured
@@ -161,18 +175,18 @@ pub fn spawn_car(
         let scale = std::env::var("LAMBO_SCALE")
             .ok()
             .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(1.0);
+            .unwrap_or(model_config.auto_scale);
         let yaw_deg = std::env::var("LAMBO_YAW")
             .ok()
             .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(0.0);
+            .unwrap_or(model_config.auto_yaw);
         let offset = std::env::var("LAMBO_OFFSET")
             .ok()
             .and_then(|s| {
                 let mut parts = s.split(',').filter_map(|p| p.trim().parse::<f32>().ok());
                 Some(Vec3::new(parts.next()?, parts.next()?, parts.next()?))
             })
-            .unwrap_or(Vec3::ZERO);
+            .unwrap_or(model_config.auto_offset);
 
         let keep_wheels = std::env::var("LAMBO_WHEELS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -193,6 +207,7 @@ pub fn spawn_car(
                     Transform::from_translation(offset)
                         .with_rotation(Quat::from_rotation_y(yaw_deg.to_radians()))
                         .with_scale(Vec3::splat(scale)),
+                    Visibility::default(),
                 ));
 
                 if keep_wheels {
@@ -272,6 +287,30 @@ pub fn spawn_car(
                 ));
             }
         });
+}
+
+/// Updates newly spawned glTF materials to be unlit and double-sided so they render under the
+/// engine's custom lighting environment without depending on Bevy's cluster lighting.
+pub fn prepare_car_materials(
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    query: Query<&MeshMaterial3d<StandardMaterial>, Added<MeshMaterial3d<StandardMaterial>>>,
+    mut count: Local<usize>,
+) {
+    let mut updated = 0;
+    for handle in &query {
+        if let Some(mat) = materials.get_mut(handle) {
+            mat.unlit = true;
+            mat.cull_mode = None;
+            updated += 1;
+        }
+    }
+    if updated > 0 {
+        *count += updated;
+        eprintln!(
+            "benilla-lambo: activated {updated} car materials (unlit, total: {})",
+            *count
+        );
+    }
 }
 
 /// Wheel positions as (x, z) signs: front left, front right, rear left, rear right.
