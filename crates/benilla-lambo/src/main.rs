@@ -43,17 +43,36 @@ fn main() -> AppExit {
         ),
     }
 
+    let (asset_root, model_file) = resolve_car_model();
+    if let Some(ref file) = model_file {
+        eprintln!("benilla-lambo: loading 3D car model: {asset_root}/{file}");
+    } else {
+        eprintln!(
+            "benilla-lambo: no car.glb found in assets/ or crates/benilla-lambo/assets/ (using procedural car)"
+        );
+    }
+    app.insert_resource(car::LamboModelConfig {
+        model_path: model_file,
+    });
+
     let background = benilla_world::bgwin::background_run();
-    app.add_plugins(benilla_world::boot::tuned_default_plugins(Window {
-        title: "benilla lambo".into(),
-        resolution: (1600, 900).into(),
-        focused: !background,
-        ..default()
-    }))
+    app.add_plugins(
+        benilla_world::boot::tuned_default_plugins(Window {
+            title: "benilla lambo".into(),
+            resolution: (1600, 900).into(),
+            focused: !background,
+            ..default()
+        })
+        .set(AssetPlugin {
+            file_path: asset_root,
+            ..default()
+        }),
+    )
     .add_plugins(benilla_world::thread_qos::ThreadQosPlugin)
     .add_plugins(benilla_world::bgwin::BgWinPlugin)
     .add_plugins(benilla_world::mac_quit::MacQuitPlugin)
-    .add_plugins(benilla_world::world_plugins::WorldPlugins);
+    .add_plugins(benilla_world::world_plugins::WorldPlugins)
+    .add_plugins(bevy::gltf::GltfPlugin::default());
 
     // The world is always live: there is no session to say otherwise.
     app.insert_resource(WorldLive(true));
@@ -74,4 +93,47 @@ fn main() -> AppExit {
     benilla_assets::register_asset_loaders(&mut app);
 
     app.run()
+}
+
+/// Discovers a GLB model file: checks `LAMBO_MODEL`, then common filenames in crate assets
+/// and workspace assets. Returns `(asset_root, Option<relative_file_path>)`.
+fn resolve_car_model() -> (String, Option<String>) {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    if let Ok(env_path) = std::env::var("LAMBO_MODEL") {
+        let p = std::path::Path::new(&env_path);
+        if p.exists() {
+            let parent = p
+                .parent()
+                .unwrap_or(std::path::Path::new(""))
+                .to_string_lossy()
+                .to_string();
+            let file = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let root = if parent.is_empty() { ".".to_string() } else { parent };
+            return (root, Some(file));
+        } else {
+            eprintln!("benilla-lambo: LAMBO_MODEL={env_path} not found on disk");
+        }
+    }
+
+    let candidates = ["car.glb", "lambo.glb", "models/car.glb", "models/lambo.glb"];
+
+    // 1. Check crate's own assets folder (crates/benilla-lambo/assets)
+    for file in candidates {
+        if manifest.join("assets").join(file).exists() {
+            return ("assets".to_string(), Some(file.replace('\\', "/")));
+        }
+    }
+
+    // 2. Check repo root assets folder (../../assets or ./assets)
+    for file in candidates {
+        if manifest.join("../../assets").join(file).exists() {
+            return ("../../assets".to_string(), Some(file.replace('\\', "/")));
+        }
+        if std::path::Path::new("assets").join(file).exists() {
+            return ("assets".to_string(), Some(file.replace('\\', "/")));
+        }
+    }
+
+    ("assets".to_string(), None)
 }

@@ -19,7 +19,7 @@ benilla-assets = { path = "../benilla-assets", default-features = false }
 benilla-formats = { path = "../benilla-formats", default-features = false }
 # Only the engine, never `benilla-app`: nothing of the 1.12.1 game is wanted here.
 benilla-world = { path = "../benilla-world", default-features = false }
-bevy.workspace = true
+bevy = { workspace = true, features = ["bevy_gltf"] }
 
 [[bin]]
 name = "benilla-lambo"

@@ -142,13 +142,79 @@ impl Input {
     }
 }
 
-/// Spawns the car: a body of coloured boxes and four wheels, all unlit so they read under the
-/// engine's own lighting without a Bevy light in the world.
+/// Configuration for loading a 3D GLB model for the car.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct LamboModelConfig {
+    pub model_path: Option<String>,
+}
+
+/// Spawns the car: either a loaded GLB 3D model, or the procedural fallback body of coloured
+/// boxes and four wheels.
 pub fn spawn_car(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    model_config: Res<LamboModelConfig>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    if let Some(ref model_name) = model_config.model_path {
+        let scale = std::env::var("LAMBO_SCALE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(1.0);
+        let yaw_deg = std::env::var("LAMBO_YAW")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        let offset = std::env::var("LAMBO_OFFSET")
+            .ok()
+            .and_then(|s| {
+                let mut parts = s.split(',').filter_map(|p| p.trim().parse::<f32>().ok());
+                Some(Vec3::new(parts.next()?, parts.next()?, parts.next()?))
+            })
+            .unwrap_or(Vec3::ZERO);
+
+        let keep_wheels = std::env::var("LAMBO_WHEELS")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let scene_url = format!("{model_name}#Scene0");
+        let scene: Handle<Scene> = asset_server.load(scene_url);
+
+        commands
+            .spawn((
+                Car::new(),
+                Transform::from_translation(wow_to_bevy(SPAWN_WOW)),
+                Visibility::default(),
+            ))
+            .with_children(|car| {
+                car.spawn((
+                    SceneRoot(scene),
+                    Transform::from_translation(offset)
+                        .with_rotation(Quat::from_rotation_y(yaw_deg.to_radians()))
+                        .with_scale(Vec3::splat(scale)),
+                ));
+
+                if keep_wheels {
+                    let tyre = materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.015, 0.015, 0.015),
+                        unlit: true,
+                        ..default()
+                    });
+                    let wheel_mesh = meshes.add(Cylinder::new(WHEEL_R, 0.3));
+                    for (sx, sz) in WHEELS {
+                        car.spawn((
+                            Wheel { front: sz < 0.0 },
+                            Mesh3d(wheel_mesh.clone()),
+                            MeshMaterial3d(tyre.clone()),
+                            Transform::from_xyz(sx * WHEEL_X, -(RIDE - WHEEL_R), sz * WHEEL_Z),
+                        ));
+                    }
+                }
+            });
+        return;
+    }
+
     let mut mat = |r: f32, g: f32, b: f32| {
         materials.add(StandardMaterial {
             base_color: Color::srgb(r, g, b),
