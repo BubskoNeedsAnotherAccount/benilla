@@ -5,7 +5,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::car::Car;
+use crate::car::{Car, RIDE};
 
 #[derive(Component)]
 pub struct CarShadow;
@@ -20,8 +20,8 @@ pub struct CarShadowAssets {
 /// Center has high alpha, middle ring has medium alpha, and outer perimeter fades to 0.
 fn build_car_shadow_mesh() -> Mesh {
     const SEGMENTS: usize = 32;
-    const HX: f32 = 2.15; // Half width (2.3 yards total)
-    const HZ: f32 = 4.40; // Half length (4.8 yards total)
+    const HX: f32 = 2.15; // Half width
+    const HZ: f32 = 4.40; // Half length
 
     let mut positions = Vec::with_capacity(1 + SEGMENTS * 2);
     let mut normals = Vec::with_capacity(1 + SEGMENTS * 2);
@@ -109,7 +109,6 @@ pub fn setup_car_shadow(
             alpha_mode: AlphaMode::Blend,
             unlit: true,
             cull_mode: None,
-            depth_bias: 0.2,
             ..default()
         })
     });
@@ -131,6 +130,7 @@ pub fn setup_car_shadow(
 }
 
 pub fn update_car_shadow(
+    time: Res<Time>,
     world: WorldCollision,
     car_q: Query<(&Car, &Transform)>,
     mut shadow_q: Query<
@@ -157,17 +157,28 @@ pub fn update_car_shadow(
         return;
     }
 
-    // Downward raycast from car body to probe terrain beneath it
-    let probe_origin = car.pos + Vec3::Y * 1.5;
-    let Some(hit) = world.ray_body(probe_origin, Dir3::NEG_Y, 70.0) else {
-        *shadow_vis = Visibility::Hidden;
-        return;
+    let (target_pos, ground_norm, altitude) = if car.grounded {
+        // When grounded, use the car's smoothed 4-wheel contact normal and chassis height directly.
+        // This eliminates single-ray triangle stepping and elevation jitter over bumpy terrain.
+        let pos = car.pos - car.up * (RIDE - 0.09);
+        (pos, car.up, 0.0)
+    } else {
+        // When airborne, probe directly below the flying car
+        let probe_origin = car.pos + Vec3::Y * 1.5;
+        let Some(hit) = world.ray_body(probe_origin, Dir3::NEG_Y, 70.0) else {
+            *shadow_vis = Visibility::Hidden;
+            return;
+        };
+        let ground_point = probe_origin + Dir3::NEG_Y.as_vec3() * hit.distance;
+        let alt = (car.pos.y - ground_point.y).max(0.0);
+        let norm = if hit.normal.y > 0.15 {
+            hit.normal.normalize_or(Vec3::Y)
+        } else {
+            Vec3::Y
+        };
+        (ground_point + norm * 0.09, norm, alt)
     };
 
-    let ground_point = probe_origin + Dir3::NEG_Y.as_vec3() * hit.distance;
-    let altitude = (car.pos.y - ground_point.y).max(0.0);
-
-    // Hide if soaring too high into the sky (> 35 yards)
     if altitude > 35.0 {
         *shadow_vis = Visibility::Hidden;
         return;
@@ -175,28 +186,33 @@ pub fn update_car_shadow(
 
     *shadow_vis = Visibility::Visible;
 
-    // Normal on ground plane
-    let ground_norm = if hit.normal.y > 0.15 {
-        hit.normal.normalize_or(Vec3::Y)
-    } else {
-        car.up
-    };
-
-    // Sit slightly above ground plane to prevent z-fighting with terrain polygons
-    shadow_tf.translation = ground_point + ground_norm * 0.035;
-
     // Orient shadow to ground normal and car heading
     let (fwd, _) = car.basis();
     let flat_fwd = (fwd - ground_norm * fwd.dot(ground_norm)).normalize_or(fwd);
     let shadow_right = flat_fwd.cross(ground_norm).normalize_or(Vec3::X);
-    shadow_tf.rotation = Quat::from_mat3(&Mat3::from_cols(shadow_right, ground_norm, -flat_fwd));
+    let target_rot = Quat::from_mat3(&Mat3::from_cols(shadow_right, ground_norm, -flat_fwd));
 
-    // Soft penumbra expansion as the car climbs into the air
+    // Smooth position and rotation to prevent micro-stutter
+    let dt = time.delta_secs();
+    let t = if car.grounded {
+        1.0
+    } else {
+        (dt * 20.0).clamp(0.0, 1.0)
+    };
+    shadow_tf.translation = shadow_tf.translation.lerp(target_pos, t);
+    shadow_tf.rotation = shadow_tf.rotation.slerp(target_rot, t);
+
+    // Penumbra expansion
     let penumbra = 1.0 + (altitude / 25.0).clamp(0.0, 0.6);
     shadow_tf.scale = Vec3::new(penumbra, 1.0, penumbra);
 
-    // Fade out as altitude increases
-    let fade = (1.0 - (altitude / 30.0)).clamp(0.0, 1.0);
-    let stage = ((1.0 - fade) * 7.99) as usize;
-    shadow_mat.0 = assets.materials[stage.min(7)].clone();
+    // Fading: fixed at 100% while grounded so materials never swap back and forth while driving
+    let stage = if car.grounded || altitude < 1.0 {
+        0
+    } else {
+        let fade = (1.0 - (altitude / 30.0)).clamp(0.0, 1.0);
+        let s = ((1.0 - fade) * 7.99) as usize;
+        s.min(7)
+    };
+    shadow_mat.0 = assets.materials[stage].clone();
 }
