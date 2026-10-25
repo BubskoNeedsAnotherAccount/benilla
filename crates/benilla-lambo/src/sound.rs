@@ -185,18 +185,15 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 synth.set_throttle(throttle_pos);
                 synth.set_volume(0.30 + throttle_pos * 0.15);
             } else {
-                // Determine target gear based on vehicle speed
+                // Automatic transmission gear selection with hysteresis
                 let mut target_gear = audio.current_gear;
-                for (i, &(low, high)) in GEAR_BOUNDS.iter().enumerate() {
-                    let g = i + 1;
-                    if g > target_gear && speed > high * 0.95 {
-                        target_gear = g;
-                    }
-                    if g < target_gear && speed < low * 0.85 {
-                        target_gear = g;
-                    }
+                let cur_idx = (audio.current_gear - 1).min(6);
+                let (cur_low, cur_high) = GEAR_BOUNDS[cur_idx];
+                if target_gear < 7 && speed > cur_high * 0.95 {
+                    target_gear += 1;
+                } else if target_gear > 1 && speed < cur_low * 0.82 {
+                    target_gear -= 1;
                 }
-                target_gear = target_gear.clamp(1, 7);
 
                 // Dual-clutch quick-shift cut effect
                 if target_gear != audio.current_gear {
@@ -207,38 +204,54 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 let gear_idx = (audio.current_gear - 1).min(6);
                 let (gear_low, gear_high) = GEAR_BOUNDS[gear_idx];
                 let gear_progress =
-                    ((speed - gear_low) / (gear_high - gear_low).max(1.0)).clamp(0.0, 1.05);
+                    ((speed - gear_low) / (gear_high - gear_low).max(1.0)).clamp(0.0, 1.0);
+
+                // Realistic gear RPM scaling (keeps acceleration in the deep, throaty 1,800 - 4,500 RPM zone)
+                const GEAR_RPM_RANGES: [(f32, f32); 7] = [
+                    (850.0, 3600.0),  // Gear 1: 0..16 yd/s (~0..53 km/h)
+                    (1900.0, 3900.0), // Gear 2: 16..30 yd/s (~53..100 km/h)
+                    (2100.0, 4200.0), // Gear 3: 30..46 yd/s (~100..152 km/h)
+                    (2300.0, 4600.0), // Gear 4: 46..64 yd/s (~152..211 km/h)
+                    (2600.0, 5000.0), // Gear 5: 64..82 yd/s (~211..270 km/h)
+                    (2900.0, 5500.0), // Gear 6: 82..100 yd/s (~270..330 km/h)
+                    (3300.0, 6200.0), // Gear 7: 100+ yd/s (~330..445+ km/h)
+                ];
+
+                let (rpm_min, rpm_max) = GEAR_RPM_RANGES[gear_idx];
 
                 let base_rpm = if audio.current_gear == 1 {
                     if speed < 1.0 {
                         if throttle_pos > 0.05 {
-                            850.0 + throttle_pos * 3500.0 // launch slip
+                            850.0 + throttle_pos * 1400.0 // launch slip (up to ~2,250 RPM)
                         } else {
                             850.0
                         }
                     } else {
-                        850.0 + gear_progress * 7350.0
+                        850.0 + gear_progress * (rpm_max - 850.0)
                     }
                 } else {
-                    4800.0 + gear_progress * 3450.0
+                    // Under partial throttle / coasting, engine cruises lower; floored throttle revs higher
+                    let throttle_rpm_lift = (throttle_pos - 0.5) * 400.0;
+                    (rpm_min + gear_progress * (rpm_max - rpm_min) + throttle_rpm_lift)
+                        .clamp(rpm_min, rpm_max)
                 };
 
-                // Nitro surge
+                // Nitro surge: adds high-speed howl without over-revving into ultrasonic frequencies
                 let nitro_rpm = if car.nitro_timer > 0.0 {
-                    1200.0 * (car.nitro_timer / 1.0)
+                    700.0 * (car.nitro_timer / 1.0)
                 } else {
                     0.0
                 };
 
-                let mut target_rpm = (base_rpm + nitro_rpm).min(8650.0);
+                let mut target_rpm = (base_rpm + nitro_rpm).min(7500.0);
 
-                // Rev limiter bounce near top speed
+                // Rev limiter bounce near top speed (> 108 yd/s)
                 if speed >= TOP_SPEED * 0.98 {
-                    let bounce = (audio.limiter_timer * 35.0).sin();
-                    target_rpm = if bounce > 0.1 { 8400.0 } else { 8650.0 };
+                    let bounce = (audio.limiter_timer * 28.0).sin();
+                    target_rpm = if bounce > 0.15 { 6600.0 } else { 7000.0 };
                 }
 
-                let rpm_smooth_rate = if throttle_pos > 0.05 { 14.0 } else { 7.0 };
+                let rpm_smooth_rate = if throttle_pos > 0.05 { 10.0 } else { 5.0 };
                 audio.simulated_rpm += (target_rpm - audio.simulated_rpm) * smooth(dt, rpm_smooth_rate);
 
                 let effective_throttle = if audio.gear_shift_timer > 0.0 {
@@ -248,7 +261,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 };
 
                 let speed_ratio = (speed / TOP_SPEED).clamp(0.0, 1.0);
-                let target_vol = 0.30 + speed_ratio * 0.15 + (if car.nitro_timer > 0.0 { 0.15 } else { 0.0 });
+                let target_vol = 0.32 + speed_ratio * 0.14 + (if car.nitro_timer > 0.0 { 0.12 } else { 0.0 });
 
                 synth.set_rpm(audio.simulated_rpm);
                 synth.set_throttle(effective_throttle);
