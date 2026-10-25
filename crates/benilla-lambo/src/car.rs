@@ -31,7 +31,7 @@ const WHEELBASE: f32 = 2.76;
 const SPRING_K: f32 = 180.0;
 const SPRING_C: f32 = 24.0;
 /// The WoW gravity the world's physics is set to (`world_plugins`), in yd/s².
-const GRAVITY: f32 = 19.291_105;
+const GRAVITY: f32 = 23.291_105;
 /// Lowest the body centre may sink toward the ground plane.
 const MIN_HEIGHT: f32 = 0.44;
 
