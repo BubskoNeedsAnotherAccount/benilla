@@ -80,7 +80,6 @@ pub fn configure_lambo_app(app: &mut App, asset_root: String, model_file: Option
         .add_plugins(bevy::gltf::GltfPlugin::default())
         .add_plugins(bevy_egui::EguiPlugin::default());
 
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some(audio) = sound::CarAudio::new() {
         app.insert_resource(audio);
     }
