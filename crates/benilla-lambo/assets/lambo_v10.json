@@ -1,6 +1,6 @@
 {
-  "engine_id": "v12",
-  "muffler": "sport",
+  "engine_id": "v8",
+  "muffler": "delete",
   "quality": "balanced",
   "volume": 0.5,
   "burble": 0.3
