@@ -16,7 +16,7 @@ use benilla_world::view::Viewer;
 
 /// The Crossroads, in WoW coordinates (x north, y west), at a height above any ground there: the
 /// car waits in the air for the terrain under it to stream in, then drops onto it.
-const SPAWN_WOW: [f32; 3] = [-437.0, -2596.0, 400.0];
+pub const SPAWN_WOW: [f32; 3] = [-437.0, -2596.0, 400.0];
 
 /// Half the track and wheelbase, to the wheel centres.
 const WHEEL_X: f32 = 0.88;
@@ -82,7 +82,7 @@ pub struct Car {
 }
 
 impl Car {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             pos: wow_to_bevy(SPAWN_WOW),
             vel: Vec3::ZERO,
@@ -353,6 +353,7 @@ pub fn drive(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     world: WorldCollision,
+    manager: Option<Res<crate::trial::TimeTrialManager>>,
     mut car: Query<(&mut Car, &mut Transform)>,
     mut focus: ResMut<ViewFocus>,
     mut viewer: ResMut<Viewer>,
@@ -364,7 +365,10 @@ pub fn drive(
     if dt <= 0.0 {
         return;
     }
-    if keys.just_pressed(KeyCode::KeyR) {
+    let menu_open = manager.as_ref().map(|m| m.menu_open).unwrap_or(false);
+    let in_trial = manager.as_ref().map(|m| m.current_trial_idx.is_some()).unwrap_or(false);
+
+    if keys.just_pressed(KeyCode::KeyR) && !in_trial && !menu_open {
         *car = Car::new();
     }
 
@@ -389,7 +393,7 @@ pub fn drive(
     car.nitro_cooldown = (car.nitro_cooldown - dt).max(0.0);
     car.nitro_timer = (car.nitro_timer - dt).max(0.0);
 
-    let nitro_pressed = keys.just_pressed(KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight);
+    let nitro_pressed = !menu_open && (keys.just_pressed(KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight));
     if nitro_pressed && car.nitro_cooldown <= 0.0 && car.placed {
         car.nitro_cooldown = 10.0;
         car.nitro_timer = 1.0;
@@ -402,7 +406,15 @@ pub fn drive(
         car.vel += fwd * 40.0;
     }
 
-    let input = Input::read(&keys);
+    let input = if menu_open {
+        Input {
+            throttle: 0.0,
+            steer: 0.0,
+            handbrake: true,
+        }
+    } else {
+        Input::read(&keys)
+    };
     let sub_dt = dt / SUBSTEPS as f32;
     for _ in 0..SUBSTEPS {
         step(&mut car, &input, sub_dt, &world);

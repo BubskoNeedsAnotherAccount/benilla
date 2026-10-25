@@ -12,6 +12,7 @@
 mod camera;
 mod car;
 mod sound;
+mod trial;
 
 use bevy::prelude::*;
 
@@ -76,23 +77,36 @@ fn main() -> AppExit {
     .add_plugins(benilla_world::bgwin::BgWinPlugin)
     .add_plugins(benilla_world::mac_quit::MacQuitPlugin)
     .add_plugins(benilla_world::world_plugins::WorldPlugins)
-    .add_plugins(bevy::gltf::GltfPlugin::default());
+    .add_plugins(bevy::gltf::GltfPlugin::default())
+    .add_plugins(bevy_egui::EguiPlugin::default());
 
     // Initialize audio system if sounds are present.
     if let Some(audio) = sound::CarAudio::new() {
         app.insert_resource(audio);
     }
 
+    // Initialize time trial manager.
+    app.init_resource::<trial::TimeTrialManager>();
+
     // The world is always live: there is no session to say otherwise.
     app.insert_resource(WorldLive(true));
 
     app.add_systems(
         Startup,
-        (car::spawn_car, camera::spawn_camera).after(benilla_assets::AssetSet::Open),
+        (car::spawn_car, camera::spawn_camera, trial::setup_markers)
+            .after(benilla_assets::AssetSet::Open),
     )
     .add_systems(
         Update,
-        (car::drive, camera::chase, car::animate_wheels)
+        (
+            trial::handle_trial_input,
+            car::drive,
+            camera::chase,
+            car::animate_wheels,
+            trial::update_trial_progress,
+            trial::update_marker_positions,
+            trial::animate_markers,
+        )
             .chain()
             .in_set(WorldStage::Input),
     )
@@ -102,6 +116,7 @@ fn main() -> AppExit {
             camera::speedometer,
             car::prepare_car_materials,
             sound::update_car_audio,
+            trial::render_trial_ui,
         ),
     );
 

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "Crossroads to Ratchet Sprint",
+    "map_id": 1,
+    "start": [-437.0, -2596.0, 96.0],
+    "end": [-850.0, -3650.0, 30.0]
+  },
+  {
+    "name": "Barrens North-South Highway",
+    "map_id": 1,
+    "start": [350.0, -2300.0, 95.0],
+    "end": [-2360.0, -1950.0, 95.0]
+  },
+  {
+    "name": "Camp Taurajo to Crossroads Rush",
+    "map_id": 1,
+    "start": [-2360.0, -1950.0, 95.0],
+    "end": [-437.0, -2596.0, 96.0]
+  },
+  {
+    "name": "Wailing Caverns Oasis Run",
+    "map_id": 1,
+    "start": [-437.0, -2596.0, 96.0],
+    "end": [-820.0, -2040.0, 90.0]
+  },
+  {
+    "name": "Elwynn: Northshire to Goldshire",
+    "map_id": 0,
+    "start": [-8949.95, -132.49, 83.5],
+    "end": [-9465.0, 60.0, 56.0]
+  },
+  {
+    "name": "Goldshire to Stormwind Gates",
+    "map_id": 0,
+    "start": [-9465.0, 60.0, 56.0],
+    "end": [-9000.0, 400.0, 90.0]
+  }
+]

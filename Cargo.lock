@@ -620,7 +620,9 @@ dependencies = [
  "benilla-formats",
  "benilla-world",
  "bevy",
+ "bevy_egui",
  "kira",
+ "serde",
  "serde_json",
 ]
 

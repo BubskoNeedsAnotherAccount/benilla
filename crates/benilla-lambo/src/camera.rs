@@ -22,8 +22,8 @@ const BASE_FOV: f32 = 1.05;
 /// The camera's own heading, which trails the car's.
 #[derive(Component)]
 pub struct ChaseCam {
-    yaw: f32,
-    snapped: bool,
+    pub yaw: f32,
+    pub snapped: bool,
 }
 
 /// The world camera, as the world viewer spawns it, with the chase state on top.
@@ -113,10 +113,11 @@ pub fn chase(
     }
 }
 
-/// Shows the speed and nitro cooldown in the window title, five times a second.
+/// Shows the speed, nitro cooldown, and time trial progress in the window title, five times a second.
 pub fn speedometer(
     time: Res<Time>,
     car: Query<&Car>,
+    manager: Option<Res<crate::trial::TimeTrialManager>>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut since: Local<f32>,
 ) {
@@ -135,5 +136,42 @@ pub fn speedometer(
     } else {
         format!(" [NITRO {:.1}s]", car.nitro_cooldown)
     };
-    window.title = format!("benilla lambo — {kmh:.0} km/h{nitro_str} — WASD drive, Space handbrake, Shift nitro, C look back, R reset");
+
+    if let Some(ref m) = manager {
+        if m.menu_open {
+            window.title = format!("benilla lambo — [ESC MENU OPEN] Up/Down or W/S + Enter to select, ESC to resume");
+            return;
+        }
+
+        if let Some(trial) = m.current_trial() {
+            let finish_bevy = wow_to_bevy(trial.end);
+            let dist = Vec2::new(car.pos.x - finish_bevy.x, car.pos.z - finish_bevy.z).length();
+
+            match m.state {
+                crate::trial::TrialState::WaitingToStart => {
+                    window.title = format!(
+                        "benilla lambo — [{}] READY (Press W) — {kmh:.0} km/h{nitro_str} — ESC menu, R restart",
+                        trial.name
+                    );
+                }
+                crate::trial::TrialState::Racing { elapsed } => {
+                    window.title = format!(
+                        "benilla lambo — [{}] TIME: {elapsed:.2}s | Finish: {dist:.0}yd — {kmh:.0} km/h{nitro_str} — ESC menu, R restart",
+                        trial.name
+                    );
+                }
+                crate::trial::TrialState::Finished { final_time, is_best } => {
+                    let record_badge = if is_best { " ★ NEW RECORD! ★" } else { "" };
+                    window.title = format!(
+                        "benilla lambo — [{}] FINISHED: {final_time:.2}s!{record_badge} — {kmh:.0} km/h — ESC menu, R restart",
+                        trial.name
+                    );
+                }
+                crate::trial::TrialState::FreeDriving => {}
+            }
+            return;
+        }
+    }
+
+    window.title = format!("benilla lambo — Free Driving — {kmh:.0} km/h{nitro_str} — WASD drive, Space handbrake, Shift nitro, ESC menu, R reset");
 }
