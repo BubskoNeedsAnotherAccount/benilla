@@ -129,7 +129,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
     if car.just_used_nitro {
         if let Some(ref nitro_data) = audio.nitro_data {
             let mut sound = nitro_data.clone();
-            sound.settings.volume = Decibels(2.5).into();
+            sound.settings.volume = Decibels(1.5).into();
             let _ = audio.manager.play(sound);
         }
     }

@@ -438,7 +438,8 @@ pub fn handle_trial_input(
         } else if current_map.0 == 0 {
             // Free driving reset to Goldshire (Eastern Kingdoms)
             if let Ok(mut car_inst) = car.single_mut() {
-                car_inst.pos = wow_to_bevy([GOLDSHIRE_WOW[0], GOLDSHIRE_WOW[1], GOLDSHIRE_WOW[2] + 40.0]);
+                car_inst.pos =
+                    wow_to_bevy([GOLDSHIRE_WOW[0], GOLDSHIRE_WOW[1], GOLDSHIRE_WOW[2] + 40.0]);
                 car_inst.vel = Vec3::ZERO;
                 car_inst.yaw = 0.0;
                 car_inst.up = Vec3::Y;
@@ -499,7 +500,8 @@ pub fn apply_menu_choice(
             current_map.0 = 0;
         }
         if let Ok(mut car_inst) = car.single_mut() {
-            car_inst.pos = wow_to_bevy([GOLDSHIRE_WOW[0], GOLDSHIRE_WOW[1], GOLDSHIRE_WOW[2] + 40.0]);
+            car_inst.pos =
+                wow_to_bevy([GOLDSHIRE_WOW[0], GOLDSHIRE_WOW[1], GOLDSHIRE_WOW[2] + 40.0]);
             car_inst.vel = Vec3::ZERO;
             car_inst.yaw = 0.0;
             car_inst.up = Vec3::Y;
