@@ -15,7 +15,7 @@ use benilla_world::view::{MsaaSetting, WorldCamera, CAM_FAR, NEARCLIP_DEFAULT};
 
 use crate::car::{smooth, Car, TOP_SPEED};
 
-const DISTANCE: f32 = 8.5;
+const DISTANCE: f32 = 5.5;
 const HEIGHT: f32 = 3.0;
 const BASE_FOV: f32 = 1.05;
 
