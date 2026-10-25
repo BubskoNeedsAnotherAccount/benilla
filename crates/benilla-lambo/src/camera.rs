@@ -87,18 +87,39 @@ pub fn chase(
 
     let speed = car.speed();
     let back = Vec3::new(chase.yaw.sin(), 0.0, chase.yaw.cos());
-    let mut want = car.pos + back * DISTANCE + Vec3::Y * (HEIGHT + speed * 0.01);
-    // Stay above the ground behind the car, a hill included.
-    if let Some(hit) = world.ray_body(want + Vec3::Y * 40.0, Dir3::NEG_Y, 80.0) {
-        want.y = want.y.max(want.y + 40.0 - hit.distance + 1.2);
-    }
-    tf.translation = if chase.snapped {
+    let ideal_cam = car.pos + back * DISTANCE + Vec3::Y * (HEIGHT + speed * 0.01);
+
+    // Car focus point for line-of-sight raycasting (just above the car center)
+    let focus = car.pos + Vec3::Y * 0.9;
+    let to_cam = ideal_cam - focus;
+    let max_dist = to_cam.length();
+
+    // Check if direct line-of-sight between car and camera is blocked (walls, cave ceiling, etc.)
+    let (want, occluded) = if max_dist > 0.1 {
+        let dir = Dir3::new(to_cam / max_dist).unwrap_or(Dir3::Y);
+        if let Some(hit) = world.ray_body(focus, dir, max_dist) {
+            // Direct line of sight is blocked: move closer to the car along the ray, never up
+            let hit_dist = (hit.distance - 0.3).max(1.2);
+            (focus + dir.as_vec3() * hit_dist, true)
+        } else {
+            (ideal_cam, false)
+        }
+    } else {
+        (ideal_cam, false)
+    };
+
+    // When direct LoS is blocked, jump immediately closer to avoid clipping inside geometry.
+    // Otherwise, smoothly follow the desired camera position.
+    tf.translation = if chase.snapped && !occluded {
         tf.translation.lerp(want, smooth(dt, 10.0))
     } else {
         want
     };
     chase.snapped = true;
-    let look = car.pos + car.up + car.basis().0 * 3.0;
+
+    let cam_dist = (tf.translation - focus).length();
+    let look_ahead = (cam_dist * 0.35).clamp(0.5, 3.0);
+    let look = car.pos + car.up * 0.8 + car.basis().0 * look_ahead;
     tf.look_at(look, Vec3::Y);
 
     if let Projection::Perspective(p) = &mut *proj {
