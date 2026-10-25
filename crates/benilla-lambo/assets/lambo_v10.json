@@ -2,6 +2,6 @@
   "engine_id": "v8",
   "muffler": "delete",
   "quality": "balanced",
-  "volume": 0.5,
+  "volume": 0.2,
   "burble": 0.3
 }
