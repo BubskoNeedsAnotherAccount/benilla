@@ -41,7 +41,7 @@ fn is_patch_glob_match(name: &str) -> bool {
 /// [`VANILLA_BASE_ORDER`] archives, `patch.MPQ`, every `patch-?.MPQ` by case-folded name (the
 /// reference sorts descending with `strnicmp` and walks backwards), then `speech2.MPQ`. Names
 /// match case-insensitively and come back as found on disk.
-fn mount_order(dir_names: &[String]) -> Vec<String> {
+pub fn mount_order(dir_names: &[String]) -> Vec<String> {
     let find = |want: &str| {
         dir_names
             .iter()
@@ -62,6 +62,16 @@ fn mount_order(dir_names: &[String]) -> Vec<String> {
 }
 
 impl Chain {
+    /// Construct a chain directly from an ordered list of archives.
+    pub fn from_archives(archives: Vec<Archive>) -> Self {
+        let mut chain = Self {
+            archives,
+            locale: Locale::default(),
+        };
+        chain.locale = crate::wow_ini::client_locale(&chain);
+        chain
+    }
+
     /// Open a `Data` directory's archives in [`mount_order`], or a single `.MPQ` file.
     ///
     /// Deviation: an archive that fails to open is an error, where the reference logs

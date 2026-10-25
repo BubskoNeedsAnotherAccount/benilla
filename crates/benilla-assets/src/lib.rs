@@ -74,6 +74,11 @@ impl MpqAssetReader {
             chain: Arc::new(Chain::open(data_dir)?),
         })
     }
+
+    /// Construct reader directly from an existing patch chain.
+    pub fn from_chain(chain: Arc<Chain>) -> Self {
+        Self { chain }
+    }
 }
 
 /// The archive path an asset path names: the sampler-mode marker ([`texture_url`]) names the
@@ -263,6 +268,21 @@ pub fn register_mpq_source(app: &mut App, data_dir: &Path) -> Result<()> {
         mpq: reader.clone(),
         loose: LooseFiles::install(),
     };
+    register_mpq_readers(app, reader, loose);
+    Ok(())
+}
+
+/// Register the `mpq://` and `mpq-loose://` sources directly from an existing patch chain.
+pub fn register_mpq_source_with_chain(app: &mut App, chain: Arc<Chain>) {
+    let reader = MpqAssetReader::from_chain(chain);
+    let loose = LooseAssetReader {
+        mpq: reader.clone(),
+        loose: LooseFiles::default(),
+    };
+    register_mpq_readers(app, reader, loose);
+}
+
+fn register_mpq_readers(app: &mut App, reader: MpqAssetReader, loose: LooseAssetReader) {
     app.register_asset_source(
         MPQ_SOURCE,
         AssetSourceBuilder::new(move || -> Box<dyn ErasedAssetReader> { Box::new(reader.clone()) }),
@@ -271,7 +291,6 @@ pub fn register_mpq_source(app: &mut App, data_dir: &Path) -> Result<()> {
         MPQ_LOOSE_SOURCE,
         AssetSourceBuilder::new(move || -> Box<dyn ErasedAssetReader> { Box::new(loose.clone()) }),
     );
-    Ok(())
 }
 
 /// Register benilla's asset loaders on `app`, after `AssetPlugin`, into its live `AssetServer`.

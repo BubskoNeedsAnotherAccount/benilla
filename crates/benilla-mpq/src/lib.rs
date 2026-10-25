@@ -22,6 +22,26 @@ use benilla_bytes::{capped, ByteExt};
 mod crypto;
 use crypto::{decrypt_block, hash_string, hash_type};
 
+/// A source stream for reading an MPQ archive with random access.
+pub trait MpqStream: Read + Seek + Send + Sync {
+    fn stream_len(&mut self) -> io::Result<u64>;
+}
+
+impl MpqStream for File {
+    fn stream_len(&mut self) -> io::Result<u64> {
+        Ok(self.metadata()?.len())
+    }
+}
+
+impl<T: AsRef<[u8]> + Send + Sync> MpqStream for io::Cursor<T> {
+    fn stream_len(&mut self) -> io::Result<u64> {
+        Ok(self.get_ref().as_ref().len() as u64)
+    }
+}
+
+/// A closure that opens a fresh handle/stream for reading an archive or one of its files.
+pub type StreamOpener = Arc<dyn Fn() -> io::Result<Box<dyn MpqStream>> + Send + Sync>;
+
 /// `MPQ\x1A` as a little-endian `u32`: the archive header signature.
 const SIGNATURE: u32 = 0x1A51_504D;
 /// `MPQ\x1B`: a user-data header, which points past itself to the real one.
@@ -64,6 +84,7 @@ struct Index {
     sector_size: usize,
     hash_table: Vec<HashEntry>,
     block_table: Vec<BlockEntry>,
+    opener: StreamOpener,
 }
 
 /// An open MPQ archive, a cheap `Clone + Send + Sync` handle.
@@ -122,13 +143,36 @@ fn avail_from(file_len: u64, pos: u64) -> usize {
 }
 
 impl Archive {
-    /// Open an archive: find the header, then read and decrypt the hash and block tables.
+    /// Open an archive from a filesystem path: find the header, then read and decrypt the tables.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
-        let file_len = file.metadata()?.len();
+        let opener_path = path.clone();
+        let opener: StreamOpener = Arc::new(move || {
+            let f = File::open(&opener_path)?;
+            Ok(Box::new(f) as Box<dyn MpqStream>)
+        });
+        Self::open_with_opener(path, opener)
+    }
 
-        let archive_offset = find_header(&mut file, file_len)?;
+    /// Open an archive from an abstract stream opener factory.
+    pub fn open_from_stream(name: impl AsRef<Path>, opener: StreamOpener) -> Result<Self> {
+        Self::open_with_opener(name.as_ref().to_path_buf(), opener)
+    }
+
+    /// Open an archive from in-memory bytes.
+    pub fn open_from_bytes(name: impl AsRef<Path>, bytes: Arc<[u8]>) -> Result<Self> {
+        let bytes_clone = Arc::clone(&bytes);
+        let opener: StreamOpener = Arc::new(move || {
+            Ok(Box::new(io::Cursor::new(Arc::clone(&bytes_clone))) as Box<dyn MpqStream>)
+        });
+        Self::open_with_opener(name.as_ref().to_path_buf(), opener)
+    }
+
+    fn open_with_opener(path: PathBuf, opener: StreamOpener) -> Result<Self> {
+        let mut file = (opener)().map_err(Error::Io)?;
+        let file_len = file.stream_len().map_err(Error::Io)?;
+
+        let archive_offset = find_header(&mut *file, file_len)?;
 
         // The 32-byte V1 header: later versions only extend it, and every 1.12 table offset fits
         // a `u32`, so the V2 hi-block table is never needed.
@@ -152,13 +196,13 @@ impl Archive {
         let block_table_size = hdr.u32_at(28).ok_or(Error::NotMpq)? as usize;
 
         let hash_table = read_hash_table(
-            &mut file,
+            &mut *file,
             archive_offset + hash_table_pos,
             hash_table_size,
             file_len,
         )?;
         let block_table = read_block_table(
-            &mut file,
+            &mut *file,
             archive_offset + block_table_pos,
             block_table_size,
             file_len,
@@ -171,6 +215,7 @@ impl Archive {
                 sector_size,
                 hash_table,
                 block_table,
+                opener,
             }),
         })
     }
@@ -225,13 +270,13 @@ impl Archive {
             return Err(Error::Unsupported(format!("single-unit file {name}")));
         }
 
-        let file = File::open(&idx.path)?;
+        let mut file = (idx.opener)().map_err(Error::Io)?;
         let file_pos = idx.archive_offset + block.file_pos as u64;
         let file_size = block.file_size as usize;
         let compressed = block.flags & (FLAG_COMPRESS | FLAG_IMPLODE) != 0;
         let implode_only = block.flags & FLAG_IMPLODE != 0 && block.flags & FLAG_COMPRESS == 0;
 
-        let file_len = file.metadata()?.len();
+        let file_len = file.stream_len().map_err(Error::Io)?;
         let avail = avail_from(file_len, file_pos);
 
         let mut open = ArchiveFile {
@@ -288,7 +333,7 @@ impl Archive {
 /// A file opened in an archive ([`Archive::open_file`]): `Read + Seek` over its uncompressed
 /// bytes, holding the one decompressed sector under the read position.
 pub struct ArchiveFile {
-    file: File,
+    file: Box<dyn MpqStream>,
     name: String,
     /// The file's first byte in the archive file.
     base: u64,
@@ -476,7 +521,7 @@ impl Index {
 
 /// The `MPQ\x1A` header's offset: the first 512-aligned match, or where a `MPQ\x1B` user-data
 /// header points.
-fn find_header(file: &mut File, file_len: u64) -> Result<u64> {
+fn find_header(file: &mut (impl Read + Seek + ?Sized), file_len: u64) -> Result<u64> {
     let mut off = 0u64;
     while off + 4 <= file_len {
         file.seek(SeekFrom::Start(off))?;
@@ -501,7 +546,7 @@ fn find_header(file: &mut File, file_len: u64) -> Result<u64> {
 }
 
 fn read_hash_table(
-    file: &mut File,
+    file: &mut (impl Read + Seek + ?Sized),
     pos: u64,
     count: usize,
     file_len: u64,
@@ -533,7 +578,7 @@ fn read_hash_table(
 }
 
 fn read_block_table(
-    file: &mut File,
+    file: &mut (impl Read + Seek + ?Sized),
     pos: u64,
     count: usize,
     file_len: u64,

@@ -618,13 +618,19 @@ version = "0.2.0"
 dependencies = [
  "benilla-assets",
  "benilla-formats",
+ "benilla-mpq",
  "benilla-world",
  "bevy",
  "bevy_egui",
+ "console_error_panic_hook",
  "engine-core",
+ "js-sys",
  "kira",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

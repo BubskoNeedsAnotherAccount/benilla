@@ -1,0 +1,11 @@
+# Trunk configuration for benilla-lambo WebAssembly build
+[build]
+target = "index.html"
+
+[watch]
+watch = ["src", "assets"]
+ignore = ["target"]
+
+[serve]
+port = 8080
+open = false

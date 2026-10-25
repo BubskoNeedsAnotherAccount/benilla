@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Benilla Lambo — WoW 1.12.1 in WebAssembly</title>
+  <link rel="icon" href="data:," />
+  <link data-trunk rel="rust" href="Cargo.toml" data-bin="benilla-lambo" data-wasm-opt="0" />
+  <link data-trunk rel="copy-dir" href="assets" />
+  <style>
+    :root {
+      --bg: #0d0f12;
+      --card-bg: rgba(22, 27, 34, 0.88);
+      --accent: #ffb703;
+      --cyan: #00d4ff;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --success: #3fb950;
+      --border: rgba(255, 183, 3, 0.35);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html {
+      width: 100%; height: 100%; overflow: hidden;
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #bevy-container {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+    }
+    canvas {
+      width: 100%; height: 100%; display: block; outline: none;
+    }
+    #picker-modal {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(circle at center, rgba(13, 15, 18, 0.75) 0%, rgba(5, 7, 10, 0.96) 100%);
+      backdrop-filter: blur(12px); z-index: 100; transition: opacity 0.4s ease;
+    }
+    .card {
+      width: 90%; max-width: 620px; background: var(--card-bg);
+      border: 1.5px solid var(--border); border-radius: 16px;
+      padding: 32px 36px; box-shadow: 0 24px 64px rgba(0,0,0,0.7), 0 0 32px rgba(255, 183, 3, 0.12);
+      text-align: center;
+    }
+    .title {
+      font-size: 26px; font-weight: 800; letter-spacing: 1px; color: var(--accent);
+      margin-bottom: 8px; text-transform: uppercase;
+      text-shadow: 0 0 20px rgba(255, 183, 3, 0.4);
+    }
+    .subtitle {
+      font-size: 14px; color: var(--muted); margin-bottom: 24px; line-height: 1.5;
+    }
+    .drop-zone {
+      border: 2px dashed rgba(255, 183, 3, 0.45); border-radius: 12px;
+      padding: 28px 20px; margin-bottom: 20px; background: rgba(0, 0, 0, 0.35);
+      cursor: pointer; transition: all 0.2s ease;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--cyan); background: rgba(0, 212, 255, 0.08);
+      box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
+    }
+    .btn-action {
+      display: inline-block; padding: 14px 28px; font-size: 16px; font-weight: 700;
+      color: #111; background: linear-gradient(135deg, var(--accent) 0%, #fb8500 100%);
+      border: none; border-radius: 8px; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
+      margin-top: 8px;
+    }
+    .btn-action:hover {
+      transform: translateY(-2px); box-shadow: 0 8px 24px rgba(251, 133, 0, 0.4);
+    }
+    .archive-list {
+      display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+      margin-top: 16px; max-height: 140px; overflow-y: auto;
+    }
+    .chip {
+      background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 6px; padding: 4px 10px; font-size: 12px; font-family: monospace;
+      color: var(--text);
+    }
+    .chip.ready { border-color: var(--success); color: var(--success); }
+    .status-text {
+      font-size: 13px; color: var(--cyan); margin-top: 14px; min-height: 20px;
+    }
+    .privacy-notice {
+      font-size: 12px; color: var(--muted); margin-top: 16px; opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+  <div id="picker-modal">
+    <div class="card">
+      <div class="title">🏎️ Lamborghini Time Trials</div>
+      <div class="subtitle">
+        World of Warcraft 1.12.1 Client in Rust & Bevy WebAssembly.<br>
+        Select your local <code>World of Warcraft/Data</code> directory to start driving.
+      </div>
+
+      <div class="drop-zone" id="drop-zone">
+        <div style="font-size: 36px; margin-bottom: 8px;">📂</div>
+        <div style="font-weight: 600; font-size: 16px;">Click or Drag & Drop your WoW "Data" folder here</div>
+        <div style="font-size: 12px; color: var(--muted); margin-top: 6px;">
+          Contains <code>terrain.MPQ</code>, <code>model.MPQ</code>, <code>textures.MPQ</code>, etc.
+        </div>
+        <button class="btn-action" id="btn-browse" style="margin-top: 16px;">Browse Data Folder</button>
+      </div>
+
+      <input type="file" id="fallback-input" webkitdirectory directory multiple style="display: none;" />
+
+      <div id="archive-chips" class="archive-list"></div>
+      <div id="status" class="status-text">Waiting for Data folder selection...</div>
+
+      <div class="privacy-notice">
+        🔒 Runs 100% locally in your browser. No files or game data are ever uploaded to any server.
+      </div>
+    </div>
+  </div>
+
+  <div id="bevy-container">
+    <canvas id="bevy"></canvas>
+  </div>
+
+  <script type="module">
+    window.mpqFiles = {};
+    window.mpqHeaderCaches = {};
+
+    const dropZone = document.getElementById("drop-zone");
+    const browseBtn = document.getElementById("btn-browse");
+    const fallbackInput = document.getElementById("fallback-input");
+    const statusEl = document.getElementById("status");
+    const chipsEl = document.getElementById("archive-chips");
+    const modalEl = document.getElementById("picker-modal");
+
+    browseBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if ("showDirectoryPicker" in window) {
+        try {
+          const dirHandle = await window.showDirectoryPicker();
+          await processDirectoryHandle(dirHandle);
+        } catch (err) {
+          if (err.name !== "AbortError") {
+            statusEl.textContent = "Error: " + err.message;
+          }
+        }
+      } else {
+        fallbackInput.click();
+      }
+    });
+
+    dropZone.addEventListener("click", () => browseBtn.click());
+
+    fallbackInput.addEventListener("change", async (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        await processFileList(e.target.files);
+      }
+    });
+
+    async function processDirectoryHandle(dirHandle) {
+      statusEl.textContent = "Scanning directory for MPQ archives...";
+      window.mpqFiles = {};
+      const foundNames = [];
+
+      for await (const entry of dirHandle.values()) {
+        if (entry.kind === "file" && entry.name.toLowerCase().endsWith(".mpq")) {
+          const file = await entry.getFile();
+          window.mpqFiles[entry.name.toLowerCase()] = file;
+          foundNames.push(entry.name);
+        }
+      }
+
+      await finishLoading(foundNames);
+    }
+
+    async function processFileList(files) {
+      statusEl.textContent = "Processing selected files...";
+      window.mpqFiles = {};
+      const foundNames = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (file.name.toLowerCase().endsWith(".mpq")) {
+          window.mpqFiles[file.name.toLowerCase()] = file;
+          foundNames.push(file.name);
+        }
+      }
+
+      await finishLoading(foundNames);
+    }
+
+    async function finishLoading(foundNames) {
+      if (foundNames.length === 0) {
+        statusEl.textContent = "No .MPQ archives found in the selected folder. Please choose the WoW 'Data' folder.";
+        return;
+      }
+
+      chipsEl.innerHTML = "";
+      for (const name of foundNames) {
+        const chip = document.createElement("div");
+        chip.className = "chip ready";
+        chip.textContent = "✓ " + name;
+        chipsEl.appendChild(chip);
+      }
+
+      statusEl.textContent = `Found ${foundNames.length} MPQ archives! Caching index headers...`;
+
+      // Read small initial slice (up to 4MB) for headers and block tables into memory
+      for (const name of foundNames) {
+        const file = window.mpqFiles[name.toLowerCase()];
+        if (file) {
+          const sliceLen = Math.min(file.size, 4 * 1024 * 1024);
+          const buf = await file.slice(0, sliceLen).arrayBuffer();
+          window.mpqHeaderCaches[name.toLowerCase()] = new Uint8Array(buf);
+        }
+      }
+
+      statusEl.textContent = "Booting Lamborghini WebAssembly engine...";
+      setTimeout(async () => {
+        modalEl.style.opacity = "0";
+        setTimeout(() => modalEl.style.display = "none", 400);
+
+        if (window.wasm_start_game) {
+          window.wasm_start_game(foundNames);
+        }
+      }, 500);
+    }
+
+    // Synchronous slice reader accessed by WASM
+    window.js_read_mpq_slice_sync = function(archiveName, offset, length) {
+      const lower = archiveName.toLowerCase();
+      const headerCache = window.mpqHeaderCaches[lower];
+
+      // If requested range is within the cached initial 4MB, return directly
+      if (headerCache && offset + length <= headerCache.length) {
+        return headerCache.subarray(offset, offset + length);
+      }
+
+      return new Uint8Array(0);
+    };
+
+    window.js_get_mpq_size = function(archiveName) {
+      const file = window.mpqFiles[archiveName.toLowerCase()];
+      return file ? file.size : -1.0;
+    };
+  </script>
+</body>
+</html>
