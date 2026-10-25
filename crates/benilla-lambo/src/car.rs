@@ -489,8 +489,6 @@ pub fn drive(
         .map(|m| m.current_trial_idx.is_some())
         .unwrap_or(false);
 
-    let _ = in_trial;
-
     if !car.placed {
         // Hold in the air and stream the tiles under the spawn, unpaced so they load without
         // stalling the frame; the first ray to hit ground drops the car onto it.
@@ -512,7 +510,12 @@ pub fn drive(
     car.nitro_cooldown = (car.nitro_cooldown - dt).max(0.0);
     car.nitro_timer = (car.nitro_timer - dt).max(0.0);
 
+    if in_trial {
+        car.nitro_timer = 0.0;
+    }
+
     let nitro_pressed = !menu_open
+        && !in_trial
         && (keys.just_pressed(KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight));
     if nitro_pressed && car.nitro_cooldown <= 0.0 && car.placed {
         car.nitro_cooldown = 10.0;

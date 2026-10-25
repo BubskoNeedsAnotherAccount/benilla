@@ -559,6 +559,9 @@ pub fn start_trial_by_index(
         .unwrap_or_else(|| (-fwd_vec.x).atan2(-fwd_vec.z));
 
     if let Ok(mut car_inst) = car.single_mut() {
+        car_inst.nitro_timer = 0.0;
+        car_inst.nitro_cooldown = 0.0;
+        car_inst.just_used_nitro = false;
         car_inst.set_spawn(start_coords, initial_yaw);
     }
 
@@ -697,6 +700,12 @@ pub fn render_trial_ui(
                                         .color(egui::Color32::from_rgb(100, 255, 100))
                                         .size(20.0)
                                         .strong(),
+                                    );
+                                    ui.add_space(2.0);
+                                    ui.label(
+                                        egui::RichText::new("⚡ Pure Skill: Nitro is disabled during Time Trials")
+                                            .color(egui::Color32::from_rgb(220, 180, 100))
+                                            .size(12.0),
                                     );
                                 }
                                 TrialState::Racing { elapsed } => {
@@ -898,7 +907,7 @@ pub fn render_trial_ui(
 
                 ui.add_space(10.0);
                 ui.label(
-                    egui::RichText::new("TIME TRIAL COURSES:")
+                    egui::RichText::new("TIME TRIAL COURSES (NITRO DISABLED):")
                         .color(egui::Color32::from_rgb(255, 140, 0))
                         .size(13.0)
                         .strong(),
@@ -1151,8 +1160,16 @@ pub fn render_trial_ui(
                         ui.add_space(6.0);
 
                         // Nitro indicator section
+                        let in_trial = manager.current_trial_idx.is_some();
                         let (nitro_label, nitro_color, nitro_fill_color, nitro_ratio) =
-                            if is_boosting {
+                            if in_trial {
+                                (
+                                    "🚫 NITRO DISABLED (TIME TRIAL)".to_string(),
+                                    egui::Color32::from_rgb(200, 80, 80),
+                                    egui::Color32::from_rgb(90, 30, 30),
+                                    0.0_f32,
+                                )
+                            } else if is_boosting {
                                 (
                                     "⚡ NITRO BOOST ACTIVE!".to_string(),
                                     egui::Color32::from_rgb(0, 255, 255),
@@ -1318,9 +1335,9 @@ mod tests {
         assert_eq!(trials[0].end, [-850.0, -3650.0, 30.0]);
         assert_eq!(trials[0].rotation, Some(115.0));
 
-        assert_eq!(trials[1].name, "Lakeshire to Sentinel Hill");
+        assert_eq!(trials[1].name, "Sentinel Hill's Road");
         assert_eq!(trials[1].map_id, 0);
-        assert_eq!(trials[1].rotation, Some(-90.0));
+        assert_eq!(trials[1].rotation, Some(327.0));
     }
 
     #[test]
