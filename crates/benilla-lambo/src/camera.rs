@@ -139,7 +139,9 @@ pub fn speedometer(
 
     if let Some(ref m) = manager {
         if m.menu_open {
-            window.title = format!("benilla lambo — [ESC MENU OPEN] Up/Down or W/S + Enter to select, ESC to resume");
+            window.title =
+                "benilla lambo — [ESC MENU OPEN] Up/Down or W/S + Enter to select, ESC to resume"
+                    .to_string();
             return;
         }
 
@@ -160,7 +162,10 @@ pub fn speedometer(
                         trial.name
                     );
                 }
-                crate::trial::TrialState::Finished { final_time, is_best } => {
+                crate::trial::TrialState::Finished {
+                    final_time,
+                    is_best,
+                } => {
                     let record_badge = if is_best { " ★ NEW RECORD! ★" } else { "" };
                     window.title = format!(
                         "benilla lambo — [{}] FINISHED: {final_time:.2}s!{record_badge} — {kmh:.0} km/h — ESC menu, R restart",

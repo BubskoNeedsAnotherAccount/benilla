@@ -156,8 +156,16 @@ fn resolve_car_model() -> (String, Option<String>, GlbHints) {
                 .unwrap_or(std::path::Path::new(""))
                 .to_string_lossy()
                 .to_string();
-            let file = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let root = if parent.is_empty() { ".".to_string() } else { parent };
+            let file = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let root = if parent.is_empty() {
+                ".".to_string()
+            } else {
+                parent
+            };
             let hints = detect_glb_transform(p);
             return (root, Some(file), hints);
         } else {
@@ -190,11 +198,7 @@ fn resolve_car_model() -> (String, Option<String>, GlbHints) {
         let full_local = std::path::Path::new("assets").join(file);
         if full_local.exists() {
             let hints = detect_glb_transform(&full_local);
-            return (
-                "assets".to_string(),
-                Some(file.replace('\\', "/")),
-                hints,
-            );
+            return ("assets".to_string(), Some(file.replace('\\', "/")), hints);
         }
     }
 
@@ -241,10 +245,8 @@ fn detect_glb_transform(full_path: &std::path::Path) -> GlbHints {
                             ) {
                                 if min_arr.len() == 3 && max_arr.len() == 3 {
                                     for i in 0..3 {
-                                        let min_val =
-                                            min_arr[i].as_f64().unwrap_or(0.0) as f32;
-                                        let max_val =
-                                            max_arr[i].as_f64().unwrap_or(0.0) as f32;
+                                        let min_val = min_arr[i].as_f64().unwrap_or(0.0) as f32;
+                                        let max_val = max_arr[i].as_f64().unwrap_or(0.0) as f32;
                                         min_v[i] = min_v[i].min(min_val);
                                         max_v[i] = max_v[i].max(max_val);
                                     }

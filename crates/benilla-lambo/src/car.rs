@@ -150,7 +150,10 @@ impl Input {
             f32::from(u8::from(on(pos))) - f32::from(u8::from(on(neg)))
         };
         Self {
-            throttle: axis(&[KeyCode::KeyW, KeyCode::ArrowUp], &[KeyCode::KeyS, KeyCode::ArrowDown]),
+            throttle: axis(
+                &[KeyCode::KeyW, KeyCode::ArrowUp],
+                &[KeyCode::KeyS, KeyCode::ArrowDown],
+            ),
             steer: axis(
                 &[KeyCode::KeyD, KeyCode::ArrowRight],
                 &[KeyCode::KeyA, KeyCode::ArrowLeft],
@@ -270,19 +273,74 @@ pub fn spawn_car(
     };
     let parts = [
         // Lower body, the hood sloping to the nose, the cabin, its roof, the splitter.
-        part(Vec3::new(1.95, 0.42, 4.5), Vec3::new(0.0, 0.02, 0.0), 0.0, &orange),
-        part(Vec3::new(1.85, 0.12, 1.7), Vec3::new(0.0, 0.28, -1.35), -0.12, &orange),
-        part(Vec3::new(1.5, 0.38, 1.6), Vec3::new(0.0, 0.5, 0.25), 0.0, &dark),
-        part(Vec3::new(1.4, 0.08, 1.0), Vec3::new(0.0, 0.72, 0.3), 0.0, &orange),
-        part(Vec3::new(1.9, 0.05, 0.5), Vec3::new(0.0, -0.18, -2.1), 0.0, &dark),
+        part(
+            Vec3::new(1.95, 0.42, 4.5),
+            Vec3::new(0.0, 0.02, 0.0),
+            0.0,
+            &orange,
+        ),
+        part(
+            Vec3::new(1.85, 0.12, 1.7),
+            Vec3::new(0.0, 0.28, -1.35),
+            -0.12,
+            &orange,
+        ),
+        part(
+            Vec3::new(1.5, 0.38, 1.6),
+            Vec3::new(0.0, 0.5, 0.25),
+            0.0,
+            &dark,
+        ),
+        part(
+            Vec3::new(1.4, 0.08, 1.0),
+            Vec3::new(0.0, 0.72, 0.3),
+            0.0,
+            &orange,
+        ),
+        part(
+            Vec3::new(1.9, 0.05, 0.5),
+            Vec3::new(0.0, -0.18, -2.1),
+            0.0,
+            &dark,
+        ),
         // Rear wing on two posts.
-        part(Vec3::new(1.8, 0.06, 0.45), Vec3::new(0.0, 0.58, 2.0), 0.0, &dark),
-        part(Vec3::new(0.08, 0.3, 0.1), Vec3::new(-0.6, 0.4, 2.0), 0.0, &dark),
-        part(Vec3::new(0.08, 0.3, 0.1), Vec3::new(0.6, 0.4, 2.0), 0.0, &dark),
+        part(
+            Vec3::new(1.8, 0.06, 0.45),
+            Vec3::new(0.0, 0.58, 2.0),
+            0.0,
+            &dark,
+        ),
+        part(
+            Vec3::new(0.08, 0.3, 0.1),
+            Vec3::new(-0.6, 0.4, 2.0),
+            0.0,
+            &dark,
+        ),
+        part(
+            Vec3::new(0.08, 0.3, 0.1),
+            Vec3::new(0.6, 0.4, 2.0),
+            0.0,
+            &dark,
+        ),
         // Lamps.
-        part(Vec3::new(0.4, 0.08, 0.12), Vec3::new(-0.6, 0.18, -2.24), 0.0, &lamp),
-        part(Vec3::new(0.4, 0.08, 0.12), Vec3::new(0.6, 0.18, -2.24), 0.0, &lamp),
-        part(Vec3::new(1.5, 0.08, 0.08), Vec3::new(0.0, 0.2, 2.26), 0.0, &tail),
+        part(
+            Vec3::new(0.4, 0.08, 0.12),
+            Vec3::new(-0.6, 0.18, -2.24),
+            0.0,
+            &lamp,
+        ),
+        part(
+            Vec3::new(0.4, 0.08, 0.12),
+            Vec3::new(0.6, 0.18, -2.24),
+            0.0,
+            &lamp,
+        ),
+        part(
+            Vec3::new(1.5, 0.08, 0.08),
+            Vec3::new(0.0, 0.2, 2.26),
+            0.0,
+            &tail,
+        ),
     ];
 
     let wheel_mesh = meshes.add(Cylinder::new(WHEEL_R, 0.3));
@@ -366,7 +424,10 @@ pub fn drive(
         return;
     }
     let menu_open = manager.as_ref().map(|m| m.menu_open).unwrap_or(false);
-    let in_trial = manager.as_ref().map(|m| m.current_trial_idx.is_some()).unwrap_or(false);
+    let in_trial = manager
+        .as_ref()
+        .map(|m| m.current_trial_idx.is_some())
+        .unwrap_or(false);
 
     if keys.just_pressed(KeyCode::KeyR) && !in_trial && !menu_open {
         *car = Car::new();
@@ -393,7 +454,8 @@ pub fn drive(
     car.nitro_cooldown = (car.nitro_cooldown - dt).max(0.0);
     car.nitro_timer = (car.nitro_timer - dt).max(0.0);
 
-    let nitro_pressed = !menu_open && (keys.just_pressed(KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight));
+    let nitro_pressed = !menu_open
+        && (keys.just_pressed(KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight));
     if nitro_pressed && car.nitro_cooldown <= 0.0 && car.placed {
         car.nitro_cooldown = 10.0;
         car.nitro_timer = 1.0;
@@ -530,7 +592,11 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
         car.lateral_speed = v_r.abs();
 
         let is_nitro = car.nitro_timer > 0.0;
-        let top = if is_nitro { TOP_SPEED * 1.55 } else { TOP_SPEED };
+        let top = if is_nitro {
+            TOP_SPEED * 1.55
+        } else {
+            TOP_SPEED
+        };
         let mut a = 0.0;
         if input.throttle > 0.0 || is_nitro {
             a = if v_f < -1.0 {
@@ -555,7 +621,12 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
         if input.handbrake {
             v_f *= (-0.35 * dt).exp();
         }
-        v_r *= (-(if input.handbrake { GRIP_HANDBRAKE } else { GRIP }) * dt).exp();
+        v_r *= (-(if input.handbrake {
+            GRIP_HANDBRAKE
+        } else {
+            GRIP
+        }) * dt)
+            .exp();
         car.vel = fwd * v_f + right * v_r + car.up * v_u;
     }
 
@@ -632,7 +703,10 @@ fn hit_walls(car: &mut Car, dt: f32, world: &WorldCollision) {
                 car.vel -= hit.normal * into;
             }
             car.pos += hit.normal * (NOSE - hit.distance).clamp(0.0, 0.5);
-            car.up = car.up.lerp(hit.normal, smooth(dt, 16.0)).normalize_or(Vec3::Y);
+            car.up = car
+                .up
+                .lerp(hit.normal, smooth(dt, 16.0))
+                .normalize_or(Vec3::Y);
         } else if hit.normal.y.abs() <= 0.55 {
             // Impassable wall or cliff steeper than current speed can climb
             let n = Vec3::new(hit.normal.x, 0.0, hit.normal.z).normalize_or_zero();

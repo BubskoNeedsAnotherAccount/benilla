@@ -49,9 +49,20 @@ pub struct TimeTrialDef {
     pub name: String,
     #[serde(alias = "map", alias = "mapId", alias = "map_id")]
     pub map_id: u32,
-    #[serde(alias = "start_coords", alias = "start_coord", alias = "start_pos", alias = "start_position")]
+    #[serde(
+        alias = "start_coords",
+        alias = "start_coord",
+        alias = "start_pos",
+        alias = "start_position"
+    )]
     pub start: CoordDef,
-    #[serde(alias = "end_coords", alias = "end_coord", alias = "end_pos", alias = "end_position", alias = "finish")]
+    #[serde(
+        alias = "end_coords",
+        alias = "end_coord",
+        alias = "end_pos",
+        alias = "end_position",
+        alias = "finish"
+    )]
     pub end: CoordDef,
 }
 
@@ -298,10 +309,7 @@ pub fn setup_markers(
 }
 
 /// Animates the rotating crystals and bobbing parts of in-world markers.
-pub fn animate_markers(
-    time: Res<Time>,
-    mut query: Query<(&RotatingMarker, &mut Transform)>,
-) {
+pub fn animate_markers(time: Res<Time>, mut query: Query<(&RotatingMarker, &mut Transform)>) {
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
     for (rot, mut tf) in &mut query {
@@ -311,10 +319,17 @@ pub fn animate_markers(
 }
 
 /// Updates position and visibility of Start and Finish markers based on active time trial.
+#[allow(clippy::type_complexity)]
 pub fn update_marker_positions(
     manager: Res<TimeTrialManager>,
-    mut start_q: Query<(&mut Transform, &mut Visibility), (With<StartMarker>, Without<FinishMarker>)>,
-    mut finish_q: Query<(&mut Transform, &mut Visibility), (With<FinishMarker>, Without<StartMarker>)>,
+    mut start_q: Query<
+        (&mut Transform, &mut Visibility),
+        (With<StartMarker>, Without<FinishMarker>),
+    >,
+    mut finish_q: Query<
+        (&mut Transform, &mut Visibility),
+        (With<FinishMarker>, Without<StartMarker>),
+    >,
 ) {
     let (Ok((mut start_tf, mut start_vis)), Ok((mut finish_tf, mut finish_vis))) =
         (start_q.single_mut(), finish_q.single_mut())
@@ -368,7 +383,13 @@ pub fn handle_trial_input(
         }
         if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
             let choice = manager.selected_menu_idx;
-            apply_menu_choice(choice, &mut manager, &mut car, &mut chase_cam, &mut current_map);
+            apply_menu_choice(
+                choice,
+                &mut manager,
+                &mut car,
+                &mut chase_cam,
+                &mut current_map,
+            );
             manager.menu_open = false;
         }
 
@@ -399,7 +420,13 @@ pub fn handle_trial_input(
     // 'R' key restarts current mode
     if keys.just_pressed(KeyCode::KeyR) {
         if let Some(idx) = manager.current_trial_idx {
-            start_trial_by_index(idx, &mut manager, &mut car, &mut chase_cam, &mut current_map);
+            start_trial_by_index(
+                idx,
+                &mut manager,
+                &mut car,
+                &mut chase_cam,
+                &mut current_map,
+            );
         } else {
             // Free driving reset to Crossroads
             if let Ok(mut car_inst) = car.single_mut() {
@@ -518,7 +545,8 @@ pub fn update_trial_progress(
 
             // Check distance to finish line
             let finish_bevy = wow_to_bevy(trial.end);
-            let horizontal_dist = Vec2::new(car.pos.x - finish_bevy.x, car.pos.z - finish_bevy.z).length();
+            let horizontal_dist =
+                Vec2::new(car.pos.x - finish_bevy.x, car.pos.z - finish_bevy.z).length();
             let vertical_dist = (car.pos.y - finish_bevy.y).abs();
 
             // Finish gate radius is 16.0 yards horizontally, within 45 yards vertical
@@ -539,7 +567,11 @@ pub fn update_trial_progress(
                     "benilla-lambo: FINISHED '{}'! Time: {:.2}s (Best: {})",
                     trial.name,
                     current_time,
-                    if is_best { "NEW RECORD!" } else { "Personal Best kept" }
+                    if is_best {
+                        "NEW RECORD!"
+                    } else {
+                        "Personal Best kept"
+                    }
                 );
             }
         }
@@ -561,14 +593,18 @@ pub fn render_trial_ui(
     if let Some(trial) = manager.current_trial().cloned() {
         let finish_bevy = wow_to_bevy(trial.end);
         let car_pos = car.single().map(|c| c.pos).unwrap_or(Vec3::ZERO);
-        let dist_to_finish = Vec2::new(car_pos.x - finish_bevy.x, car_pos.z - finish_bevy.z).length();
+        let dist_to_finish =
+            Vec2::new(car_pos.x - finish_bevy.x, car_pos.z - finish_bevy.z).length();
 
         egui::Area::new(egui::Id::new("race_hud"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 16.0))
             .show(ctx, |ui| {
                 egui::Frame::window(&ctx.style())
                     .fill(egui::Color32::from_black_alpha(200))
-                    .stroke(egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 170, 0)))
+                    .stroke(egui::Stroke::new(
+                        1.5_f32,
+                        egui::Color32::from_rgb(255, 170, 0),
+                    ))
                     .corner_radius(8.0)
                     .inner_margin(egui::Margin::symmetric(24, 12))
                     .show(ui, |ui| {
@@ -583,10 +619,12 @@ pub fn render_trial_ui(
                             match manager.state {
                                 TrialState::WaitingToStart => {
                                     ui.label(
-                                        egui::RichText::new("READY — PRESS 'W' / ACCELERATE TO START")
-                                            .color(egui::Color32::from_rgb(100, 255, 100))
-                                            .size(20.0)
-                                            .strong(),
+                                        egui::RichText::new(
+                                            "READY — PRESS 'W' / ACCELERATE TO START",
+                                        )
+                                        .color(egui::Color32::from_rgb(100, 255, 100))
+                                        .size(20.0)
+                                        .strong(),
                                     );
                                 }
                                 TrialState::Racing { elapsed } => {
@@ -601,7 +639,10 @@ pub fn render_trial_ui(
                                             .strong(),
                                     );
                                 }
-                                TrialState::Finished { final_time, is_best } => {
+                                TrialState::Finished {
+                                    final_time,
+                                    is_best,
+                                } => {
                                     let mins = (final_time / 60.0).floor() as u32;
                                     let secs = final_time % 60.0;
                                     let time_str = format!("{mins:02}:{secs:05.2}");
@@ -653,7 +694,10 @@ pub fn render_trial_ui(
             .frame(
                 egui::Frame::window(&ctx.style())
                     .fill(egui::Color32::from_black_alpha(235))
-                    .stroke(egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 140, 0)))
+                    .stroke(egui::Stroke::new(
+                        2.0_f32,
+                        egui::Color32::from_rgb(255, 140, 0),
+                    ))
                     .corner_radius(12.0)
                     .inner_margin(egui::Margin::same(24)),
             )
@@ -750,15 +794,13 @@ pub fn render_trial_ui(
 
                     let btn = ui.add_sized(
                         [ui.available_width(), 38.0],
-                        egui::Button::new(
-                            egui::RichText::new(full_text)
-                                .size(15.0)
-                                .color(if is_sel {
-                                    egui::Color32::from_rgb(255, 220, 0)
-                                } else {
-                                    egui::Color32::WHITE
-                                }),
-                        )
+                        egui::Button::new(egui::RichText::new(full_text).size(15.0).color(
+                            if is_sel {
+                                egui::Color32::from_rgb(255, 220, 0)
+                            } else {
+                                egui::Color32::WHITE
+                            },
+                        ))
                         .fill(if is_sel {
                             egui::Color32::from_rgb(60, 45, 10)
                         } else {
@@ -777,9 +819,11 @@ pub fn render_trial_ui(
                 // Footer controls guide and Close button
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Controls: Up/Down or W/S to navigate, Enter to select, ESC to resume")
-                            .color(egui::Color32::GRAY)
-                            .size(12.0),
+                        egui::RichText::new(
+                            "Controls: Up/Down or W/S to navigate, Enter to select, ESC to resume",
+                        )
+                        .color(egui::Color32::GRAY)
+                        .size(12.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -797,7 +841,13 @@ pub fn render_trial_ui(
             });
 
         if let Some(choice) = chosen_idx {
-            apply_menu_choice(choice, &mut manager, &mut car, &mut chase_cam, &mut current_map);
+            apply_menu_choice(
+                choice,
+                &mut manager,
+                &mut car,
+                &mut chase_cam,
+                &mut current_map,
+            );
             manager.menu_open = false;
         }
     }
@@ -810,7 +860,8 @@ mod tests {
     #[test]
     fn test_load_default_json() {
         let json_str = include_str!("../assets/time_trials.json");
-        let defs: Vec<TimeTrialDef> = serde_json::from_str(json_str).expect("parse time_trials.json");
+        let defs: Vec<TimeTrialDef> =
+            serde_json::from_str(json_str).expect("parse time_trials.json");
         assert!(!defs.is_empty());
         let trials: Vec<TimeTrial> = defs.into_iter().map(Into::into).collect();
         assert_eq!(trials.len(), 6);
