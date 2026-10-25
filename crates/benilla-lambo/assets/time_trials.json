@@ -3,36 +3,28 @@
     "name": "Crossroads to Ratchet Sprint",
     "map_id": 1,
     "start": [-437.0, -2596.0, 96.0],
-    "end": [-850.0, -3650.0, 30.0]
+    "end": [-850.0, -3650.0, 30.0],
+    "rotation": 115.0
   },
   {
-    "name": "Barrens North-South Highway",
-    "map_id": 1,
-    "start": [350.0, -2300.0, 95.0],
-    "end": [-2360.0, -1950.0, 95.0]
-  },
-  {
-    "name": "Camp Taurajo to Crossroads Rush",
-    "map_id": 1,
-    "start": [-2360.0, -1950.0, 95.0],
-    "end": [-437.0, -2596.0, 96.0]
-  },
-  {
-    "name": "Wailing Caverns Oasis Run",
-    "map_id": 1,
-    "start": [-437.0, -2596.0, 96.0],
-    "end": [-820.0, -2040.0, 90.0]
-  },
-  {
-    "name": "Elwynn: Northshire to Goldshire",
+    "name": "Lakeshire to Sentinel Hill",
     "map_id": 0,
-    "start": [-8949.95, -132.49, 83.5],
-    "end": [-9465.0, 60.0, 56.0]
+    "start": [-9429.1, -2231.4, 68.65],
+    "end": [-10628.89, 1036.68, 34.06],
+    "rotation": -90.0
   },
   {
-    "name": "Goldshire to Stormwind Gates",
+    "name": "Menethil Harbor to Thelsamar",
     "map_id": 0,
-    "start": [-9465.0, 60.0, 56.0],
-    "end": [-9000.0, 400.0, 90.0]
+    "start": [-3792.26, -783.29, 9.06],
+    "end": [-5421.91, -2930.01, 347.25],
+    "rotation": 90.0
+  },
+  {
+    "name": "Caverns of Time to The Great Lift",
+    "map_id": 1,
+    "start": [-8180.0, -4460.0, 8.0],
+    "end": [-4945.0, -1350.0, 85.0],
+    "rotation": 45.0
   }
 ]

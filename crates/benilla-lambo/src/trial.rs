@@ -17,6 +17,9 @@ use benilla_world::world_map::CurrentMap;
 use crate::camera::ChaseCam;
 use crate::car::Car;
 
+/// Goldshire, Elwynn Forest in WoW coordinates (x north, y west, z up).
+pub const GOLDSHIRE_WOW: [f32; 3] = [-9465.0, 60.0, 70.0];
+
 /// A single time trial race course definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeTrial {
@@ -24,6 +27,9 @@ pub struct TimeTrial {
     pub map_id: u32,
     pub start: [f32; 3], // WoW coordinates: [x north, y west, z up]
     pub end: [f32; 3],   // WoW coordinates: [x north, y west, z up]
+    /// Optional starting rotation in degrees (if None, faces directly towards finish).
+    #[serde(default)]
+    pub rotation: Option<f32>,
 }
 
 /// Flexible JSON coordinate definition that accepts either `[x, y, z]` or `{"x": .., "y": .., "z": ..}`.
@@ -64,6 +70,15 @@ pub struct TimeTrialDef {
         alias = "finish"
     )]
     pub end: CoordDef,
+    /// Starting rotation / heading in degrees (finetunable in JSON).
+    #[serde(
+        default,
+        alias = "yaw",
+        alias = "rotation_deg",
+        alias = "heading",
+        alias = "start_rotation"
+    )]
+    pub rotation: Option<f32>,
 }
 
 impl From<TimeTrialDef> for TimeTrial {
@@ -73,6 +88,7 @@ impl From<TimeTrialDef> for TimeTrial {
             map_id: def.map_id,
             start: def.start.to_array(),
             end: def.end.to_array(),
+            rotation: def.rotation,
         }
     }
 }
@@ -165,36 +181,28 @@ pub fn load_time_trials() -> Vec<TimeTrial> {
             map_id: 1,
             start: [-437.0, -2596.0, 96.0],
             end: [-850.0, -3650.0, 30.0],
+            rotation: Some(115.0),
         },
         TimeTrial {
-            name: "Barrens North-South Highway".into(),
-            map_id: 1,
-            start: [350.0, -2300.0, 95.0],
-            end: [-2360.0, -1950.0, 95.0],
-        },
-        TimeTrial {
-            name: "Camp Taurajo to Crossroads Rush".into(),
-            map_id: 1,
-            start: [-2360.0, -1950.0, 95.0],
-            end: [-437.0, -2596.0, 96.0],
-        },
-        TimeTrial {
-            name: "Wailing Caverns Oasis Run".into(),
-            map_id: 1,
-            start: [-437.0, -2596.0, 96.0],
-            end: [-820.0, -2040.0, 90.0],
-        },
-        TimeTrial {
-            name: "Elwynn: Northshire to Goldshire".into(),
+            name: "Lakeshire to Sentinel Hill".into(),
             map_id: 0,
-            start: [-8949.95, -132.49, 83.5],
-            end: [-9465.0, 60.0, 56.0],
+            start: [-9429.1, -2231.4, 68.65],
+            end: [-10628.89, 1036.68, 34.06],
+            rotation: Some(-90.0),
         },
         TimeTrial {
-            name: "Goldshire to Stormwind Gates".into(),
+            name: "Menethil Harbor to Thelsamar".into(),
             map_id: 0,
-            start: [-9465.0, 60.0, 56.0],
-            end: [-9000.0, 400.0, 90.0],
+            start: [-3792.26, -783.29, 9.06],
+            end: [-5421.91, -2930.01, 347.25],
+            rotation: Some(90.0),
+        },
+        TimeTrial {
+            name: "Caverns of Time to The Great Lift".into(),
+            map_id: 1,
+            start: [-8180.0, -4460.0, 8.0],
+            end: [-4945.0, -1350.0, 85.0],
+            rotation: Some(45.0),
         },
     ]
 }
@@ -370,7 +378,7 @@ pub fn handle_trial_input(
 
     // When menu is open, handle keyboard navigation
     if manager.menu_open {
-        let total_items = manager.trials.len() + 1; // +1 for Free Driving
+        let total_items = manager.trials.len() + 2; // +2 for Crossroads and Goldshire Free Driving
         if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW) {
             if manager.selected_menu_idx == 0 {
                 manager.selected_menu_idx = total_items.saturating_sub(1);
@@ -393,7 +401,7 @@ pub fn handle_trial_input(
             manager.menu_open = false;
         }
 
-        // Quick numeric selection (1 = Free Driving, 2 = Trial 1, ...)
+        // Quick numeric selection (1 = Crossroads, 2 = Goldshire, 3.. = Trials)
         for (i, key) in [
             KeyCode::Digit1,
             KeyCode::Digit2,
@@ -427,8 +435,25 @@ pub fn handle_trial_input(
                 &mut chase_cam,
                 &mut current_map,
             );
+        } else if current_map.0 == 0 {
+            // Free driving reset to Goldshire (Eastern Kingdoms)
+            if let Ok(mut car_inst) = car.single_mut() {
+                car_inst.pos = wow_to_bevy([GOLDSHIRE_WOW[0], GOLDSHIRE_WOW[1], GOLDSHIRE_WOW[2] + 40.0]);
+                car_inst.vel = Vec3::ZERO;
+                car_inst.yaw = 0.0;
+                car_inst.up = Vec3::Y;
+                car_inst.placed = false;
+                car_inst.steer = 0.0;
+                car_inst.spin = 0.0;
+                car_inst.nitro_cooldown = 0.0;
+                car_inst.nitro_timer = 0.0;
+                if let Ok(mut cam) = chase_cam.single_mut() {
+                    cam.yaw = 0.0;
+                    cam.snapped = false;
+                }
+            }
         } else {
-            // Free driving reset to Crossroads
+            // Free driving reset to Crossroads (Kalimdor)
             if let Ok(mut car_inst) = car.single_mut() {
                 *car_inst = Car::new();
                 if let Ok(mut cam) = chase_cam.single_mut() {
@@ -440,7 +465,10 @@ pub fn handle_trial_input(
     }
 }
 
-/// Applies a menu choice by index (0 = Free Driving, 1..N = Trials).
+/// Applies a menu choice by index:
+/// - 0 = Free Driving: The Barrens (Crossroads)
+/// - 1 = Free Driving: Elwynn Forest (Goldshire)
+/// - 2..N = Time Trials
 pub fn apply_menu_choice(
     choice: usize,
     manager: &mut TimeTrialManager,
@@ -449,10 +477,12 @@ pub fn apply_menu_choice(
     current_map: &mut ResMut<CurrentMap>,
 ) {
     if choice == 0 {
-        // Free Driving selected
+        // Free Driving: Crossroads (The Barrens, Kalimdor)
         manager.current_trial_idx = None;
         manager.state = TrialState::FreeDriving;
-        current_map.0 = 1; // Kalimdor
+        if current_map.0 != 1 {
+            current_map.0 = 1;
+        }
         if let Ok(mut car_inst) = car.single_mut() {
             *car_inst = Car::new();
         }
@@ -460,9 +490,32 @@ pub fn apply_menu_choice(
             cam.yaw = 0.0;
             cam.snapped = false;
         }
-        eprintln!("benilla-lambo: switched to Free Driving mode");
+        eprintln!("benilla-lambo: switched to Free Driving (Crossroads - The Barrens)");
+    } else if choice == 1 {
+        // Free Driving: Goldshire (Elwynn Forest, Eastern Kingdoms)
+        manager.current_trial_idx = None;
+        manager.state = TrialState::FreeDriving;
+        if current_map.0 != 0 {
+            current_map.0 = 0;
+        }
+        if let Ok(mut car_inst) = car.single_mut() {
+            car_inst.pos = wow_to_bevy([GOLDSHIRE_WOW[0], GOLDSHIRE_WOW[1], GOLDSHIRE_WOW[2] + 40.0]);
+            car_inst.vel = Vec3::ZERO;
+            car_inst.yaw = 0.0;
+            car_inst.up = Vec3::Y;
+            car_inst.placed = false;
+            car_inst.steer = 0.0;
+            car_inst.spin = 0.0;
+            car_inst.nitro_cooldown = 0.0;
+            car_inst.nitro_timer = 0.0;
+        }
+        if let Ok(mut cam) = chase_cam.single_mut() {
+            cam.yaw = 0.0;
+            cam.snapped = false;
+        }
+        eprintln!("benilla-lambo: switched to Free Driving (Goldshire - Elwynn Forest)");
     } else {
-        let trial_idx = choice - 1;
+        let trial_idx = choice - 2;
         start_trial_by_index(trial_idx, manager, car, chase_cam, current_map);
     }
 }
@@ -490,11 +543,14 @@ pub fn start_trial_by_index(
         current_map.0 = trial.map_id;
     }
 
-    // Position car at start, facing towards finish
+    // Position car at start, facing towards finish or using the user's finetuned rotation
     let start_bevy = wow_to_bevy([trial.start[0], trial.start[1], trial.start[2] + 40.0]);
     let end_bevy = wow_to_bevy(trial.end);
     let fwd_vec = end_bevy - start_bevy;
-    let initial_yaw = (-fwd_vec.x).atan2(-fwd_vec.z);
+    let initial_yaw = trial
+        .rotation
+        .map(|deg| deg.to_radians())
+        .unwrap_or_else(|| (-fwd_vec.x).atan2(-fwd_vec.z));
 
     if let Ok(mut car_inst) = car.single_mut() {
         car_inst.pos = start_bevy;
@@ -514,8 +570,10 @@ pub fn start_trial_by_index(
     }
 
     eprintln!(
-        "benilla-lambo: started time trial '{}' on map {}",
-        trial.name, trial.map_id
+        "benilla-lambo: started time trial '{}' on map {} (rotation: {:.1}°)",
+        trial.name,
+        trial.map_id,
+        initial_yaw.to_degrees()
     );
 }
 
@@ -719,22 +777,28 @@ pub fn render_trial_ui(
 
                 ui.add_space(16.0);
                 ui.separator();
-                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new("FREE DRIVING MODES:")
+                        .color(egui::Color32::from_rgb(255, 140, 0))
+                        .size(13.0)
+                        .strong(),
+                );
+                ui.add_space(4.0);
 
-                // Option 0: Free Driving
+                // Option 0: Free Driving (Crossroads)
                 let is_sel0 = selected == 0;
-                let is_active0 = manager.current_trial_idx.is_none();
-                let free_text = format!(
-                    "{} [1] Free Driving (The Barrens - Crossroads) {}",
+                let is_active0 = manager.current_trial_idx.is_none() && current_map.0 == 1;
+                let free0_text = format!(
+                    "{} [1] The Barrens — Crossroads (Kalimdor) {}",
                     if is_sel0 { "▶ " } else { "   " },
                     if is_active0 { "(Active)" } else { "" }
                 );
 
                 let btn0 = ui.add_sized(
-                    [ui.available_width(), 38.0],
+                    [ui.available_width(), 36.0],
                     egui::Button::new(
-                        egui::RichText::new(free_text)
-                            .size(16.0)
+                        egui::RichText::new(free0_text)
+                            .size(15.0)
                             .color(if is_sel0 {
                                 egui::Color32::from_rgb(255, 220, 0)
                             } else {
@@ -752,7 +816,40 @@ pub fn render_trial_ui(
                     chosen_idx = Some(0);
                 }
 
-                ui.add_space(8.0);
+                ui.add_space(4.0);
+
+                // Option 1: Free Driving (Goldshire)
+                let is_sel1 = selected == 1;
+                let is_active1 = manager.current_trial_idx.is_none() && current_map.0 == 0;
+                let free1_text = format!(
+                    "{} [2] Elwynn Forest — Goldshire (Eastern Kingdoms) {}",
+                    if is_sel1 { "▶ " } else { "   " },
+                    if is_active1 { "(Active)" } else { "" }
+                );
+
+                let btn1 = ui.add_sized(
+                    [ui.available_width(), 36.0],
+                    egui::Button::new(
+                        egui::RichText::new(free1_text)
+                            .size(15.0)
+                            .color(if is_sel1 {
+                                egui::Color32::from_rgb(255, 220, 0)
+                            } else {
+                                egui::Color32::WHITE
+                            })
+                            .strong(),
+                    )
+                    .fill(if is_sel1 {
+                        egui::Color32::from_rgb(60, 45, 10)
+                    } else {
+                        egui::Color32::from_black_alpha(100)
+                    }),
+                );
+                if btn1.clicked() {
+                    chosen_idx = Some(1);
+                }
+
+                ui.add_space(10.0);
                 ui.label(
                     egui::RichText::new("TIME TRIAL COURSES:")
                         .color(egui::Color32::from_rgb(255, 140, 0))
@@ -761,9 +858,9 @@ pub fn render_trial_ui(
                 );
                 ui.add_space(4.0);
 
-                // Trial Options (1..N)
+                // Trial Options (2..N+1)
                 for (i, trial) in manager.trials.iter().enumerate() {
-                    let option_idx = i + 1;
+                    let option_idx = i + 2;
                     let is_sel = selected == option_idx;
                     let is_active = manager.current_trial_idx == Some(i);
 
@@ -782,7 +879,7 @@ pub fn render_trial_ui(
                     };
 
                     let label_text = format!(
-                        "{} [{}] {} (Continent: {}){}",
+                        "{} [{}] {} ({}){}",
                         if is_sel { "▶ " } else { "   " },
                         option_idx + 1,
                         trial.name,
@@ -864,26 +961,33 @@ mod tests {
             serde_json::from_str(json_str).expect("parse time_trials.json");
         assert!(!defs.is_empty());
         let trials: Vec<TimeTrial> = defs.into_iter().map(Into::into).collect();
-        assert_eq!(trials.len(), 6);
+        assert_eq!(trials.len(), 4);
         assert_eq!(trials[0].name, "Crossroads to Ratchet Sprint");
         assert_eq!(trials[0].map_id, 1);
         assert_eq!(trials[0].start, [-437.0, -2596.0, 96.0]);
         assert_eq!(trials[0].end, [-850.0, -3650.0, 30.0]);
+        assert_eq!(trials[0].rotation, Some(115.0));
+
+        assert_eq!(trials[1].name, "Lakeshire to Sentinel Hill");
+        assert_eq!(trials[1].map_id, 0);
+        assert_eq!(trials[1].rotation, Some(-90.0));
     }
 
     #[test]
-    fn test_parse_flexible_coords() {
+    fn test_parse_flexible_coords_and_rotation() {
         let json_str = r#"[
             {
                 "name": "Object Coords",
                 "map_id": 1,
                 "start": {"x": 10.0, "y": 20.0, "z": 30.0},
-                "end": [40.0, 50.0, 60.0]
+                "end": [40.0, 50.0, 60.0],
+                "yaw": 45.0
             }
         ]"#;
         let defs: Vec<TimeTrialDef> = serde_json::from_str(json_str).unwrap();
         let trial: TimeTrial = defs.into_iter().next().unwrap().into();
         assert_eq!(trial.start, [10.0, 20.0, 30.0]);
         assert_eq!(trial.end, [40.0, 50.0, 60.0]);
+        assert_eq!(trial.rotation, Some(45.0));
     }
 }
