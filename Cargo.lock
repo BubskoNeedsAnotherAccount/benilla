@@ -621,6 +621,7 @@ dependencies = [
  "benilla-world",
  "bevy",
  "bevy_egui",
+ "engine-core",
  "kira",
  "serde",
  "serde_json",
@@ -3149,6 +3150,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "engine-core"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
