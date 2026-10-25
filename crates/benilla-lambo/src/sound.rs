@@ -183,7 +183,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
 
                 synth.set_rpm(audio.simulated_rpm);
                 synth.set_throttle(throttle_pos);
-                synth.set_volume(0.30 + throttle_pos * 0.15);
+                synth.set_volume(0.36 + throttle_pos * 0.18);
             } else {
                 // Automatic transmission gear selection with hysteresis
                 let mut target_gear = audio.current_gear;
@@ -206,15 +206,15 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 let gear_progress =
                     ((speed - gear_low) / (gear_high - gear_low).max(1.0)).clamp(0.0, 1.0);
 
-                // Realistic gear RPM scaling (keeps acceleration in the deep, throaty 1,800 - 4,500 RPM zone)
+                // Realistic gear RPM scaling for loud, high-revving sports car powerband
                 const GEAR_RPM_RANGES: [(f32, f32); 7] = [
-                    (850.0, 3600.0),  // Gear 1: 0..16 yd/s (~0..53 km/h)
-                    (1900.0, 3900.0), // Gear 2: 16..30 yd/s (~53..100 km/h)
-                    (2100.0, 4200.0), // Gear 3: 30..46 yd/s (~100..152 km/h)
-                    (2300.0, 4600.0), // Gear 4: 46..64 yd/s (~152..211 km/h)
-                    (2600.0, 5000.0), // Gear 5: 64..82 yd/s (~211..270 km/h)
-                    (2900.0, 5500.0), // Gear 6: 82..100 yd/s (~270..330 km/h)
-                    (3300.0, 6200.0), // Gear 7: 100+ yd/s (~330..445+ km/h)
+                    (850.0, 4200.0),  // Gear 1: 0..16 yd/s (~0..53 km/h)
+                    (2000.0, 4500.0), // Gear 2: 16..30 yd/s (~53..100 km/h)
+                    (2300.0, 4900.0), // Gear 3: 30..46 yd/s (~100..152 km/h)
+                    (2600.0, 5400.0), // Gear 4: 46..64 yd/s (~152..211 km/h)
+                    (3000.0, 5900.0), // Gear 5: 64..82 yd/s (~211..270 km/h)
+                    (3400.0, 6400.0), // Gear 6: 82..100 yd/s (~270..330 km/h)
+                    (3800.0, 7000.0), // Gear 7: 100+ yd/s (~330..445+ km/h)
                 ];
 
                 let (rpm_min, rpm_max) = GEAR_RPM_RANGES[gear_idx];
@@ -222,7 +222,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 let base_rpm = if audio.current_gear == 1 {
                     if speed < 1.0 {
                         if throttle_pos > 0.05 {
-                            850.0 + throttle_pos * 1400.0 // launch slip (up to ~2,250 RPM)
+                            850.0 + throttle_pos * 1600.0 // launch slip (up to ~2,450 RPM)
                         } else {
                             850.0
                         }
@@ -231,7 +231,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                     }
                 } else {
                     // Under partial throttle / coasting, engine cruises lower; floored throttle revs higher
-                    let throttle_rpm_lift = (throttle_pos - 0.5) * 400.0;
+                    let throttle_rpm_lift = (throttle_pos - 0.5) * 450.0;
                     (rpm_min + gear_progress * (rpm_max - rpm_min) + throttle_rpm_lift)
                         .clamp(rpm_min, rpm_max)
                 };
@@ -261,7 +261,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 };
 
                 let speed_ratio = (speed / TOP_SPEED).clamp(0.0, 1.0);
-                let target_vol = 0.32 + speed_ratio * 0.14 + (if car.nitro_timer > 0.0 { 0.12 } else { 0.0 });
+                let target_vol = 0.38 + speed_ratio * 0.16 + (if car.nitro_timer > 0.0 { 0.14 } else { 0.0 });
 
                 synth.set_rpm(audio.simulated_rpm);
                 synth.set_throttle(effective_throttle);

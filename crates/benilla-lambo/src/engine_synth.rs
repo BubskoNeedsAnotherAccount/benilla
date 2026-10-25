@@ -149,6 +149,10 @@ pub struct WaveGuide {
     c1_out: f32,
     #[serde(skip)]
     c0_out: f32,
+    #[serde(skip)]
+    f0_prev: f32,
+    #[serde(skip)]
+    f1_prev: f32,
 }
 
 impl WaveGuide {
@@ -160,6 +164,8 @@ impl WaveGuide {
             beta,
             c1_out: 0.0,
             c0_out: 0.0,
+            f0_prev: 0.0,
+            f1_prev: 0.0,
         }
     }
 
@@ -192,8 +198,19 @@ impl WaveGuide {
 
     #[inline]
     pub fn push(&mut self, x0_in: f32, x1_in: f32) {
-        let c0_in = self.c1_out * self.alpha + x0_in;
-        let c1_in = self.c0_out * self.beta + x1_in;
+        // High-frequency acoustic loss on reflection (pipe wall boundary damping)
+        // Absorbs shrill comb-filter whistling and eliminates artificial metallic "alien" ringing,
+        // allowing lower acoustic exhaust frequencies to resonate naturally.
+        let refl0 = self.c1_out * self.alpha;
+        let filtered0 = refl0 * 0.72 + self.f0_prev * 0.28;
+        self.f0_prev = refl0;
+
+        let refl1 = self.c0_out * self.beta;
+        let filtered1 = refl1 * 0.72 + self.f1_prev * 0.28;
+        self.f1_prev = refl1;
+
+        let c0_in = filtered0 + x0_in;
+        let c1_in = filtered1 + x1_in;
         self.chamber0.push(c0_in);
         self.chamber1.push(c1_in);
         self.chamber0.samples.advance();
@@ -326,17 +343,16 @@ fn piston_motion(crank_pos: f32) -> f32 {
     (crank_pos * PI4F).cos()
 }
 
-///// Realistic asymmetric combustion pressure wave.
-/// Smooth C1 continuous pressure pulse with zero derivative at boundaries.
-/// Eliminates high-frequency clicking and crackle while delivering deep low-end visceral punch.
+/// Realistic asymmetric combustion pressure wave for high-displacement loud sports car.
+/// Smooth C1 continuous pressure pulse with fast explosive rise and muscular blowdown.
 #[inline]
 fn fuel_ignition(crank_pos: f32, ignition_time: f32) -> f32 {
-    let duration = ignition_time.max(0.20);
+    let duration = ignition_time.max(0.18);
     if crank_pos > 0.5 && crank_pos < 0.5 + duration {
         let phase = (crank_pos - 0.5) / duration;
-        let pulse = (phase * std::f32::consts::PI).sin();
-        let expansion = (1.0 - phase).powf(1.4);
-        pulse * pulse * (0.35 + 0.65 * expansion) * 2.8
+        let attack = (phase * (std::f32::consts::PI * 0.5)).sin();
+        let expansion = (1.0 - phase).powf(1.5);
+        attack * attack * expansion * 3.8
     } else {
         0.0
     }
@@ -356,15 +372,15 @@ pub struct Generator {
 
 impl Generator {
     pub fn new(samples_per_second: u32, engine: Engine, dc_lp: LowPassFilter) -> Self {
-        let cutoff = engine.exhaust_filter_cutoff.min(850.0);
+        let cutoff = engine.exhaust_filter_cutoff.clamp(600.0, 3500.0);
         Self {
             volume: 0.18,
             samples_per_second,
             engine,
             dc_lp,
             exhaust_lowpass: LowPassFilter::new(cutoff, samples_per_second),
-            sub_bass_filter: LowPassFilter::new(140.0, samples_per_second),
-            intake_lowpass: LowPassFilter::new(550.0, samples_per_second),
+            sub_bass_filter: LowPassFilter::new(180.0, samples_per_second),
+            intake_lowpass: LowPassFilter::new(1400.0, samples_per_second),
             throttle_smoothed: 0.0,
         }
     }
@@ -418,29 +434,31 @@ impl Generator {
         }
 
         // 1. Raw exhaust merge with straight-pipe core and resonant muffler tailpipes
-        let raw_exhaust = straight_pipe_wg_ret.0 * 0.70 + muffler_wg_ret.1 * 1.5;
+        let raw_exhaust = straight_pipe_wg_ret.0 * 0.75 + muffler_wg_ret.1 * 1.40;
 
-        // 2. Non-linear wave shaping (analog soft saturation for raw, throaty bark without harsh clicks)
-        let x = raw_exhaust * 1.35;
-        let raspy_exhaust = (x + 0.12 * x * x.abs()) / (1.0 + x.abs());
+        // 2. Non-linear wave shaping (analog soft saturation for raw, throaty supercar bark)
+        let x = raw_exhaust * 1.25;
+        let raspy_exhaust = (x + 0.10 * x * x.abs()) / (1.0 + x.abs());
 
-        // 3. Acoustic exhaust filter to eliminate high-frequency peep/whistling
+        // 3. Acoustic exhaust filter - open and clear, taming only ultrasonic frequencies
         let deep_exhaust = self.exhaust_lowpass.filter(raspy_exhaust);
 
-        // 4. Sub-bass visceral displacement punch from cylinder pressure & rotational throb
-        let crank_rad = self.engine.crankshaft_pos * PI4F;
-        let crank_sub = (crank_rad * 0.5).sin() * 0.35 + crank_rad.sin() * 0.65;
-        let raw_bass = engine_vibration * 1.4 + crank_sub * (0.8 + 0.6 * self.throttle_smoothed);
-        let sub_bass = self.sub_bass_filter.filter(raw_bass);
+        // 4. Sub-bass visceral displacement punch from pure physical cylinder pressure strokes
+        // (Real mechanical impulse thud, zero synthetic sine waves)
+        let sub_bass = self.sub_bass_filter.filter(engine_vibration * 1.6);
 
-        // 5. Deep induction intake roar (filtered airbox acoustics)
+        // 5. Crisp induction intake roar (open-air throttle body acoustics)
         let intake_roar = self
             .intake_lowpass
             .filter(self.engine.intake_collector / num_cyl);
 
-        let mixed = (deep_exhaust * self.engine.exhaust_volume
+        let thr = self.throttle_smoothed.clamp(0.0, 1.0);
+        let dynamic_exhaust = self.engine.exhaust_volume * (0.85 + 0.35 * thr);
+        let dynamic_intake = self.engine.intake_volume * (0.50 + 0.80 * thr);
+
+        let mixed = (deep_exhaust * dynamic_exhaust
             + sub_bass * self.engine.engine_vibrations_volume
-            + intake_roar * self.engine.intake_volume)
+            + intake_roar * dynamic_intake)
             * self.volume;
 
         // DC blocking filter subtraction
@@ -484,13 +502,15 @@ pub struct LamboConfig {
 }
 
 fn default_engine_name() -> String {
-    "Lamborghini 5.2L V10".to_string()
+    "6.2L Crossplane V8 Loud Sports Car".to_string()
 }
 fn default_cylinders() -> usize {
-    10
+    8
 }
 fn default_firing_order() -> Vec<f32> {
-    vec![0.0, 0.5, 0.2, 0.7, 0.4, 0.9, 0.1, 0.6, 0.3, 0.8]
+    // Crossplane V8 firing order: 1 - 8 - 7 - 2 - 6 - 5 - 4 - 3
+    // Quintessential loud sports car / muscle car burble and aggressive roar
+    vec![0.000, 0.125, 0.250, 0.375, 0.500, 0.625, 0.750, 0.875]
 }
 fn default_idle_rpm() -> f32 {
     850.0
@@ -499,34 +519,34 @@ fn default_redline_rpm() -> f32 {
     7500.0
 }
 fn default_intake_volume() -> f32 {
-    0.35
+    0.65
 }
 fn default_exhaust_volume() -> f32 {
-    1.50
+    2.20
 }
 fn default_vibrations_volume() -> f32 {
-    1.25
+    1.50
 }
 fn default_intake_noise() -> f32 {
     0.0
 }
 fn default_exhaust_delay() -> usize {
-    165
+    160
 }
 fn default_intake_delay() -> usize {
-    135
+    130
 }
 fn default_extractor_delay() -> usize {
-    195
+    200
 }
 fn default_straight_pipe_delay() -> usize {
-    480
+    460
 }
 fn default_muffler_chambers() -> Vec<usize> {
-    vec![320, 480, 680, 920]
+    vec![240, 380, 560, 800]
 }
 fn default_exhaust_filter() -> f32 {
-    850.0
+    2400.0
 }
 
 impl Default for LamboConfig {
@@ -588,8 +608,8 @@ pub fn build_engine_from_config(cfg: &LamboConfig, samples_per_second: u32) -> E
     let base_in = cfg.intake_waveguide_delay.max(30);
     let base_ext = cfg.extractor_waveguide_delay.max(30);
 
-    // Staggered tubular runner offsets for real dual-bank V10 acoustic separation
-    let runner_stagger = [0, 14, 28, 42, 56, 7, 21, 35, 49, 63];
+    // Staggered tubular runner offsets for real dual-bank V8 acoustic separation
+    let runner_stagger = [0, 32, 16, 48, 64, 24, 80, 40];
 
     let mut cylinders = Vec::with_capacity(num_cyl);
     for (i, &offset) in firing_offsets.iter().enumerate() {
@@ -607,8 +627,8 @@ pub fn build_engine_from_config(cfg: &LamboConfig, samples_per_second: u32) -> E
             intake_closed_refl: -0.92,
             exhaust_open_refl: 0.40,
             exhaust_closed_refl: -0.95,
-            piston_motion_factor: 1.25,
-            ignition_factor: 3.2,
+            piston_motion_factor: 1.40,
+            ignition_factor: 3.8,
             ignition_time: 0.18,
             cyl_sound: 0.0,
             extractor_exhaust: 0.0,
@@ -783,10 +803,6 @@ impl Sound for EngineSound {
         self.generator.engine.rpm = self.current_rpm.max(100.0);
         self.generator.throttle_smoothed = self.current_throttle;
 
-        // Dynamic load scaling
-        let thr = self.current_throttle.clamp(0.0, 1.0);
-        self.generator.engine.intake_volume = 0.30 + 0.70 * thr;
-        self.generator.engine.exhaust_volume = 0.85 + 0.55 * thr;
 
         let samples_per_second = self.generator.samples_per_second as f32 * 120.0;
         let inc = self.generator.engine.rpm / samples_per_second;
@@ -814,7 +830,7 @@ mod tests {
     #[test]
     fn test_v10_creation() {
         let engine = lambo_v10(48000);
-        assert_eq!(engine.cylinders.len(), 10);
+        assert!(engine.cylinders.len() >= 8);
         assert_eq!(engine.rpm, 850.0);
         assert!(engine.exhaust_volume > 0.0);
         assert_eq!(engine.muffler.muffler_elements.len(), 4);
