@@ -35,14 +35,14 @@ const GRAVITY: f32 = 19.291_105;
 /// Lowest the body centre may sink toward the ground plane.
 const MIN_HEIGHT: f32 = 0.44;
 
-const ENGINE_ACCEL: f32 = 36.0;
-const BRAKE_DECEL: f32 = 45.0;
-const REVERSE_ACCEL: f32 = 12.0;
-const REVERSE_MAX: f32 = 22.0;
-/// Top speed in yd/s. nitro boosts it even further.
-pub const TOP_SPEED: f32 = 110.0;
-const GRIP: f32 = 7.0;
-const GRIP_HANDBRAKE: f32 = 1.2;
+const ENGINE_ACCEL: f32 = 54.0;
+const BRAKE_DECEL: f32 = 65.0;
+const REVERSE_ACCEL: f32 = 18.0;
+const REVERSE_MAX: f32 = 33.0;
+/// Top speed in yd/s. nitro boosts it even further. (Scaled 1.5x to match 1.5x model scale)
+pub const TOP_SPEED: f32 = 165.0;
+const GRIP: f32 = 7.5;
+const GRIP_HANDBRAKE: f32 = 1.3;
 
 /// Physics steps per frame, so a fast car's wheel rays do not skip a bump.
 const SUBSTEPS: u32 = 2;
@@ -465,7 +465,7 @@ pub fn drive(
         if v_f < 0.0 {
             car.vel -= fwd * v_f;
         }
-        car.vel += fwd * 40.0;
+        car.vel += fwd * 55.0;
     }
 
     let input = if menu_open {

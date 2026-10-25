@@ -15,7 +15,7 @@ use kira::{
 };
 use serde::{Deserialize, Serialize};
 
-use engine_core::config::{engine_by_id, EngineConfig};
+use engine_core::config::engine_by_id;
 use engine_core::sound::{default_banks, EngineSound, Quality, SoundInput, SAMPLE_RATE};
 use engine_core::tuning::{AirFilter, Cat, Header, Muffler, Tuning};
 
@@ -228,6 +228,7 @@ pub struct EngineSoundStream {
     throttle: Arc<AtomicU32>,
     volume: Arc<AtomicU32>,
     speed: Arc<AtomicU32>,
+    #[allow(dead_code)]
     gear: Arc<AtomicU32>,
     shift_pop: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
