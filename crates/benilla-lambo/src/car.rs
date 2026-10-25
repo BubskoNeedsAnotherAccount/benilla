@@ -24,6 +24,7 @@ pub const CROSSROADS_YAW_DEG: f32 = 0.0;
 
 /// Goldshire, Elwynn Forest in Eastern Kingdoms.
 pub const GOLDSHIRE_WOW: [f32; 3] = [-9465.0, 60.0, 110.0];
+#[allow(dead_code)]
 pub const GOLDSHIRE_YAW_DEG: f32 = 0.0;
 
 /// Default spawn point in WoW coordinates: Lakeshire in Redridge Mountains.

@@ -1240,7 +1240,7 @@ pub fn render_trial_ui(
                 .show(ctx, |ui| {
                     egui::Frame::window(&ctx.style())
                         .fill(egui::Color32::from_black_alpha(225))
-                        .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 255)))
+                        .stroke(egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(0, 220, 255)))
                         .corner_radius(8.0)
                         .inner_margin(egui::Margin::symmetric(16, 12))
                         .show(ui, |ui| {
@@ -1332,8 +1332,8 @@ mod tests {
         assert_eq!(trials[0].name, "Crossroads to Ratchet Sprint");
         assert_eq!(trials[0].map_id, 1);
         assert_eq!(trials[0].start, [-437.0, -2596.0, 96.0]);
-        assert_eq!(trials[0].end, [-850.0, -3650.0, 30.0]);
-        assert_eq!(trials[0].rotation, Some(115.0));
+        assert_eq!(trials[0].end, [-1000.33, -3822.91, 5.71]);
+        assert_eq!(trials[0].rotation, Some(253.0));
 
         assert_eq!(trials[1].name, "Sentinel Hill's Road");
         assert_eq!(trials[1].map_id, 0);

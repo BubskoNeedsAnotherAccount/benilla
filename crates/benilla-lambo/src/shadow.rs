@@ -12,6 +12,7 @@ pub struct CarShadow;
 
 #[derive(Resource)]
 pub struct CarShadowAssets {
+    #[allow(dead_code)]
     pub mesh: Handle<Mesh>,
     pub materials: [Handle<StandardMaterial>; 8],
 }

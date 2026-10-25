@@ -616,11 +616,17 @@ dependencies = [
 name = "benilla-lambo"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
+ "benilla-adt",
  "benilla-assets",
  "benilla-formats",
+ "benilla-m2",
+ "benilla-wdt",
+ "benilla-wmo",
  "benilla-world",
  "bevy",
  "bevy_egui",
+ "clap",
  "engine-core",
  "kira",
  "serde",
