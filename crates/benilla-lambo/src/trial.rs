@@ -1213,9 +1213,9 @@ pub fn render_trial_ui(
             let yaw_deg = c.yaw.to_degrees().rem_euclid(360.0);
             let map_id = current_map.0;
             let map_name = match map_id {
-                0 => "Eastern Kingdoms (0)",
-                1 => "Kalimdor (1)",
-                other => &format!("Map {other}"),
+                0 => "Eastern Kingdoms (0)".to_string(),
+                1 => "Kalimdor (1)".to_string(),
+                other => format!("Map {other}"),
             };
 
             egui::Area::new(egui::Id::new("debug_telemetry_menu"))

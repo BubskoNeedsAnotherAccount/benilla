@@ -523,7 +523,7 @@ pub fn drive(
         if v_f < 0.0 {
             car.vel -= fwd * v_f;
         }
-        car.vel += fwd * 55.0;
+        car.vel += fwd * 27.5;
     }
 
     let input = if menu_open {
@@ -654,7 +654,7 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
 
         let is_nitro = car.nitro_timer > 0.0;
         let top = if is_nitro {
-            TOP_SPEED * 1.55
+            TOP_SPEED * 1.275
         } else {
             TOP_SPEED
         };
@@ -685,7 +685,7 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
             let mut a = if v_f < -1.0 {
                 BRAKE_DECEL
             } else {
-                let accel_mult = if is_nitro { 2.5 } else { 1.0 };
+                let accel_mult = if is_nitro { 1.75 } else { 1.0 };
                 ENGINE_ACCEL * accel_mult * (1.0 - v_f / top).clamp(0.0, 1.0)
             };
             a -= v_f * 0.15 + v_f * v_f.abs() * 0.0004;

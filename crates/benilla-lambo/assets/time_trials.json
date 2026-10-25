@@ -30,33 +30,33 @@
     "rotation": 327.0
   },
   {
-    "name": "Menethil Harbor to Thelsamar",
+    "name": "Redridge Highway",
     "map_id": 0,
     "start": [
-      -3792.26,
-      -783.29,
-      9.06
+      -9633.32,
+      -2080.38,
+      61.66
     ],
     "end": [
-      -5421.91,
-      -2930.01,
-      347.25
+      -9431.52,
+      -3019.81,
+      137.11
     ],
-    "rotation": 90.0
+    "rotation": 192.0
   },
   {
-    "name": "Caverns of Time to The Great Lift",
+    "name": "The Stonetalon Trail",
     "map_id": 1,
     "start": [
-      -8180.0,
-      -4460.0,
-      8.0
+      1719.62,
+      982.77,
+      136.59
     ],
     "end": [
-      -4945.0,
-      -1350.0,
-      85.0
+      -229.96,
+      -773.56,
+      7.62
     ],
-    "rotation": 45.0
+    "rotation": 157
   }
 ]
