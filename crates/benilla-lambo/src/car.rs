@@ -14,9 +14,21 @@ use benilla_world::collision::WorldCollision;
 use benilla_world::terrain_stream::ViewFocus;
 use benilla_world::view::Viewer;
 
-/// The Crossroads, in WoW coordinates (x north, y west), at a height above any ground there: the
-/// car waits in the air for the terrain under it to stream in, then drops onto it.
-pub const SPAWN_WOW: [f32; 3] = [-437.0, -2596.0, 400.0];
+/// Lakeshire, Redridge Mountains in Eastern Kingdoms (default spawn).
+pub const LAKESHIRE_WOW: [f32; 3] = [-9429.1, -2231.4, 110.0];
+pub const LAKESHIRE_YAW_DEG: f32 = -90.0;
+
+/// The Crossroads, The Barrens in Kalimdor.
+pub const CROSSROADS_WOW: [f32; 3] = [-437.0, -2596.0, 400.0];
+pub const CROSSROADS_YAW_DEG: f32 = 0.0;
+
+/// Goldshire, Elwynn Forest in Eastern Kingdoms.
+pub const GOLDSHIRE_WOW: [f32; 3] = [-9465.0, 60.0, 110.0];
+pub const GOLDSHIRE_YAW_DEG: f32 = 0.0;
+
+/// Default spawn point in WoW coordinates: Lakeshire in Redridge Mountains.
+pub const SPAWN_WOW: [f32; 3] = LAKESHIRE_WOW;
+pub const SPAWN_YAW_DEG: f32 = LAKESHIRE_YAW_DEG;
 
 /// Half the track and wheelbase, to the wheel centres.
 pub const WHEEL_X: f32 = 0.88;
@@ -83,14 +95,27 @@ pub struct Car {
     pub lateral_speed: f32,
     /// Whether the car is currently in burnout mode (throttle + brake held while stationary).
     pub burnout: bool,
+    /// Spawn/reset position in Bevy world coordinates.
+    pub spawn_pos: Vec3,
+    /// Spawn/reset yaw in radians.
+    pub spawn_yaw: f32,
 }
 
 impl Car {
     pub fn new() -> Self {
+        let is_kalimdor = std::env::var("WOW_MAP").map(|v| v == "1").unwrap_or(false);
+        let (spawn_wow, spawn_yaw_deg) = if is_kalimdor {
+            (CROSSROADS_WOW, CROSSROADS_YAW_DEG)
+        } else {
+            (LAKESHIRE_WOW, LAKESHIRE_YAW_DEG)
+        };
+        let spawn_pos = wow_to_bevy(spawn_wow);
+        let spawn_yaw = spawn_yaw_deg.to_radians();
+
         Self {
-            pos: wow_to_bevy(SPAWN_WOW),
+            pos: spawn_pos,
             vel: Vec3::ZERO,
-            yaw: 0.0,
+            yaw: spawn_yaw,
             up: Vec3::Y,
             steer: 0.0,
             spin: 0.0,
@@ -105,7 +130,37 @@ impl Car {
             handbrake_input: false,
             lateral_speed: 0.0,
             burnout: false,
+            spawn_pos,
+            spawn_yaw,
         }
+    }
+
+    /// Resets all motion and places the car back at its current spawn point.
+    pub fn reset_to_spawn(&mut self) {
+        self.pos = self.spawn_pos;
+        self.vel = Vec3::ZERO;
+        self.yaw = self.spawn_yaw;
+        self.up = Vec3::Y;
+        self.steer = 0.0;
+        self.spin = 0.0;
+        self.placed = false;
+        self.lost = 0.0;
+        self.nitro_cooldown = 0.0;
+        self.nitro_timer = 0.0;
+        self.just_used_nitro = false;
+        self.grounded = false;
+        self.throttle_input = 0.0;
+        self.brake_input = 0.0;
+        self.handbrake_input = false;
+        self.lateral_speed = 0.0;
+        self.burnout = false;
+    }
+
+    /// Sets a new spawn location and resets the car to it.
+    pub fn set_spawn(&mut self, wow_coords: [f32; 3], yaw_rad: f32) {
+        self.spawn_pos = wow_to_bevy(wow_coords);
+        self.spawn_yaw = yaw_rad;
+        self.reset_to_spawn();
     }
 
     /// The speed over the ground in yd/s.
@@ -434,9 +489,7 @@ pub fn drive(
         .map(|m| m.current_trial_idx.is_some())
         .unwrap_or(false);
 
-    if keys.just_pressed(KeyCode::KeyR) && !in_trial && !menu_open {
-        *car = Car::new();
-    }
+    let _ = in_trial;
 
     if !car.placed {
         // Hold in the air and stream the tiles under the spawn, unpaced so they load without

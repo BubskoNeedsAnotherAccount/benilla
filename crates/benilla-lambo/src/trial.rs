@@ -17,8 +17,7 @@ use benilla_world::world_map::CurrentMap;
 use crate::camera::ChaseCam;
 use crate::car::Car;
 
-/// Goldshire, Elwynn Forest in WoW coordinates (x north, y west, z up).
-pub const GOLDSHIRE_WOW: [f32; 3] = [-9465.0, 60.0, 70.0];
+use crate::car::{CROSSROADS_WOW, GOLDSHIRE_WOW, LAKESHIRE_WOW};
 
 /// A single time trial race course definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,11 +110,14 @@ pub struct TimeTrialManager {
     pub best_times: HashMap<String, f32>,
     pub menu_open: bool,
     pub selected_menu_idx: usize,
+    pub free_drive_loc: usize, // 0 = Lakeshire, 1 = Crossroads, 2 = Goldshire
 }
 
 impl Default for TimeTrialManager {
     fn default() -> Self {
         let trials = load_time_trials();
+        let is_kalimdor = std::env::var("WOW_MAP").map(|v| v == "1").unwrap_or(false);
+        let free_drive_loc = if is_kalimdor { 1 } else { 0 };
         Self {
             trials,
             current_trial_idx: None,
@@ -123,6 +125,7 @@ impl Default for TimeTrialManager {
             best_times: HashMap::new(),
             menu_open: false,
             selected_menu_idx: 0,
+            free_drive_loc,
         }
     }
 }
@@ -378,7 +381,7 @@ pub fn handle_trial_input(
 
     // When menu is open, handle keyboard navigation
     if manager.menu_open {
-        let total_items = manager.trials.len() + 2; // +2 for Crossroads and Goldshire Free Driving
+        let total_items = manager.trials.len() + 3; // +3 for Lakeshire, Crossroads and Goldshire Free Driving
         if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW) {
             if manager.selected_menu_idx == 0 {
                 manager.selected_menu_idx = total_items.saturating_sub(1);
@@ -401,7 +404,7 @@ pub fn handle_trial_input(
             manager.menu_open = false;
         }
 
-        // Quick numeric selection (1 = Crossroads, 2 = Goldshire, 3.. = Trials)
+        // Quick numeric selection (1 = Lakeshire, 2 = Crossroads, 3 = Goldshire, 4.. = Trials)
         for (i, key) in [
             KeyCode::Digit1,
             KeyCode::Digit2,
@@ -425,7 +428,7 @@ pub fn handle_trial_input(
         return;
     }
 
-    // 'R' key restarts current mode
+    // 'R' key restarts current mode at its designated spawn point
     if keys.just_pressed(KeyCode::KeyR) {
         if let Some(idx) = manager.current_trial_idx {
             start_trial_by_index(
@@ -435,30 +438,12 @@ pub fn handle_trial_input(
                 &mut chase_cam,
                 &mut current_map,
             );
-        } else if current_map.0 == 0 {
-            // Free driving reset to Goldshire (Eastern Kingdoms)
-            if let Ok(mut car_inst) = car.single_mut() {
-                car_inst.pos =
-                    wow_to_bevy([GOLDSHIRE_WOW[0], GOLDSHIRE_WOW[1], GOLDSHIRE_WOW[2] + 40.0]);
-                car_inst.vel = Vec3::ZERO;
-                car_inst.yaw = 0.0;
-                car_inst.up = Vec3::Y;
-                car_inst.placed = false;
-                car_inst.steer = 0.0;
-                car_inst.spin = 0.0;
-                car_inst.nitro_cooldown = 0.0;
-                car_inst.nitro_timer = 0.0;
-                if let Ok(mut cam) = chase_cam.single_mut() {
-                    cam.yaw = 0.0;
-                    cam.snapped = false;
-                }
-            }
         } else {
-            // Free driving reset to Crossroads (Kalimdor)
+            // Free driving reset to current active spawn location
             if let Ok(mut car_inst) = car.single_mut() {
-                *car_inst = Car::new();
+                car_inst.reset_to_spawn();
                 if let Ok(mut cam) = chase_cam.single_mut() {
-                    cam.yaw = 0.0;
+                    cam.yaw = car_inst.spawn_yaw;
                     cam.snapped = false;
                 }
             }
@@ -467,9 +452,10 @@ pub fn handle_trial_input(
 }
 
 /// Applies a menu choice by index:
-/// - 0 = Free Driving: The Barrens (Crossroads)
-/// - 1 = Free Driving: Elwynn Forest (Goldshire)
-/// - 2..N = Time Trials
+/// - 0 = Free Driving: Redridge Mountains (Lakeshire)
+/// - 1 = Free Driving: The Barrens (Crossroads)
+/// - 2 = Free Driving: Elwynn Forest (Goldshire)
+/// - 3..N = Time Trials
 pub fn apply_menu_choice(
     choice: usize,
     manager: &mut TimeTrialManager,
@@ -478,38 +464,48 @@ pub fn apply_menu_choice(
     current_map: &mut ResMut<CurrentMap>,
 ) {
     if choice == 0 {
+        // Free Driving: Lakeshire (Redridge Mountains, Eastern Kingdoms)
+        manager.current_trial_idx = None;
+        manager.free_drive_loc = 0;
+        manager.state = TrialState::FreeDriving;
+        if current_map.0 != 0 {
+            current_map.0 = 0;
+        }
+        let yaw = (-90.0_f32).to_radians();
+        if let Ok(mut car_inst) = car.single_mut() {
+            car_inst.set_spawn(LAKESHIRE_WOW, yaw);
+        }
+        if let Ok(mut cam) = chase_cam.single_mut() {
+            cam.yaw = yaw;
+            cam.snapped = false;
+        }
+        eprintln!("benilla-lambo: switched to Free Driving (Lakeshire - Redridge Mountains)");
+    } else if choice == 1 {
         // Free Driving: Crossroads (The Barrens, Kalimdor)
         manager.current_trial_idx = None;
+        manager.free_drive_loc = 1;
         manager.state = TrialState::FreeDriving;
         if current_map.0 != 1 {
             current_map.0 = 1;
         }
         if let Ok(mut car_inst) = car.single_mut() {
-            *car_inst = Car::new();
+            car_inst.set_spawn(CROSSROADS_WOW, 0.0);
         }
         if let Ok(mut cam) = chase_cam.single_mut() {
             cam.yaw = 0.0;
             cam.snapped = false;
         }
         eprintln!("benilla-lambo: switched to Free Driving (Crossroads - The Barrens)");
-    } else if choice == 1 {
+    } else if choice == 2 {
         // Free Driving: Goldshire (Elwynn Forest, Eastern Kingdoms)
         manager.current_trial_idx = None;
+        manager.free_drive_loc = 2;
         manager.state = TrialState::FreeDriving;
         if current_map.0 != 0 {
             current_map.0 = 0;
         }
         if let Ok(mut car_inst) = car.single_mut() {
-            car_inst.pos =
-                wow_to_bevy([GOLDSHIRE_WOW[0], GOLDSHIRE_WOW[1], GOLDSHIRE_WOW[2] + 40.0]);
-            car_inst.vel = Vec3::ZERO;
-            car_inst.yaw = 0.0;
-            car_inst.up = Vec3::Y;
-            car_inst.placed = false;
-            car_inst.steer = 0.0;
-            car_inst.spin = 0.0;
-            car_inst.nitro_cooldown = 0.0;
-            car_inst.nitro_timer = 0.0;
+            car_inst.set_spawn(GOLDSHIRE_WOW, 0.0);
         }
         if let Ok(mut cam) = chase_cam.single_mut() {
             cam.yaw = 0.0;
@@ -517,7 +513,7 @@ pub fn apply_menu_choice(
         }
         eprintln!("benilla-lambo: switched to Free Driving (Goldshire - Elwynn Forest)");
     } else {
-        let trial_idx = choice - 2;
+        let trial_idx = choice - 3;
         start_trial_by_index(trial_idx, manager, car, chase_cam, current_map);
     }
 }
@@ -546,7 +542,8 @@ pub fn start_trial_by_index(
     }
 
     // Position car at start, facing towards finish or using the user's finetuned rotation
-    let start_bevy = wow_to_bevy([trial.start[0], trial.start[1], trial.start[2] + 40.0]);
+    let start_coords = [trial.start[0], trial.start[1], trial.start[2] + 40.0];
+    let start_bevy = wow_to_bevy(start_coords);
     let end_bevy = wow_to_bevy(trial.end);
     let fwd_vec = end_bevy - start_bevy;
     let initial_yaw = trial
@@ -555,15 +552,7 @@ pub fn start_trial_by_index(
         .unwrap_or_else(|| (-fwd_vec.x).atan2(-fwd_vec.z));
 
     if let Ok(mut car_inst) = car.single_mut() {
-        car_inst.pos = start_bevy;
-        car_inst.vel = Vec3::ZERO;
-        car_inst.yaw = initial_yaw;
-        car_inst.up = Vec3::Y;
-        car_inst.placed = false; // drop onto terrain as soon as it streams
-        car_inst.steer = 0.0;
-        car_inst.spin = 0.0;
-        car_inst.nitro_cooldown = 0.0;
-        car_inst.nitro_timer = 0.0;
+        car_inst.set_spawn(start_coords, initial_yaw);
     }
 
     if let Ok(mut cam) = chase_cam.single_mut() {
@@ -803,11 +792,11 @@ pub fn render_trial_ui(
                 );
                 ui.add_space(4.0);
 
-                // Option 0: Free Driving (Crossroads)
+                // Option 0: Free Driving (Lakeshire, Redridge Mountains)
                 let is_sel0 = selected == 0;
-                let is_active0 = manager.current_trial_idx.is_none() && current_map.0 == 1;
+                let is_active0 = manager.current_trial_idx.is_none() && manager.free_drive_loc == 0;
                 let free0_text = format!(
-                    "{} [1] The Barrens — Crossroads (Kalimdor) {}",
+                    "{} [1] Redridge Mountains — Lakeshire (Eastern Kingdoms) {}",
                     if is_sel0 { "▶ " } else { "   " },
                     if is_active0 { "(Active)" } else { "" }
                 );
@@ -836,11 +825,11 @@ pub fn render_trial_ui(
 
                 ui.add_space(4.0);
 
-                // Option 1: Free Driving (Goldshire)
+                // Option 1: Free Driving (Crossroads, The Barrens)
                 let is_sel1 = selected == 1;
-                let is_active1 = manager.current_trial_idx.is_none() && current_map.0 == 0;
+                let is_active1 = manager.current_trial_idx.is_none() && manager.free_drive_loc == 1;
                 let free1_text = format!(
-                    "{} [2] Elwynn Forest — Goldshire (Eastern Kingdoms) {}",
+                    "{} [2] The Barrens — Crossroads (Kalimdor) {}",
                     if is_sel1 { "▶ " } else { "   " },
                     if is_active1 { "(Active)" } else { "" }
                 );
@@ -867,6 +856,39 @@ pub fn render_trial_ui(
                     chosen_idx = Some(1);
                 }
 
+                ui.add_space(4.0);
+
+                // Option 2: Free Driving (Goldshire, Elwynn Forest)
+                let is_sel2 = selected == 2;
+                let is_active2 = manager.current_trial_idx.is_none() && manager.free_drive_loc == 2;
+                let free2_text = format!(
+                    "{} [3] Elwynn Forest — Goldshire (Eastern Kingdoms) {}",
+                    if is_sel2 { "▶ " } else { "   " },
+                    if is_active2 { "(Active)" } else { "" }
+                );
+
+                let btn2 = ui.add_sized(
+                    [ui.available_width(), 36.0],
+                    egui::Button::new(
+                        egui::RichText::new(free2_text)
+                            .size(15.0)
+                            .color(if is_sel2 {
+                                egui::Color32::from_rgb(255, 220, 0)
+                            } else {
+                                egui::Color32::WHITE
+                            })
+                            .strong(),
+                    )
+                    .fill(if is_sel2 {
+                        egui::Color32::from_rgb(60, 45, 10)
+                    } else {
+                        egui::Color32::from_black_alpha(100)
+                    }),
+                );
+                if btn2.clicked() {
+                    chosen_idx = Some(2);
+                }
+
                 ui.add_space(10.0);
                 ui.label(
                     egui::RichText::new("TIME TRIAL COURSES:")
@@ -876,9 +898,9 @@ pub fn render_trial_ui(
                 );
                 ui.add_space(4.0);
 
-                // Trial Options (2..N+1)
+                // Trial Options (3..N+2)
                 for (i, trial) in manager.trials.iter().enumerate() {
-                    let option_idx = i + 2;
+                    let option_idx = i + 3;
                     let is_sel = selected == option_idx;
                     let is_active = manager.current_trial_idx == Some(i);
 

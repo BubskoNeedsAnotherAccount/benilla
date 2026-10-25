@@ -41,9 +41,9 @@ pub fn spawn_camera(mut commands: Commands, msaa: Res<MsaaSetting>) {
         Hdr,
         Tonemapping::None,
         FfxGlow::WORLD,
-        Transform::from_translation(wow_to_bevy([-437.0, -2596.0, 400.0]) + Vec3::Y * 20.0),
+        Transform::from_translation(wow_to_bevy(crate::car::SPAWN_WOW) + Vec3::Y * 20.0),
         ChaseCam {
-            yaw: 0.0,
+            yaw: crate::car::SPAWN_YAW_DEG.to_radians(),
             snapped: false,
         },
         AmbientLight {

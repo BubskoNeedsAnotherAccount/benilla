@@ -23,9 +23,9 @@ use benilla_world::build_id::BuildId;
 use benilla_world::schedule::{WorldLive, WorldStage};
 
 fn main() -> AppExit {
-    // The server-less map pick (`world_map`): 1 is Kalimdor, where The Barrens are.
+    // The server-less map pick (`world_map`): 0 is Eastern Kingdoms (Redridge Mountains / Lakeshire), 1 is Kalimdor.
     if std::env::var_os("WOW_MAP").is_none() {
-        std::env::set_var("WOW_MAP", "1");
+        std::env::set_var("WOW_MAP", "0");
     }
 
     let mut app = App::new();
