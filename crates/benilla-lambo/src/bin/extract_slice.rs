@@ -1,9 +1,15 @@
-//! Asset Slice Extractor CLI for benilla-lambo Web / WASM deployment.
+//! Full Continent Asset Extractor for benilla-lambo Web / WASM deployment.
 //!
-//! Scans `time_trials.json` and Free Driving spawn points, samples all route corridors,
-//! discovers all required ADT terrain tiles, WMO objects, M2 doodads, and BLP textures,
-//! and extracts only this minimal slice from the WoW 1.12.1 MPQ patch chain into an
-//! optimized folder or web bundle.
+//! Fully extracts Map ID 0 (Eastern Kingdoms / Azeroth) and Map ID 1 (Kalimdor)
+//! from the WoW 1.12.1 MPQ patch chain, including:
+//! - All ADT terrain tiles for both continents
+//! - Continent WDT and WDL headers
+//! - Base DBC databases required by the world engine
+//! - All WMO buildings, structures, and their group files
+//! - All M2 doodads (trees, props, signs, objects)
+//! - All referenced BLP terrain and model textures
+//!
+//! Features resumable extraction: already extracted files are skipped unless `--force` is given.
 
 use std::collections::HashSet;
 use std::fs;
@@ -12,19 +18,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use serde::Deserialize;
 
 use benilla_adt::{parse_adt, ParsedAdt};
 use benilla_formats::Chain;
 use benilla_m2::parse_m2;
-use benilla_wdt::world_to_tile;
 use benilla_wmo::{parse_wmo, ParsedWmo};
 
 /// Extraction CLI options.
 #[derive(Parser, Debug)]
 #[command(
     name = "extract-slice",
-    about = "Extract only the ADTs, models, and textures needed for benilla-lambo time trials into a web asset bundle",
+    about = "Extract full map data (Map 0: Eastern Kingdoms & Map 1: Kalimdor) from WoW 1.12.1 MPQs for web deployment",
     version
 )]
 struct Args {
@@ -32,28 +36,18 @@ struct Args {
     #[arg(short, long)]
     wow_data: Option<PathBuf>,
 
-    /// Path to the time_trials.json definition file.
-    #[arg(short, long, default_value = "crates/benilla-lambo/assets/time_trials.json")]
-    trials: PathBuf,
-
-    /// Destination directory for the extracted asset slice.
+    /// Destination directory for the extracted assets.
     #[arg(short, long, default_value = "assets/web_slice")]
     output: PathBuf,
 
-    /// Tile padding radius around each waypoint corridor (default: 1 tile margin).
-    #[arg(short, long, default_value_t = 1)]
-    padding: i32,
-}
+    /// Map IDs to extract (0 = Eastern Kingdoms / Azeroth, 1 = Kalimdor).
+    /// Defaults to both Map 0 and Map 1.
+    #[arg(short, long, value_delimiter = ',', default_values_t = vec![0, 1])]
+    maps: Vec<u32>,
 
-#[derive(Deserialize, Debug)]
-#[allow(dead_code)]
-struct RawTimeTrialDef {
-    name: String,
-    map_id: u32,
-    start: [f32; 3],
-    end: [f32; 3],
-    #[serde(default)]
-    rotation: Option<f32>,
+    /// Force overwrite of existing files (default skips already extracted files).
+    #[arg(short, long)]
+    force: bool,
 }
 
 const BASE_DBCS: &[&str] = &[
@@ -69,6 +63,7 @@ const BASE_DBCS: &[&str] = &[
     "DBFilesClient\\ZoneIntroMusicTable.dbc",
     "DBFilesClient\\SoundWaterType.dbc",
     "DBFilesClient\\TerrainType.dbc",
+    "DBFilesClient\\WMOAreaTable.dbc",
 ];
 
 const BASE_WDTS: &[&str] = &[
@@ -78,12 +73,21 @@ const BASE_WDTS: &[&str] = &[
     "World\\Maps\\Kalimdor\\Kalimdor.wdl",
 ];
 
-// Free Driving locations defined in benilla-lambo
-const FREE_DRIVE_SPAWNS: &[(&str, u32, [f32; 3])] = &[
-    ("Lakeshire (Redridge Mountains)", 0, [-9429.1, -2231.4, 110.0]),
-    ("Crossroads (The Barrens)", 1, [-437.0, -2596.0, 96.0]),
-    ("Goldshire (Elwynn Forest)", 0, [-9464.0, 62.0, 56.0]),
-];
+fn map_id_to_name(id: u32) -> Option<&'static str> {
+    match id {
+        0 => Some("Azeroth"),
+        1 => Some("Kalimdor"),
+        _ => None,
+    }
+}
+
+fn map_id_to_display_name(id: u32) -> &'static str {
+    match id {
+        0 => "Eastern Kingdoms (Azeroth)",
+        1 => "Kalimdor",
+        _ => "Custom Map",
+    }
+}
 
 fn normalize_mpq_path(p: &str) -> String {
     p.replace('/', "\\")
@@ -94,44 +98,25 @@ fn path_for_output(base: &Path, mpq_path: &str) -> PathBuf {
     base.join(clean)
 }
 
-fn sample_segment_tiles(
-    start: [f32; 3],
-    end: [f32; 3],
-    padding: i32,
-    out: &mut HashSet<(u32, u32)>,
-) {
-    let dx = end[0] - start[0];
-    let dy = end[1] - start[1];
-    let dist = (dx * dx + dy * dy).sqrt();
-
-    // Sample every ~50 yards to hit every tile along the route
-    let steps = ((dist / 50.0).ceil() as usize).max(1);
-    for i in 0..=steps {
-        let t = i as f32 / steps as f32;
-        let x = start[0] + dx * t;
-        let y = start[1] + dy * t;
-        let (tx, ty) = world_to_tile(x, y);
-
-        for px in -padding..=padding {
-            for py in -padding..=padding {
-                let nx = tx as i32 + px;
-                let ny = ty as i32 + py;
-                if (0..64).contains(&nx) && (0..64).contains(&ny) {
-                    out.insert((nx as u32, ny as u32));
-                }
-            }
-        }
-    }
-}
-
-fn extract_file(chain: &Chain, mpq_path: &str, output_dir: &Path) -> Result<Option<usize>> {
+fn extract_file(
+    chain: &Chain,
+    mpq_path: &str,
+    output_dir: &Path,
+    force: bool,
+) -> Result<Option<usize>> {
     let internal = normalize_mpq_path(mpq_path);
     if !chain.contains(&internal) {
         return Ok(None);
     }
 
-    let bytes = chain.read(&internal)?;
     let out_path = path_for_output(output_dir, &internal);
+    if !force && out_path.exists() {
+        if let Ok(meta) = fs::metadata(&out_path) {
+            return Ok(Some(meta.len() as usize));
+        }
+    }
+
+    let bytes = chain.read(&internal)?;
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -143,7 +128,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     println!("============================================================");
-    println!("🏎️  BENILLA-LAMBO WEB ASSET SLICE EXTRACTOR");
+    println!("🏎️  BENILLA-LAMBO FULL CONTINENT EXTRACTOR");
     println!("============================================================");
 
     // Resolve WoW data directory
@@ -163,9 +148,9 @@ fn main() -> Result<()> {
     };
 
     println!("• WoW Data Path:   {}", wow_data_path.display());
-    println!("• Trials JSON:     {}", args.trials.display());
     println!("• Output Folder:   {}", args.output.display());
-    println!("• Tile Padding:    {} tile(s)", args.padding);
+    println!("• Maps to Extract: {:?}", args.maps);
+    println!("• Force Overwrite: {}", args.force);
 
     // Open MPQ patch chain
     println!("\n[1/5] Opening WoW 1.12.1 MPQ patch chain...");
@@ -173,55 +158,35 @@ fn main() -> Result<()> {
         .with_context(|| format!("Opening MPQ chain at {}", wow_data_path.display()))?;
     println!("✓ Chain mounted successfully (Locale: {:?})", chain.locale());
 
-    // Parse time_trials.json
-    let trials_json = fs::read_to_string(&args.trials)
-        .with_context(|| format!("Reading time trials from {}", args.trials.display()))?;
-    let trials: Vec<RawTimeTrialDef> = serde_json::from_str(&trials_json)
-        .with_context(|| format!("Parsing {}", args.trials.display()))?;
+    // 2. Scan entire 64x64 grid for both continents
+    println!("\n[2/5] Scanning MPQs for all existing ADT tiles across requested maps...");
+    let mut map_tiles: Vec<(u32, u32, u32, String)> = Vec::new(); // (map_id, tx, ty, path)
 
-    // Gather required ADT tiles per map
-    println!("\n[2/5] Calculating required ADT terrain tiles...");
-    let mut map_tiles: HashSet<(u32, u32, u32)> = HashSet::new(); // (map_id, tx, ty)
+    for &map_id in &args.maps {
+        let Some(map_name) = map_id_to_name(map_id) else {
+            eprintln!("⚠️ Warning: Unsupported map ID {map_id}, skipping.");
+            continue;
+        };
 
-    for trial in &trials {
-        let mut tiles = HashSet::new();
-        sample_segment_tiles(trial.start, trial.end, args.padding, &mut tiles);
-        println!(
-            "  • Trial '{}' (Map {}): {} tiles",
-            trial.name,
-            trial.map_id,
-            tiles.len()
-        );
-        for (tx, ty) in tiles {
-            map_tiles.insert((trial.map_id, tx, ty));
-        }
-    }
-
-    // Add free-drive spawns
-    for (name, map_id, coords) in FREE_DRIVE_SPAWNS {
-        let (tx, ty) = world_to_tile(coords[0], coords[1]);
-        let mut spawn_tiles = HashSet::new();
-        for px in -args.padding..=args.padding {
-            for py in -args.padding..=args.padding {
-                let nx = tx as i32 + px;
-                let ny = ty as i32 + py;
-                if (0..64).contains(&nx) && (0..64).contains(&ny) {
-                    spawn_tiles.insert((nx as u32, ny as u32));
+        let mut continent_tiles = 0;
+        for tx in 0..64 {
+            for ty in 0..64 {
+                let adt_path = format!("World\\Maps\\{map_name}\\{map_name}_{tx}_{ty}.adt");
+                if chain.contains(&adt_path) {
+                    map_tiles.push((map_id, tx, ty, adt_path));
+                    continent_tiles += 1;
                 }
             }
         }
         println!(
-            "  • Spawn '{}' (Map {}): {} tiles",
-            name,
+            "  • Map {}: {} -> found {} active ADT terrain tiles",
             map_id,
-            spawn_tiles.len()
+            map_id_to_display_name(map_id),
+            continent_tiles
         );
-        for (tx, ty) in spawn_tiles {
-            map_tiles.insert((*map_id, tx, ty));
-        }
     }
 
-    println!("✓ Total unique ADT tiles to extract: {}", map_tiles.len());
+    println!("✓ Total active ADT tiles to extract: {}", map_tiles.len());
 
     let mut total_extracted_bytes: usize = 0;
     let mut extracted_files_count: usize = 0;
@@ -230,43 +195,46 @@ fn main() -> Result<()> {
     let mut discovered_textures: HashSet<String> = HashSet::new();
 
     // 3. Extract Core DBCs and WDTs
-    println!("\n[3/5] Extracting base DBC catalogs and WDT headers...");
+    println!("\n[3/5] Extracting base DBC catalogs and WDT continent headers...");
     for dbc in BASE_DBCS {
-        if let Some(sz) = extract_file(&chain, dbc, &args.output)? {
+        if let Some(sz) = extract_file(&chain, dbc, &args.output, args.force)? {
             total_extracted_bytes += sz;
             extracted_files_count += 1;
         }
     }
     for wdt in BASE_WDTS {
-        if let Some(sz) = extract_file(&chain, wdt, &args.output)? {
+        if let Some(sz) = extract_file(&chain, wdt, &args.output, args.force)? {
             total_extracted_bytes += sz;
             extracted_files_count += 1;
         }
     }
+    println!("✓ Extracted base DBC and WDT continent descriptors.");
 
     // 4. Extract ADT Tiles and inspect dependencies
-    println!("\n[4/5] Extracting ADT tiles & discovering 3D object dependencies...");
-    let mut adt_count = 0;
-    for &(map_id, tx, ty) in &map_tiles {
-        let map_name = match map_id {
-            0 => "Azeroth",
-            1 => "Kalimdor",
-            _ => continue,
-        };
-        let adt_path = format!("World\\Maps\\{map_name}\\{map_name}_{tx}_{ty}.adt");
-        if !chain.contains(&adt_path) {
-            continue;
+    println!("\n[4/5] Extracting all {} ADT tiles & harvesting 3D dependencies...", map_tiles.len());
+    let total_adts = map_tiles.len();
+    for (idx, &(_, _, _, ref adt_path)) in map_tiles.iter().enumerate() {
+        if idx % 100 == 0 || idx + 1 == total_adts {
+            print!(
+                "\r  Extracting ADTs: [{}/{}] ({:.1}%) ...",
+                idx + 1,
+                total_adts,
+                ((idx + 1) as f64 / total_adts as f64) * 100.0
+            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
         }
 
-        let bytes = chain.read(&adt_path)?;
-        let out_path = path_for_output(&args.output, &adt_path);
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)?;
+        let bytes = chain.read(adt_path)?;
+        let out_path = path_for_output(&args.output, adt_path);
+        if args.force || !out_path.exists() {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&out_path, &bytes)?;
         }
-        fs::write(&out_path, &bytes)?;
         total_extracted_bytes += bytes.len();
         extracted_files_count += 1;
-        adt_count += 1;
 
         // Parse ADT to find textures, WMOs, and M2s
         if let Ok(ParsedAdt::Root(root)) = parse_adt(&mut Cursor::new(&bytes)) {
@@ -287,19 +255,30 @@ fn main() -> Result<()> {
             }
         }
     }
+    println!("\n✓ ADT terrain tiles extracted.");
     println!(
-        "✓ Extracted {} ADTs. Found {} WMOs, {} M2s, {} initial terrain textures.",
-        adt_count,
+        "  Discovered: {} unique WMOs, {} unique M2 doodads, {} terrain texture paths.",
         discovered_wmos.len(),
         discovered_models.len(),
         discovered_textures.len()
     );
 
-    // 5. Extract WMOs (Roots + Groups) and M2s and all referenced BLPs
+    // 5. Extract WMOs (Roots + Groups)
     println!("\n[5/5] Extracting WMO structures, M2 doodads, and BLP textures...");
+    println!("  • Extracting {} WMO structures (and all their interior group files)...", discovered_wmos.len());
     let mut wmo_extracted = 0;
-    for wmo_path in &discovered_wmos {
-        if let Some(sz) = extract_file(&chain, wmo_path, &args.output)? {
+    for (i, wmo_path) in discovered_wmos.iter().enumerate() {
+        if i % 100 == 0 || i + 1 == discovered_wmos.len() {
+            print!(
+                "\r    WMO progress: [{}/{}] ...",
+                i + 1,
+                discovered_wmos.len()
+            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+
+        if let Some(sz) = extract_file(&chain, wmo_path, &args.output, args.force)? {
             total_extracted_bytes += sz;
             extracted_files_count += 1;
             wmo_extracted += 1;
@@ -316,7 +295,7 @@ fn main() -> Result<()> {
                     let stem = wmo_path.strip_suffix(".wmo").unwrap_or(wmo_path);
                     for g in 0..root.n_groups {
                         let group_path = format!("{stem}_{g:03}.wmo");
-                        if let Some(gsz) = extract_file(&chain, &group_path, &args.output)? {
+                        if let Some(gsz) = extract_file(&chain, &group_path, &args.output, args.force)? {
                             total_extracted_bytes += gsz;
                             extracted_files_count += 1;
                         }
@@ -325,10 +304,23 @@ fn main() -> Result<()> {
             }
         }
     }
+    println!("\n  ✓ WMOs and group files extracted.");
 
+    // Extract M2 models
+    println!("  • Extracting {} M2 doodad models...", discovered_models.len());
     let mut m2_extracted = 0;
-    for m2_path in &discovered_models {
-        if let Some(sz) = extract_file(&chain, m2_path, &args.output)? {
+    for (i, m2_path) in discovered_models.iter().enumerate() {
+        if i % 250 == 0 || i + 1 == discovered_models.len() {
+            print!(
+                "\r    M2 progress: [{}/{}] ...",
+                i + 1,
+                discovered_models.len()
+            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+
+        if let Some(sz) = extract_file(&chain, m2_path, &args.output, args.force)? {
             total_extracted_bytes += sz;
             extracted_files_count += 1;
             m2_extracted += 1;
@@ -346,30 +338,42 @@ fn main() -> Result<()> {
             }
         }
     }
+    println!("\n  ✓ M2 models extracted.");
 
+    // Extract all textures
+    println!("  • Extracting {} BLP textures...", discovered_textures.len());
     let mut blp_extracted = 0;
-    for tex_path in &discovered_textures {
-        if let Some(sz) = extract_file(&chain, tex_path, &args.output)? {
+    for (i, tex_path) in discovered_textures.iter().enumerate() {
+        if i % 500 == 0 || i + 1 == discovered_textures.len() {
+            print!(
+                "\r    BLP progress: [{}/{}] ...",
+                i + 1,
+                discovered_textures.len()
+            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+
+        if let Some(sz) = extract_file(&chain, tex_path, &args.output, args.force)? {
             total_extracted_bytes += sz;
             extracted_files_count += 1;
             blp_extracted += 1;
         }
     }
+    println!("\n  ✓ BLP textures extracted.");
 
     let total_mb = total_extracted_bytes as f64 / (1024.0 * 1024.0);
+    let total_gb = total_mb / 1024.0;
     println!("\n============================================================");
-    println!("✨ EXTRACTION COMPLETE!");
+    println!("✨ FULL MAP EXTRACTION COMPLETE!");
     println!("============================================================");
+    println!("• Maps Extracted:         Map 0 (Eastern Kingdoms) & Map 1 (Kalimdor)");
     println!("• Total Files Extracted:  {}", extracted_files_count);
-    println!("  - ADT Terrain Tiles:    {}", adt_count);
+    println!("  - Active ADT Tiles:     {}", total_adts);
     println!("  - WMO World Objects:    {}", wmo_extracted);
     println!("  - M2 Doodad Models:     {}", m2_extracted);
     println!("  - BLP Textures:         {}", blp_extracted);
-    println!("• Total Uncompressed:     {:.2} MB", total_mb);
-    println!(
-        "• Estimated Web Gzip:     ~{:.2} MB",
-        total_mb * 0.38
-    );
+    println!("• Total Extracted Size:   {:.2} MB ({:.2} GB)", total_mb, total_gb);
     println!("• Output Location:        {}", args.output.display());
     println!("============================================================");
 
