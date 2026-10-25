@@ -80,7 +80,13 @@ impl CarAudio {
         // 2. Load static sound effects if sounds directory is available
         let skid_handle = if let Some(ref dir) = sounds_dir {
             let skid_path = dir.join("skid_loop.wav");
-            match StaticSoundData::from_file(&skid_path) {
+            let data_res = std::fs::read(&skid_path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    StaticSoundData::from_cursor(std::io::Cursor::new(bytes))
+                        .map_err(|e| e.to_string())
+                });
+            match data_res {
                 Ok(data) => {
                     let looped = data.loop_region(..);
                     match manager.play(looped) {
@@ -105,7 +111,13 @@ impl CarAudio {
 
         let nitro_data = if let Some(ref dir) = sounds_dir {
             let nitro_path = dir.join("nitro.wav");
-            match StaticSoundData::from_file(&nitro_path) {
+            let data_res = std::fs::read(&nitro_path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    StaticSoundData::from_cursor(std::io::Cursor::new(bytes))
+                        .map_err(|e| e.to_string())
+                });
+            match data_res {
                 Ok(data) => Some(data),
                 Err(e) => {
                     eprintln!("benilla-lambo audio: failed to load {nitro_path:?}: {e}");

@@ -1240,7 +1240,7 @@ pub fn render_trial_ui(
                 .show(ctx, |ui| {
                     egui::Frame::window(&ctx.style())
                         .fill(egui::Color32::from_black_alpha(225))
-                        .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 255)))
+                        .stroke(egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(0, 220, 255)))
                         .corner_radius(8.0)
                         .inner_margin(egui::Margin::symmetric(16, 12))
                         .show(ui, |ui| {
