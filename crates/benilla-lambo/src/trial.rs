@@ -649,10 +649,24 @@ pub fn render_trial_ui(
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
+    // Extract telemetry primitives upfront so we don't hold a long borrow on `car`
+    let car_telemetry = car.iter().next().map(|c| {
+        (
+            c.speed(),
+            c.lateral_speed,
+            c.handbrake_input,
+            c.grounded,
+            c.placed,
+            c.nitro_cooldown,
+            c.nitro_timer,
+            c.pos,
+        )
+    });
+
     // 1. IN-GAME HUD (Top bar when racing, waiting, or finished)
     if let Some(trial) = manager.current_trial().cloned() {
         let finish_bevy = wow_to_bevy(trial.end);
-        let car_pos = car.single().map(|c| c.pos).unwrap_or(Vec3::ZERO);
+        let car_pos = car_telemetry.map(|t| t.7).unwrap_or(Vec3::ZERO);
         let dist_to_finish =
             Vec2::new(car_pos.x - finish_bevy.x, car_pos.z - finish_bevy.z).length();
 
@@ -949,6 +963,204 @@ pub fn render_trial_ui(
             );
             manager.menu_open = false;
         }
+    }
+
+    // 3. DASHBOARD GAUGE CLUSTER (Speedometer & Nitro indicator)
+    // Applies to BOTH Free Driving and Time Trials!
+    if let Some((
+        speed_yd_s,
+        lateral_speed,
+        handbrake,
+        grounded,
+        placed,
+        nitro_cd,
+        nitro_timer,
+        _,
+    )) = car_telemetry
+    {
+        let speed_kmh = (speed_yd_s * 0.9144 * 3.6).round() as i32;
+        let speed_mph = (speed_yd_s * 0.9144 / 1609.344 * 3600.0).round() as i32;
+        let is_boosting = nitro_timer > 0.0;
+        let is_nitro_ready = nitro_cd <= 0.0;
+
+        egui::Area::new(egui::Id::new("dashboard_hud"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-24.0, -24.0))
+            .show(ctx, |ui| {
+                let border_stroke = if is_boosting {
+                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(0, 235, 255))
+                } else {
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 140, 0))
+                };
+
+                egui::Frame::window(&ctx.style())
+                    .fill(egui::Color32::from_black_alpha(220))
+                    .stroke(border_stroke)
+                    .corner_radius(10.0)
+                    .inner_margin(egui::Margin::symmetric(18, 14))
+                    .show(ui, |ui| {
+                        ui.set_min_width(220.0);
+
+                        // Mode tag and status badges
+                        ui.horizontal(|ui| {
+                            if manager.current_trial_idx.is_some() {
+                                ui.label(
+                                    egui::RichText::new("🏁 TRIAL")
+                                        .color(egui::Color32::from_rgb(255, 180, 0))
+                                        .size(11.0)
+                                        .strong(),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("🌍 FREE DRIVE")
+                                        .color(egui::Color32::from_rgb(80, 220, 160))
+                                        .size(11.0)
+                                        .strong(),
+                                );
+                            }
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if handbrake {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(255, 60, 60),
+                                            "BRAKE",
+                                        );
+                                    } else if lateral_speed > 3.2 {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(255, 165, 0),
+                                            "DRIFT",
+                                        );
+                                    } else if !grounded && placed {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(100, 200, 255),
+                                            "AIR",
+                                        );
+                                    }
+                                },
+                            );
+                        });
+
+                        ui.add_space(4.0);
+
+                        // Speedometer readout
+                        let speed_color = if is_boosting {
+                            egui::Color32::from_rgb(0, 255, 255)
+                        } else if speed_kmh >= 320 {
+                            egui::Color32::from_rgb(255, 50, 90)
+                        } else if speed_kmh >= 220 {
+                            egui::Color32::from_rgb(255, 120, 30)
+                        } else if speed_kmh >= 120 {
+                            egui::Color32::from_rgb(255, 220, 50)
+                        } else {
+                            egui::Color32::from_rgb(240, 245, 255)
+                        };
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{:>3}", speed_kmh))
+                                    .color(speed_color)
+                                    .size(44.0)
+                                    .monospace()
+                                    .strong(),
+                            );
+                            ui.vertical(|ui| {
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new("KM/H")
+                                        .color(egui::Color32::WHITE)
+                                        .size(13.0)
+                                        .strong(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{speed_mph} MPH"))
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                        .size(11.0),
+                                );
+                            });
+                        });
+
+                        ui.add_space(4.0);
+
+                        // Speed gauge progress bar (0 to 360 km/h)
+                        let speed_ratio = (speed_kmh as f32 / 360.0).clamp(0.0, 1.0);
+                        let bar_width = ui.available_width();
+                        let (speed_bar_rect, _) = ui
+                            .allocate_exact_size(egui::vec2(bar_width, 6.0), egui::Sense::hover());
+                        ui.painter().rect_filled(
+                            speed_bar_rect,
+                            3.0,
+                            egui::Color32::from_black_alpha(160),
+                        );
+                        if speed_ratio > 0.0 {
+                            let filled_rect = egui::Rect::from_min_size(
+                                speed_bar_rect.min,
+                                egui::vec2(
+                                    speed_bar_rect.width() * speed_ratio,
+                                    speed_bar_rect.height(),
+                                ),
+                            );
+                            ui.painter().rect_filled(filled_rect, 3.0, speed_color);
+                        }
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+
+                        // Nitro indicator section
+                        let (nitro_label, nitro_color, nitro_fill_color, nitro_ratio) =
+                            if is_boosting {
+                                (
+                                    "⚡ NITRO BOOST ACTIVE!".to_string(),
+                                    egui::Color32::from_rgb(0, 255, 255),
+                                    egui::Color32::from_rgb(0, 240, 255),
+                                    (nitro_timer / 1.0).clamp(0.0, 1.0),
+                                )
+                            } else if is_nitro_ready {
+                                (
+                                    "⚡ NITRO READY [SHIFT]".to_string(),
+                                    egui::Color32::from_rgb(60, 255, 140),
+                                    egui::Color32::from_rgb(40, 230, 130),
+                                    1.0_f32,
+                                )
+                            } else {
+                                (
+                                    format!("⚡ NITRO CHARGING ({:.1}s)", nitro_cd),
+                                    egui::Color32::from_rgb(150, 190, 230),
+                                    egui::Color32::from_rgb(30, 130, 230),
+                                    ((10.0 - nitro_cd) / 10.0).clamp(0.0, 1.0),
+                                )
+                            };
+
+                        ui.label(
+                            egui::RichText::new(nitro_label)
+                                .color(nitro_color)
+                                .size(12.0)
+                                .strong(),
+                        );
+
+                        ui.add_space(4.0);
+
+                        // Nitro gauge bar
+                        let (nitro_bar_rect, _) = ui
+                            .allocate_exact_size(egui::vec2(bar_width, 8.0), egui::Sense::hover());
+                        ui.painter().rect_filled(
+                            nitro_bar_rect,
+                            4.0,
+                            egui::Color32::from_black_alpha(180),
+                        );
+                        if nitro_ratio > 0.0 {
+                            let filled_rect = egui::Rect::from_min_size(
+                                nitro_bar_rect.min,
+                                egui::vec2(
+                                    nitro_bar_rect.width() * nitro_ratio,
+                                    nitro_bar_rect.height(),
+                                ),
+                            );
+                            ui.painter().rect_filled(filled_rect, 4.0, nitro_fill_color);
+                        }
+                    });
+            });
     }
 }
 

@@ -116,9 +116,9 @@ fn main() -> AppExit {
             camera::speedometer,
             car::prepare_car_materials,
             sound::update_car_audio,
-            trial::render_trial_ui,
         ),
-    );
+    )
+    .add_systems(bevy_egui::EguiPrimaryContextPass, trial::render_trial_ui);
 
     // After `AssetPlugin`: the loaders go into the live `AssetServer`.
     benilla_assets::register_asset_loaders(&mut app);
