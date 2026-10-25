@@ -13,15 +13,15 @@ use kira::{
 use crate::car::{smooth, Car, TOP_SPEED};
 use crate::engine_synth::{EngineSoundData, EngineSoundHandle};
 
-/// Speed bands for the 7 gears in yd/s (scaled 1.5x to match the scaled car physics).
+/// Speed bands for the 7 gears in yd/s (1 yd/s ≈ 3.3 km/h).
 const GEAR_BOUNDS: [(f32, f32); 7] = [
-    (0.0, 24.0),    // Gear 1: 0..24 yd/s (~0..80 km/h)
-    (24.0, 45.0),   // Gear 2: 24..45 yd/s (~80..150 km/h)
-    (45.0, 69.0),   // Gear 3: 45..69 yd/s (~150..227 km/h)
-    (69.0, 96.0),   // Gear 4: 69..96 yd/s (~227..315 km/h)
-    (96.0, 123.0),  // Gear 5: 96..123 yd/s (~315..405 km/h)
-    (123.0, 150.0), // Gear 6: 123..150 yd/s (~405..495 km/h)
-    (150.0, 200.0), // Gear 7: 150+ yd/s (~495..660+ km/h)
+    (0.0, 16.0),    // Gear 1: 0..16 yd/s (~0..53 km/h)
+    (16.0, 30.0),   // Gear 2: 16..30 yd/s (~53..100 km/h)
+    (30.0, 46.0),   // Gear 3: 30..46 yd/s (~100..152 km/h)
+    (46.0, 64.0),   // Gear 4: 46..64 yd/s (~152..211 km/h)
+    (64.0, 82.0),   // Gear 5: 64..82 yd/s (~211..270 km/h)
+    (82.0, 100.0),  // Gear 6: 82..100 yd/s (~270..330 km/h)
+    (100.0, 150.0), // Gear 7: 100+ yd/s (~330..500 km/h)
 ];
 
 /// Holds Kira's audio manager and active sound handles.
