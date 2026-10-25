@@ -1,4 +1,5 @@
 //! Engine, skid, and nitro sound effects for benilla-lambo powered by Kira.
+//! Uses a real-time procedural physical acoustic engine synthesizer inspired by `enginesound`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,21 +11,41 @@ use kira::{
 };
 
 use crate::car::{smooth, Car, TOP_SPEED};
+use crate::engine_synth::{EngineSoundData, EngineSoundHandle};
+
+/// Speed bands for the 7 gears in yd/s (1 yd/s ≈ 3.3 km/h).
+const GEAR_BOUNDS: [(f32, f32); 7] = [
+    (0.0, 16.0),    // Gear 1: 0..16 yd/s (~0..53 km/h)
+    (16.0, 30.0),   // Gear 2: 16..30 yd/s (~53..100 km/h)
+    (30.0, 46.0),   // Gear 3: 30..46 yd/s (~100..152 km/h)
+    (46.0, 64.0),   // Gear 4: 46..64 yd/s (~152..211 km/h)
+    (64.0, 82.0),   // Gear 5: 64..82 yd/s (~211..270 km/h)
+    (82.0, 100.0),  // Gear 6: 82..100 yd/s (~270..330 km/h)
+    (100.0, 135.0), // Gear 7: 100+ yd/s (~330..445+ km/h)
+];
 
 /// Holds Kira's audio manager and active sound handles.
 #[derive(Resource)]
 pub struct CarAudio {
     manager: AudioManager<DefaultBackend>,
-    engine_handle: Option<StaticSoundHandle>,
+    /// Procedural real-time physical acoustic engine synthesizer handle.
+    synth_handle: Option<EngineSoundHandle>,
+    /// Optional legacy static loop handle (fallback).
+    static_engine_handle: Option<StaticSoundHandle>,
     skid_handle: Option<StaticSoundHandle>,
     nitro_data: Option<StaticSoundData>,
     current_engine_rate: f32,
     current_engine_db: f32,
     current_skid_db: f32,
+    /// Transmission state for procedural audio.
+    current_gear: usize,
+    simulated_rpm: f32,
+    gear_shift_timer: f32,
+    limiter_timer: f32,
 }
 
 impl CarAudio {
-    /// Attempts to locate `assets/sounds/` and load all three sound effects.
+    /// Attempts to locate `assets/sounds/` and load all sound effects.
     pub fn new() -> Option<Self> {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let candidates = [
@@ -32,11 +53,7 @@ impl CarAudio {
             PathBuf::from("assets/sounds"),
             PathBuf::from("crates/benilla-lambo/assets/sounds"),
         ];
-        let sounds_dir = candidates.into_iter().find(|p| p.exists())?;
-
-        let engine_path = sounds_dir.join("engine_loop.wav");
-        let skid_path = sounds_dir.join("skid_loop.wav");
-        let nitro_path = sounds_dir.join("nitro.wav");
+        let sounds_dir = candidates.into_iter().find(|p| p.exists());
 
         let mut manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())
         {
@@ -47,70 +64,78 @@ impl CarAudio {
             }
         };
 
-        let engine_handle = match StaticSoundData::from_file(&engine_path) {
-            Ok(data) => {
-                let looped = data.loop_region(..);
-                match manager.play(looped) {
-                    Ok(mut h) => {
-                        h.set_volume(Decibels(-6.0), Tween::default());
-                        h.set_playback_rate(0.70, Tween::default());
-                        Some(h)
-                    }
-                    Err(e) => {
-                        eprintln!("benilla-lambo audio: failed to play engine loop: {e}");
-                        None
-                    }
-                }
+        // 1. Initialize real-time procedural physical engine synthesizer (48 kHz)
+        let synth_data = EngineSoundData::new(48000);
+        let synth_handle = match manager.play(synth_data) {
+            Ok(h) => {
+                eprintln!("benilla-lambo audio: procedural V10 synthesizer online");
+                Some(h)
             }
             Err(e) => {
-                eprintln!("benilla-lambo audio: failed to load {engine_path:?}: {e}");
+                eprintln!("benilla-lambo audio: failed to start procedural synthesizer: {e}");
                 None
             }
         };
 
-        let skid_handle = match StaticSoundData::from_file(&skid_path) {
-            Ok(data) => {
-                let looped = data.loop_region(..);
-                match manager.play(looped) {
-                    Ok(mut h) => {
-                        h.set_volume(Decibels::SILENCE, Tween::default());
-                        Some(h)
-                    }
-                    Err(e) => {
-                        eprintln!("benilla-lambo audio: failed to play skid loop: {e}");
-                        None
+        // 2. Load static sound effects if sounds directory is available
+        let skid_handle = if let Some(ref dir) = sounds_dir {
+            let skid_path = dir.join("skid_loop.wav");
+            match StaticSoundData::from_file(&skid_path) {
+                Ok(data) => {
+                    let looped = data.loop_region(..);
+                    match manager.play(looped) {
+                        Ok(mut h) => {
+                            h.set_volume(Decibels::SILENCE, Tween::default());
+                            Some(h)
+                        }
+                        Err(e) => {
+                            eprintln!("benilla-lambo audio: failed to play skid loop: {e}");
+                            None
+                        }
                     }
                 }
+                Err(e) => {
+                    eprintln!("benilla-lambo audio: failed to load {skid_path:?}: {e}");
+                    None
+                }
             }
-            Err(e) => {
-                eprintln!("benilla-lambo audio: failed to load {skid_path:?}: {e}");
-                None
-            }
+        } else {
+            None
         };
 
-        let nitro_data = match StaticSoundData::from_file(&nitro_path) {
-            Ok(data) => Some(data),
-            Err(e) => {
-                eprintln!("benilla-lambo audio: failed to load {nitro_path:?}: {e}");
-                None
+        let nitro_data = if let Some(ref dir) = sounds_dir {
+            let nitro_path = dir.join("nitro.wav");
+            match StaticSoundData::from_file(&nitro_path) {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    eprintln!("benilla-lambo audio: failed to load {nitro_path:?}: {e}");
+                    None
+                }
             }
+        } else {
+            None
         };
 
         eprintln!(
-            "benilla-lambo audio: initialized (engine: {}, skid: {}, nitro: {})",
-            engine_handle.is_some(),
+            "benilla-lambo audio: initialized (procedural_v10: {}, skid: {}, nitro: {})",
+            synth_handle.is_some(),
             skid_handle.is_some(),
             nitro_data.is_some()
         );
 
         Some(Self {
             manager,
-            engine_handle,
+            synth_handle,
+            static_engine_handle: None,
             skid_handle,
             nitro_data,
             current_engine_rate: 0.70,
             current_engine_db: -6.0,
             current_skid_db: -60.0,
+            current_gear: 1,
+            simulated_rpm: 850.0,
+            gear_shift_timer: 0.0,
+            limiter_timer: 0.0,
         })
     }
 }
@@ -130,42 +155,118 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
         if let Some(ref nitro_data) = audio.nitro_data {
             let mut sound = nitro_data.clone();
             sound.settings.volume = Decibels(1.5).into();
-            let _ = audio.manager.play(sound);
+            audio.manager.play(sound).ok();
         }
     }
 
     let speed = car.speed();
+    let throttle_pos = car.throttle_input.max(0.0);
 
-    // 2. Engine sound loop modulation
-    if let Some(ref mut engine) = audio.engine_handle {
+    // 2. Procedural Engine Sound Synthesis (V10 physical model)
+    if let Some(ref synth) = audio.synth_handle {
+        if !car.placed {
+            synth.set_volume(0.0);
+            synth.set_rpm(850.0);
+        } else {
+            audio.gear_shift_timer = (audio.gear_shift_timer - dt).max(0.0);
+            audio.limiter_timer += dt;
+
+            // Handbrake held / neutral revving
+            if car.handbrake_input {
+                let target_rpm = if throttle_pos > 0.05 {
+                    850.0 + throttle_pos * 6400.0
+                } else {
+                    850.0
+                };
+                let rate = if throttle_pos > 0.05 { 16.0 } else { 8.0 };
+                audio.simulated_rpm += (target_rpm - audio.simulated_rpm) * smooth(dt, rate);
+
+                synth.set_rpm(audio.simulated_rpm);
+                synth.set_throttle(throttle_pos);
+                synth.set_volume(0.30 + throttle_pos * 0.15);
+            } else {
+                // Determine target gear based on vehicle speed
+                let mut target_gear = audio.current_gear;
+                for (i, &(low, high)) in GEAR_BOUNDS.iter().enumerate() {
+                    let g = i + 1;
+                    if g > target_gear && speed > high * 0.95 {
+                        target_gear = g;
+                    }
+                    if g < target_gear && speed < low * 0.85 {
+                        target_gear = g;
+                    }
+                }
+                target_gear = target_gear.clamp(1, 7);
+
+                // Dual-clutch quick-shift cut effect
+                if target_gear != audio.current_gear {
+                    audio.current_gear = target_gear;
+                    audio.gear_shift_timer = 0.08;
+                }
+
+                let gear_idx = (audio.current_gear - 1).min(6);
+                let (gear_low, gear_high) = GEAR_BOUNDS[gear_idx];
+                let gear_progress =
+                    ((speed - gear_low) / (gear_high - gear_low).max(1.0)).clamp(0.0, 1.05);
+
+                let base_rpm = if audio.current_gear == 1 {
+                    if speed < 1.0 {
+                        if throttle_pos > 0.05 {
+                            850.0 + throttle_pos * 3500.0 // launch slip
+                        } else {
+                            850.0
+                        }
+                    } else {
+                        850.0 + gear_progress * 7350.0
+                    }
+                } else {
+                    4800.0 + gear_progress * 3450.0
+                };
+
+                // Nitro surge
+                let nitro_rpm = if car.nitro_timer > 0.0 {
+                    1200.0 * (car.nitro_timer / 1.0)
+                } else {
+                    0.0
+                };
+
+                let mut target_rpm = (base_rpm + nitro_rpm).min(8650.0);
+
+                // Rev limiter bounce near top speed
+                if speed >= TOP_SPEED * 0.98 {
+                    let bounce = (audio.limiter_timer * 35.0).sin();
+                    target_rpm = if bounce > 0.1 { 8400.0 } else { 8650.0 };
+                }
+
+                let rpm_smooth_rate = if throttle_pos > 0.05 { 14.0 } else { 7.0 };
+                audio.simulated_rpm += (target_rpm - audio.simulated_rpm) * smooth(dt, rpm_smooth_rate);
+
+                let effective_throttle = if audio.gear_shift_timer > 0.0 {
+                    0.0
+                } else {
+                    throttle_pos
+                };
+
+                let speed_ratio = (speed / TOP_SPEED).clamp(0.0, 1.0);
+                let target_vol = 0.30 + speed_ratio * 0.15 + (if car.nitro_timer > 0.0 { 0.15 } else { 0.0 });
+
+                synth.set_rpm(audio.simulated_rpm);
+                synth.set_throttle(effective_throttle);
+                synth.set_volume(target_vol);
+            }
+        }
+    } else if let Some(ref mut engine) = audio.static_engine_handle {
+        // Fallback for static loop if procedural synth was unavailable
         if !car.placed {
             engine.set_volume(Decibels::SILENCE, Tween::default());
         } else {
-            // Speed component
             let speed_ratio = (speed / TOP_SPEED).clamp(0.0, 1.8);
-            let throttle_rev = if car.throttle_input > 0.0 {
-                0.22 * car.throttle_input
-            } else if car.throttle_input < 0.0 {
-                0.12 * car.throttle_input.abs()
-            } else {
-                0.0
-            };
-            let nitro_rev = if car.nitro_timer > 0.0 {
-                0.55 * (car.nitro_timer / 1.0)
-            } else {
-                0.0
-            };
-
-            // Base rate: 0.75 idle -> up to ~2.4x at top speed + throttle + nitro
-            let target_rate =
-                (0.75 + speed_ratio * 1.35 + throttle_rev + nitro_rev).clamp(0.6, 2.8);
+            let target_rate = (0.75 + speed_ratio * 1.35).clamp(0.6, 2.8);
             audio.current_engine_rate +=
                 (target_rate - audio.current_engine_rate) * smooth(dt, 8.0);
             engine.set_playback_rate(audio.current_engine_rate as f64, Tween::default());
 
-            // Volume: idle is -6 dB, driving accelerates up to 0 dB, nitro up to +2.0 dB
-            let target_db =
-                -6.0 + speed_ratio * 4.5 + (if car.nitro_timer > 0.0 { 3.5 } else { 0.0 });
+            let target_db = -6.0 + speed_ratio * 4.5;
             audio.current_engine_db += (target_db - audio.current_engine_db) * smooth(dt, 6.0);
             engine.set_volume(Decibels(audio.current_engine_db), Tween::default());
         }
@@ -196,7 +297,6 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
             let intensity = lateral_intensity
                 .max(handbrake_intensity)
                 .max(brake_intensity);
-            // Map 0..1 to -16 dB .. 0 dB
             let target_db = -16.0 + intensity * 16.0;
             audio.current_skid_db += (target_db - audio.current_skid_db) * smooth(dt, 14.0);
             skid.set_volume(Decibels(audio.current_skid_db), Tween::default());
@@ -204,7 +304,6 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
             let skid_rate = 0.95 + (speed / TOP_SPEED).clamp(0.0, 1.0) * 0.25;
             skid.set_playback_rate(skid_rate as f64, Tween::default());
         } else {
-            // Fade out quickly to silence
             audio.current_skid_db += (-60.0 - audio.current_skid_db) * smooth(dt, 16.0);
             if audio.current_skid_db <= -56.0 {
                 skid.set_volume(

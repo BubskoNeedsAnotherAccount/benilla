@@ -11,6 +11,7 @@
 
 mod camera;
 mod car;
+mod engine_synth;
 mod sound;
 mod trial;
 
