@@ -12,6 +12,7 @@
 mod camera;
 mod car;
 mod engine_synth;
+mod smoke;
 mod sound;
 mod trial;
 
@@ -94,7 +95,12 @@ fn main() -> AppExit {
 
     app.add_systems(
         Startup,
-        (car::spawn_car, camera::spawn_camera, trial::setup_markers)
+        (
+            car::spawn_car,
+            camera::spawn_camera,
+            trial::setup_markers,
+            smoke::setup_tire_smoke,
+        )
             .after(benilla_assets::AssetSet::Open),
     )
     .add_systems(
@@ -117,6 +123,8 @@ fn main() -> AppExit {
             camera::speedometer,
             car::prepare_car_materials,
             sound::update_car_audio,
+            smoke::spawn_tire_smoke,
+            smoke::update_tire_smoke,
         ),
     )
     .add_systems(bevy_egui::EguiPrimaryContextPass, trial::render_trial_ui);

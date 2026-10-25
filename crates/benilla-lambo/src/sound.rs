@@ -221,7 +221,9 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 let (rpm_min, rpm_max) = GEAR_RPM_RANGES[gear_idx];
 
                 let base_rpm = if audio.current_gear == 1 {
-                    if speed < 1.0 {
+                    if car.burnout {
+                        5200.0
+                    } else if speed < 1.0 {
                         if throttle_pos > 0.05 {
                             850.0 + throttle_pos * 1600.0 // launch slip (up to ~2,450 RPM)
                         } else {
@@ -293,8 +295,9 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
         let v_f = car.vel.dot(fwd);
         let is_skidding = car.grounded
             && (car.lateral_speed > 3.0
+                || car.burnout
                 || (car.handbrake_input && speed > 5.0)
-                || (car.throttle_input < 0.0 && v_f > 12.0));
+                || (car.brake_input > 0.0 && v_f > 10.0));
 
         if is_skidding {
             let lateral_intensity = ((car.lateral_speed - 2.5) / 10.0).clamp(0.0, 1.0);
@@ -303,15 +306,17 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
             } else {
                 0.0
             };
-            let brake_intensity = if car.throttle_input < 0.0 && v_f > 12.0 {
+            let brake_intensity = if car.brake_input > 0.0 && v_f > 10.0 {
                 (v_f / 35.0).clamp(0.2, 0.8)
             } else {
                 0.0
             };
+            let burnout_intensity = if car.burnout { 0.85 } else { 0.0 };
 
             let intensity = lateral_intensity
                 .max(handbrake_intensity)
-                .max(brake_intensity);
+                .max(brake_intensity)
+                .max(burnout_intensity);
             let target_db = -16.0 + intensity * 16.0;
             audio.current_skid_db += (target_db - audio.current_skid_db) * smooth(dt, 14.0);
             skid.set_volume(Decibels(audio.current_skid_db), Tween::default());

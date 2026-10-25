@@ -19,11 +19,11 @@ use benilla_world::view::Viewer;
 pub const SPAWN_WOW: [f32; 3] = [-437.0, -2596.0, 400.0];
 
 /// Half the track and wheelbase, to the wheel centres.
-const WHEEL_X: f32 = 0.88;
-const WHEEL_Z: f32 = 1.38;
-const WHEEL_R: f32 = 0.34;
+pub const WHEEL_X: f32 = 0.88;
+pub const WHEEL_Z: f32 = 1.38;
+pub const WHEEL_R: f32 = 0.34;
 /// Body centre height above the ground when the wheels rest on it.
-const RIDE: f32 = 0.48;
+pub const RIDE: f32 = 0.48;
 /// Front axle to rear axle.
 const WHEELBASE: f32 = 2.76;
 
@@ -73,12 +73,16 @@ pub struct Car {
     pub just_used_nitro: bool,
     /// Whether wheels are currently touching terrain.
     pub grounded: bool,
-    /// Driver's current throttle input (-1.0 to 1.0).
+    /// Driver's current throttle input (0.0 to 1.0).
     pub throttle_input: f32,
+    /// Driver's current brake input (0.0 to 1.0).
+    pub brake_input: f32,
     /// Driver's handbrake state.
     pub handbrake_input: bool,
     /// Absolute lateral speed in yards/sec (for skid detection).
     pub lateral_speed: f32,
+    /// Whether the car is currently in burnout mode (throttle + brake held while stationary).
+    pub burnout: bool,
 }
 
 impl Car {
@@ -97,8 +101,10 @@ impl Car {
             just_used_nitro: false,
             grounded: false,
             throttle_input: 0.0,
+            brake_input: 0.0,
             handbrake_input: false,
             lateral_speed: 0.0,
+            burnout: false,
         }
     }
 
@@ -112,7 +118,7 @@ impl Car {
         basis(self.yaw, self.up)
     }
 
-    fn rotation(&self) -> Quat {
+    pub fn rotation(&self) -> Quat {
         let (f, r) = self.basis();
         Quat::from_mat3(&Mat3::from_cols(r, self.up, -f))
     }
@@ -139,25 +145,22 @@ pub struct Wheel {
 /// The driver's inputs for a frame.
 struct Input {
     throttle: f32,
+    brake: f32,
     steer: f32,
     handbrake: bool,
 }
 
 impl Input {
     fn read(keys: &ButtonInput<KeyCode>) -> Self {
-        let axis = |pos: &[KeyCode], neg: &[KeyCode]| {
-            let on = |set: &[KeyCode]| set.iter().any(|k| keys.pressed(*k));
-            f32::from(u8::from(on(pos))) - f32::from(u8::from(on(neg)))
-        };
+        let pressed = |keys_slice: &[KeyCode]| keys_slice.iter().any(|k| keys.pressed(*k));
+        let throttle = if pressed(&[KeyCode::KeyW, KeyCode::ArrowUp]) { 1.0 } else { 0.0 };
+        let brake = if pressed(&[KeyCode::KeyS, KeyCode::ArrowDown]) { 1.0 } else { 0.0 };
+        let steer = (if pressed(&[KeyCode::KeyD, KeyCode::ArrowRight]) { 1.0 } else { 0.0 })
+            - (if pressed(&[KeyCode::KeyA, KeyCode::ArrowLeft]) { 1.0 } else { 0.0 });
         Self {
-            throttle: axis(
-                &[KeyCode::KeyW, KeyCode::ArrowUp],
-                &[KeyCode::KeyS, KeyCode::ArrowDown],
-            ),
-            steer: axis(
-                &[KeyCode::KeyD, KeyCode::ArrowRight],
-                &[KeyCode::KeyA, KeyCode::ArrowLeft],
-            ),
+            throttle,
+            brake,
+            steer,
             handbrake: keys.pressed(KeyCode::Space),
         }
     }
@@ -471,6 +474,7 @@ pub fn drive(
     let input = if menu_open {
         Input {
             throttle: 0.0,
+            brake: 0.0,
             steer: 0.0,
             handbrake: true,
         }
@@ -580,9 +584,11 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
 
     car.grounded = grounded;
     car.throttle_input = input.throttle;
+    car.brake_input = input.brake;
     car.handbrake_input = input.handbrake;
     if !grounded {
-        car.lateral_speed = car.vel.dot(right).abs();
+        car.lateral_speed = 0.0;
+        car.burnout = false;
     }
 
     if grounded {
@@ -597,29 +603,58 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
         } else {
             TOP_SPEED
         };
-        let mut a = 0.0;
-        if input.throttle > 0.0 || is_nitro {
-            a = if v_f < -1.0 {
+
+        if input.throttle > 0.0 && input.brake > 0.0 {
+            // Simultaneous Acceleration + Braking:
+            if v_f.abs() < 4.0 {
+                // Burnout: front brakes clamp while rear wheels spin
+                car.burnout = true;
+                v_f *= (-25.0 * dt).exp();
+                if v_f.abs() < 0.05 {
+                    v_f = 0.0;
+                }
+                car.spin -= 45.0 * dt;
+            } else {
+                car.burnout = false;
+                // Braking with throttle at speed: brake deceleration dominates
+                let brake_force = BRAKE_DECEL;
+                let engine_force = ENGINE_ACCEL * (1.0 - (v_f / top).clamp(0.0, 1.0));
+                let net_a = engine_force - brake_force;
+                v_f += net_a * dt;
+                if v_f < 0.0 {
+                    v_f = 0.0;
+                }
+            }
+        } else if input.throttle > 0.0 || is_nitro {
+            car.burnout = false;
+            let mut a = if v_f < -1.0 {
                 BRAKE_DECEL
             } else {
                 let accel_mult = if is_nitro { 2.5 } else { 1.0 };
                 ENGINE_ACCEL * accel_mult * (1.0 - v_f / top).clamp(0.0, 1.0)
             };
-        } else if input.throttle < 0.0 {
-            a = if v_f > 1.0 {
+            a -= v_f * 0.15 + v_f * v_f.abs() * 0.0004;
+            v_f += a * dt;
+        } else if input.brake > 0.0 {
+            car.burnout = false;
+            let mut a = if v_f > 0.8 {
                 -BRAKE_DECEL
             } else {
                 -REVERSE_ACCEL * (1.0 - (-v_f / REVERSE_MAX)).clamp(0.0, 1.0)
             };
+            a -= v_f * 0.15 + v_f * v_f.abs() * 0.0004;
+            v_f += a * dt;
+        } else {
+            car.burnout = false;
+            let a = -v_f * 0.25 - v_f * v_f.abs() * 0.0004;
+            v_f += a * dt;
+            if v_f.abs() < 0.3 {
+                v_f = 0.0;
+            }
         }
-        // Rolling and air drag.
-        a -= v_f * 0.15 + v_f * v_f.abs() * 0.0004;
-        v_f += a * dt;
-        if input.throttle == 0.0 && !is_nitro && v_f.abs() < 0.5 {
-            v_f = 0.0;
-        }
+
         if input.handbrake {
-            v_f *= (-0.35 * dt).exp();
+            v_f *= (-3.0 * dt).exp();
         }
         v_r *= (-(if input.handbrake {
             GRIP_HANDBRAKE
@@ -659,7 +694,9 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
     }
 
     car.pos += car.vel * dt;
-    car.spin -= car.vel.dot(fwd) / WHEEL_R * dt;
+    if !car.burnout {
+        car.spin -= car.vel.dot(fwd) / WHEEL_R * dt;
+    }
     hit_walls(car, dt, world);
 }
 

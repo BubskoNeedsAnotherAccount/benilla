@@ -660,6 +660,8 @@ pub fn render_trial_ui(
             c.nitro_cooldown,
             c.nitro_timer,
             c.pos,
+            c.burnout,
+            c.brake_input,
         )
     });
 
@@ -976,6 +978,8 @@ pub fn render_trial_ui(
         nitro_cd,
         nitro_timer,
         _,
+        burnout,
+        brake_input,
     )) = car_telemetry
     {
         let speed_kmh = (speed_yd_s * 0.9144 * 3.6).round() as i32;
@@ -1021,7 +1025,22 @@ pub fn render_trial_ui(
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if handbrake {
+                                    if !grounded && placed {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(100, 200, 255),
+                                            "AIR",
+                                        );
+                                    } else if burnout {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(255, 120, 20),
+                                            "BURNOUT",
+                                        );
+                                    } else if handbrake {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(255, 60, 60),
+                                            "HANDBRAKE",
+                                        );
+                                    } else if brake_input > 0.0 && speed_kmh > 5 {
                                         ui.colored_label(
                                             egui::Color32::from_rgb(255, 60, 60),
                                             "BRAKE",
@@ -1030,11 +1049,6 @@ pub fn render_trial_ui(
                                         ui.colored_label(
                                             egui::Color32::from_rgb(255, 165, 0),
                                             "DRIFT",
-                                        );
-                                    } else if !grounded && placed {
-                                        ui.colored_label(
-                                            egui::Color32::from_rgb(100, 200, 255),
-                                            "AIR",
                                         );
                                     }
                                 },
