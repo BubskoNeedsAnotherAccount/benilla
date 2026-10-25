@@ -184,6 +184,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 synth.set_rpm(audio.simulated_rpm);
                 synth.set_throttle(throttle_pos);
                 synth.set_volume(0.36 + throttle_pos * 0.18);
+                synth.set_drivetrain(0.0, 1, false);
             } else {
                 // Automatic transmission gear selection with hysteresis
                 let mut target_gear = audio.current_gear;
@@ -266,6 +267,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 synth.set_rpm(audio.simulated_rpm);
                 synth.set_throttle(effective_throttle);
                 synth.set_volume(target_vol);
+                synth.set_drivetrain(speed, audio.current_gear, audio.gear_shift_timer > 0.0);
             }
         }
     } else if let Some(ref mut engine) = audio.static_engine_handle {

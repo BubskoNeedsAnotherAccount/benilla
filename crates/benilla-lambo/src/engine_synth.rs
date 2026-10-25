@@ -236,6 +236,12 @@ pub struct Cylinder {
     pub cyl_sound: f32,
     #[serde(skip)]
     pub extractor_exhaust: f32,
+    #[serde(skip)]
+    pub cycle_variance: f32,
+    #[serde(skip)]
+    pub last_crank: f32,
+    #[serde(skip)]
+    pub rng_state: u32,
 }
 
 impl Cylinder {
@@ -248,8 +254,25 @@ impl Cylinder {
         exhaust_valve_shift: f32,
     ) -> (f32, f32, f32, bool) {
         let crank = (crank_pos + self.crank_offset).fract();
+
+        // Roll per-cycle organic combustion pressure variance ONCE at the start of each power stroke.
+        // Holding it constant throughout the stroke guarantees zero digital clicking or crackle,
+        // while destroying the sterile, mathematically rigid synthesizer loop feeling.
+        if self.last_crank < 0.50 && crank >= 0.50 {
+            if self.rng_state == 0 {
+                self.rng_state = 0x9e3779b9;
+            }
+            self.rng_state ^= self.rng_state << 13;
+            self.rng_state ^= self.rng_state >> 17;
+            self.rng_state ^= self.rng_state << 5;
+            let norm = (self.rng_state as f32) / (u32::MAX as f32);
+            self.cycle_variance = 0.96 + norm * 0.08;
+        }
+        self.last_crank = crank;
+
+        let variance = if self.cycle_variance == 0.0 { 1.0 } else { self.cycle_variance };
         self.cyl_sound = piston_motion(crank) * self.piston_motion_factor
-            + fuel_ignition(crank, self.ignition_time) * self.ignition_factor;
+            + fuel_ignition(crank, self.ignition_time) * self.ignition_factor * variance;
 
         let ex_valve = exhaust_valve((crank + exhaust_valve_shift).fract());
         let in_valve = intake_valve((crank + intake_valve_shift).fract());
@@ -367,6 +390,10 @@ pub struct Generator {
     pub exhaust_lowpass: LowPassFilter,
     pub sub_bass_filter: LowPassFilter,
     pub intake_lowpass: LowPassFilter,
+    pub exhaust_flow_lp: LowPassFilter,
+    pub exhaust_noise: Noise,
+    pub valvetrain_bp: LowPassFilter,
+    pub valvetrain_hp: LowPassFilter,
     pub throttle_smoothed: f32,
 }
 
@@ -381,6 +408,10 @@ impl Generator {
             exhaust_lowpass: LowPassFilter::new(cutoff, samples_per_second),
             sub_bass_filter: LowPassFilter::new(180.0, samples_per_second),
             intake_lowpass: LowPassFilter::new(1400.0, samples_per_second),
+            exhaust_flow_lp: LowPassFilter::new(950.0, samples_per_second),
+            exhaust_noise: Noise::new(0x42424242),
+            valvetrain_bp: LowPassFilter::new(3200.0, samples_per_second),
+            valvetrain_hp: LowPassFilter::new(2200.0, samples_per_second),
             throttle_smoothed: 0.0,
         }
     }
@@ -443,11 +474,21 @@ impl Generator {
         // 3. Acoustic exhaust filter - open and clear, taming only ultrasonic frequencies
         let deep_exhaust = self.exhaust_lowpass.filter(raspy_exhaust);
 
-        // 4. Sub-bass visceral displacement punch from pure physical cylinder pressure strokes
-        // (Real mechanical impulse thud, zero synthetic sine waves)
+        // 4. Turbulent exhaust gas rush
+        // Gas jetting through pipes under cylinder blowdown pressure and throttle
+        let gas_pressure = last_exhaust_collector.abs().min(6.0);
+        let raw_noise = self.exhaust_noise.step();
+        let gas_flow = self.exhaust_flow_lp.filter(raw_noise)
+            * (gas_pressure * 0.04 + self.throttle_smoothed * 0.08);
+
+        // 5. Subtle mechanical valvetrain clatter (tappet/cam tick in cylinder head)
+        let valvetrain_raw = self.valvetrain_bp.filter(engine_vibration * 0.20);
+        let valvetrain = valvetrain_raw - self.valvetrain_hp.filter(valvetrain_raw);
+
+        // 6. Sub-bass visceral displacement punch from pure physical cylinder pressure strokes
         let sub_bass = self.sub_bass_filter.filter(engine_vibration * 1.6);
 
-        // 5. Crisp induction intake roar (open-air throttle body acoustics)
+        // 7. Crisp induction intake roar (open-air throttle body acoustics)
         let intake_roar = self
             .intake_lowpass
             .filter(self.engine.intake_collector / num_cyl);
@@ -456,9 +497,9 @@ impl Generator {
         let dynamic_exhaust = self.engine.exhaust_volume * (0.85 + 0.35 * thr);
         let dynamic_intake = self.engine.intake_volume * (0.50 + 0.80 * thr);
 
-        let mixed = (deep_exhaust * dynamic_exhaust
+        let mixed = ((deep_exhaust + gas_flow) * dynamic_exhaust
             + sub_bass * self.engine.engine_vibrations_volume
-            + intake_roar * dynamic_intake)
+            + (intake_roar + valvetrain) * dynamic_intake)
             * self.volume;
 
         // DC blocking filter subtraction
@@ -632,6 +673,9 @@ pub fn build_engine_from_config(cfg: &LamboConfig, samples_per_second: u32) -> E
             ignition_time: 0.18,
             cyl_sound: 0.0,
             extractor_exhaust: 0.0,
+            cycle_variance: 1.0,
+            last_crank: 0.0,
+            rng_state: 0x1337BEEF ^ ((i as u32 + 1) * 0x9e3779b9),
         });
     }
 
@@ -698,6 +742,9 @@ pub struct EngineSoundHandle {
     rpm: Arc<AtomicU32>,
     throttle: Arc<AtomicU32>,
     volume: Arc<AtomicU32>,
+    speed: Arc<AtomicU32>,
+    gear: Arc<AtomicU32>,
+    shift_pop: Arc<AtomicBool>,
     #[allow(dead_code)]
     stopped: Arc<AtomicBool>,
 }
@@ -724,6 +771,14 @@ impl EngineSoundHandle {
         );
     }
 
+    pub fn set_drivetrain(&self, speed: f32, gear: usize, is_shifting: bool) {
+        self.speed.store((speed.max(0.0) * 100.0).round() as u32, Ordering::Relaxed);
+        self.gear.store(gear.clamp(1, 7) as u32, Ordering::Relaxed);
+        if is_shifting {
+            self.shift_pop.store(true, Ordering::Relaxed);
+        }
+    }
+
     #[allow(dead_code)]
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
@@ -738,12 +793,18 @@ impl SoundData for EngineSoundData {
         let rpm = Arc::new(AtomicU32::new(850));
         let throttle = Arc::new(AtomicU32::new(0));
         let volume = Arc::new(AtomicU32::new((self.volume * 1000.0) as u32));
+        let speed = Arc::new(AtomicU32::new(0));
+        let gear = Arc::new(AtomicU32::new(1));
+        let shift_pop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::new(AtomicBool::new(false));
 
         let handle = EngineSoundHandle {
             rpm: rpm.clone(),
             throttle: throttle.clone(),
             volume: volume.clone(),
+            speed: speed.clone(),
+            gear: gear.clone(),
+            shift_pop: shift_pop.clone(),
             stopped: stopped.clone(),
         };
 
@@ -756,9 +817,15 @@ impl SoundData for EngineSoundData {
             rpm,
             throttle,
             volume,
+            speed,
+            gear,
+            shift_pop,
             stopped,
             current_rpm: 850.0,
             current_throttle: 0.0,
+            gear_whine_phase: 0.0,
+            shift_pop_time: 0.0,
+            shift_pop_active: false,
         };
 
         Ok((Box::new(sound), handle))
@@ -771,9 +838,15 @@ pub struct EngineSound {
     rpm: Arc<AtomicU32>,
     throttle: Arc<AtomicU32>,
     volume: Arc<AtomicU32>,
+    speed: Arc<AtomicU32>,
+    gear: Arc<AtomicU32>,
+    shift_pop: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
     current_rpm: f32,
     current_throttle: f32,
+    gear_whine_phase: f32,
+    shift_pop_time: f32,
+    shift_pop_active: bool,
 }
 
 impl Sound for EngineSound {
@@ -803,6 +876,23 @@ impl Sound for EngineSound {
         self.generator.engine.rpm = self.current_rpm.max(100.0);
         self.generator.throttle_smoothed = self.current_throttle;
 
+        let cur_speed = (self.speed.load(Ordering::Relaxed) as f32) / 100.0;
+        let cur_gear = self.gear.load(Ordering::Relaxed).clamp(1, 7) as usize;
+        let pop_requested = self.shift_pop.swap(false, Ordering::Relaxed);
+
+        if pop_requested && !self.shift_pop_active {
+            self.shift_pop_active = true;
+            self.shift_pop_time = 0.0;
+        }
+
+        // Straight-cut gear ratio mesh frequency
+        const GEAR_RATIOS: [f32; 7] = [36.0, 27.0, 21.0, 17.0, 14.0, 12.0, 10.5];
+        let gear_ratio = GEAR_RATIOS[cur_gear - 1];
+        let whine_freq = (cur_speed * gear_ratio).clamp(50.0, 3200.0);
+        let s_rate = self.generator.samples_per_second as f32;
+        let whine_phase_inc = whine_freq / s_rate;
+        let thr = self.current_throttle.clamp(0.0, 1.0);
+        let whine_amp = (cur_speed / 45.0).clamp(0.0, 1.0) * (0.012 + 0.024 * thr);
 
         let samples_per_second = self.generator.samples_per_second as f32 * 120.0;
         let inc = self.generator.engine.rpm / samples_per_second;
@@ -810,10 +900,29 @@ impl Sound for EngineSound {
         for frame in out.iter_mut() {
             self.generator.engine.crankshaft_pos =
                 (self.generator.engine.crankshaft_pos + inc).fract();
-            let sample = self.generator.gen_sample();
+            let mut sample = self.generator.gen_sample();
+
+            // 1. Straight-cut transmission gear whine (gives mechanical drivetrain presence)
+            self.gear_whine_phase = (self.gear_whine_phase + whine_phase_inc).fract();
+            let whine = (self.gear_whine_phase * PI2F).sin() + 0.22 * (self.gear_whine_phase * PI4F).sin();
+            sample += whine * whine_amp;
+
+            // 2. Dual-clutch shift pop detonation (*THUD-BLAP!*)
+            if self.shift_pop_active {
+                let t = self.shift_pop_time;
+                if t < 0.075 {
+                    let env = (1.0 - t / 0.075).powi(2);
+                    let pop_thud = (t * 45.0 * PI2F).sin() * env * 2.2;
+                    let pop_crack = ((t * 180.0 * PI2F).sin() * 0.4 + (t * 360.0 * PI2F).sin() * 0.6) * env * 1.5;
+                    sample += pop_thud + pop_crack;
+                    self.shift_pop_time += 1.0 / s_rate;
+                } else {
+                    self.shift_pop_active = false;
+                }
+            }
 
             // Saturated soft clipping limiter for warm analog supercar character
-            let clipped = (sample * 1.5).tanh() * 0.88;
+            let clipped = (sample * 1.5).tanh() * 0.92;
             *frame = Frame::from_mono(clipped);
         }
     }
