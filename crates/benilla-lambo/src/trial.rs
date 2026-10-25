@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use serde::{Deserialize, Serialize};
 
-use benilla_assets::coords::wow_to_bevy;
+use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_world::world_map::CurrentMap;
 
 use crate::camera::ChaseCam;
@@ -111,6 +111,7 @@ pub struct TimeTrialManager {
     pub menu_open: bool,
     pub selected_menu_idx: usize,
     pub free_drive_loc: usize, // 0 = Lakeshire, 1 = Crossroads, 2 = Goldshire
+    pub debug_open: bool,
 }
 
 impl Default for TimeTrialManager {
@@ -126,6 +127,7 @@ impl Default for TimeTrialManager {
             menu_open: false,
             selected_menu_idx: 0,
             free_drive_loc,
+            debug_open: false,
         }
     }
 }
@@ -377,6 +379,11 @@ pub fn handle_trial_input(
     // ESC toggles the menu
     if keys.just_pressed(KeyCode::Escape) {
         manager.menu_open = !manager.menu_open;
+    }
+
+    // 'G' toggles the debug telemetry overlay
+    if keys.just_pressed(KeyCode::KeyG) {
+        manager.debug_open = !manager.debug_open;
     }
 
     // When menu is open, handle keyboard navigation
@@ -1197,6 +1204,99 @@ pub fn render_trial_ui(
                         }
                     });
             });
+    }
+
+    // 4. DEBUG TELEMETRY OVERLAY (Top right, toggled with 'G')
+    if manager.debug_open {
+        if let Some(c) = car.iter().next() {
+            let wow_pos = bevy_to_wow(c.pos);
+            let yaw_deg = c.yaw.to_degrees().rem_euclid(360.0);
+            let map_id = current_map.0;
+            let map_name = match map_id {
+                0 => "Eastern Kingdoms (0)",
+                1 => "Kalimdor (1)",
+                other => &format!("Map {other}"),
+            };
+
+            egui::Area::new(egui::Id::new("debug_telemetry_menu"))
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0))
+                .show(ctx, |ui| {
+                    egui::Frame::window(&ctx.style())
+                        .fill(egui::Color32::from_black_alpha(225))
+                        .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 255)))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(16, 12))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("🛠 DEBUG TELEMETRY")
+                                        .color(egui::Color32::from_rgb(0, 220, 255))
+                                        .size(13.0)
+                                        .strong(),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new("[G] hide")
+                                                .color(egui::Color32::GRAY)
+                                                .size(11.0),
+                                        );
+                                    },
+                                );
+                            });
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(6.0);
+
+                            egui::Grid::new("debug_grid")
+                                .num_columns(2)
+                                .spacing([12.0, 6.0])
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("Map ID:")
+                                            .color(egui::Color32::LIGHT_GRAY)
+                                            .strong(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(map_name)
+                                            .color(egui::Color32::from_rgb(255, 215, 0))
+                                            .strong(),
+                                    );
+                                    ui.end_row();
+
+                                    ui.label(
+                                        egui::RichText::new("Coordinates:")
+                                            .color(egui::Color32::LIGHT_GRAY)
+                                            .strong(),
+                                    );
+                                    let coords_str = format!(
+                                        "[{:.2}, {:.2}, {:.2}]",
+                                        wow_pos[0], wow_pos[1], wow_pos[2]
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(coords_str)
+                                            .color(egui::Color32::from_rgb(100, 255, 140))
+                                            .monospace(),
+                                    );
+                                    ui.end_row();
+
+                                    ui.label(
+                                        egui::RichText::new("Rotation:")
+                                            .color(egui::Color32::LIGHT_GRAY)
+                                            .strong(),
+                                    );
+                                    let rot_str = format!("{:.1}° ({:.2} rad)", yaw_deg, c.yaw);
+                                    ui.label(
+                                        egui::RichText::new(rot_str)
+                                            .color(egui::Color32::from_rgb(255, 160, 50))
+                                            .monospace(),
+                                    );
+                                    ui.end_row();
+                                });
+                        });
+                });
+        }
     }
 }
 
