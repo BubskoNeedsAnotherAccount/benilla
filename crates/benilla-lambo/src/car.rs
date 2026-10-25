@@ -378,9 +378,11 @@ pub fn prepare_car_materials(
     let mut updated = 0;
     for handle in &query {
         if let Some(mat) = materials.get_mut(handle) {
-            mat.unlit = true;
-            mat.cull_mode = None;
-            updated += 1;
+            if !mat.unlit || mat.cull_mode.is_some() {
+                mat.unlit = true;
+                mat.cull_mode = None;
+                updated += 1;
+            }
         }
     }
     if updated > 0 {
