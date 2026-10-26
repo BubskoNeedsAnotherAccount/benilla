@@ -27,6 +27,7 @@ engine-core = { path = "../engine-core" }
 kira = { version = "0.12", features = ["cpal", "wav"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { workspace = true, features = ["webgpu", "webgl2"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

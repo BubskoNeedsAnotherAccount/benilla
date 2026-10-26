@@ -161,7 +161,7 @@ pub fn finalize_rig_worlds(
     if refresh.is_empty() {
         return;
     }
-    let cost_t0 = crate::rig_palette::rig_cost_enabled().then(std::time::Instant::now);
+    let cost_t0 = crate::rig_palette::rig_cost_enabled().then(bevy::platform::time::Instant::now);
     let mut globals = worlds_params.p1();
     // As in the entity pass, the re-walk does not enter a nested rig with its own billboard output.
     let fx_roots: bevy::platform::collections::HashSet<Entity> =

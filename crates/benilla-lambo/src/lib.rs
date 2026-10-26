@@ -61,13 +61,29 @@ pub fn configure_lambo_app(app: &mut App, asset_root: String, model_file: Option
         ..default()
     };
 
-    app.add_plugins(
-        benilla_world::boot::tuned_default_plugins(primary_window)
-            .set(AssetPlugin {
-                file_path: asset_root,
+    #[cfg(target_arch = "wasm32")]
+    let default_plugins = benilla_world::boot::tuned_default_plugins(primary_window)
+        .set(AssetPlugin {
+            file_path: asset_root,
+            ..default()
+        })
+        .set(bevy::render::RenderPlugin {
+            render_creation: bevy::render::settings::WgpuSettings {
+                backends: Some(bevy::render::settings::Backends::all()),
                 ..default()
-            }),
-    );
+            }
+            .into(),
+            ..default()
+        });
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let default_plugins = benilla_world::boot::tuned_default_plugins(primary_window)
+        .set(AssetPlugin {
+            file_path: asset_root,
+            ..default()
+        });
+
+    app.add_plugins(default_plugins);
 
     #[cfg(not(target_arch = "wasm32"))]
     {

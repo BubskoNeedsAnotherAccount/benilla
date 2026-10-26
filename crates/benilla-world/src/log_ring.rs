@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use bevy::platform::time::Instant;
 
 use bevy::log::tracing::field::{Field, Visit};
 use bevy::log::tracing::{Event, Subscriber};

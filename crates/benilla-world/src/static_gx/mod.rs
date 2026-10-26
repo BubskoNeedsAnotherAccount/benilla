@@ -126,7 +126,7 @@ impl Drop for GxPerfGuard {
     }
 }
 pub(crate) fn gx_perf_guard(i: usize) -> GxPerfGuard {
-    GxPerfGuard(gx_perf_enabled().then(|| (i, std::time::Instant::now())))
+    GxPerfGuard(gx_perf_enabled().then(|| (i, bevy::platform::time::Instant::now())))
 }
 
 /// One diverted batch, kept after its cell bakes so an unload or a later admission can re-bake.
