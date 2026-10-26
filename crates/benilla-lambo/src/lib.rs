@@ -369,6 +369,20 @@ impl benilla_mpq::MpqStream for WebMpqStream {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(start)]
+pub fn wasm_init() -> Result<(), JsValue> {
+    console_error_panic_hook::set_once();
+    if let Some(window) = web_sys::window() {
+        let start_closure = wasm_bindgen::closure::Closure::wrap(Box::new(|archive_names: js_sys::Array| {
+            let _ = start_game_wasm(archive_names);
+        }) as Box<dyn FnMut(js_sys::Array)>);
+        let _ = js_sys::Reflect::set(&window, &JsValue::from_str("wasm_start_game"), start_closure.as_ref());
+        start_closure.forget();
+    }
+    Ok(())
+}
+
 /// WebAssembly entry point called by JavaScript after the user selects their WoW `Data` folder.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
