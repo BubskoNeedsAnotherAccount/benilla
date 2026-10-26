@@ -4,7 +4,7 @@
 //! the cap is off: the loading screen absorbs the burst and waits on furnished tiles. The held
 //! inner tiles are never capped: the reference builds an inner chunk with no limit (`0x6986a5`).
 
-use std::time::Instant;
+use bevy::platform::time::Instant;
 
 use benilla_assets::{chunks_to_mesh, AdtTile};
 use bevy::camera::primitives::MeshAabb;

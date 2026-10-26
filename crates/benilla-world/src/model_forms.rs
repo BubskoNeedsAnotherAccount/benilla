@@ -5,7 +5,7 @@
 //! serves every instance.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use bevy::platform::time::Instant;
 
 use benilla_assets::{
     submesh_to_skinned_mesh, submesh_to_static_mesh, M2Model, ModelSubmesh, WmoModel,
