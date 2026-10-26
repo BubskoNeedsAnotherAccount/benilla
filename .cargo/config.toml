@@ -4,5 +4,3 @@
 [alias]
 play = "run --profile play -p benilla"
 
-[target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=-reference-types"]
