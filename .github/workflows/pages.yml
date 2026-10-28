@@ -1,0 +1,62 @@
+# Builds the browser page of benilla-lambo (crates/benilla-lambo/web) and deploys it to GitHub
+# Pages. The page carries no game data: the visitor picks their own Data folder. Pages cannot set
+# response headers, so the page relies on web/coi-sw.js for cross-origin isolation.
+# One-time setup: Settings > Pages > Source: "GitHub Actions".
+name: Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/pages.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown && rustc -V
+      - name: wasm-bindgen CLI, at the lockfile's version
+        run: |
+          v=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')
+          cargo install wasm-bindgen-cli --version "$v" --locked
+      - name: wasm-opt
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binaryen
+      - name: Build
+        run: node crates/benilla-lambo/web/build.mjs
+      - name: Pages does not serve _headers
+        run: rm crates/benilla-lambo/web/dist/_headers
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: crates/benilla-lambo/web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
