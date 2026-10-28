@@ -258,3 +258,64 @@ mod pool {
         }
     }
 }
+
+/// The allocator of a threaded build. std's takes a lock that waits (`memory.atomic.wait`), which a
+/// browser forbids on the page's thread, and a pool thread allocating at the wrong moment would
+/// trap it. This one spins: allocations are short, so the wait is not.
+#[cfg(target_feature = "atomics")]
+mod spin_alloc {
+    use std::alloc::{GlobalAlloc, Layout};
+    use std::cell::UnsafeCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use dlmalloc::Dlmalloc;
+
+    pub struct SpinDlmalloc {
+        locked: AtomicBool,
+        heap: UnsafeCell<Dlmalloc>,
+    }
+
+    // SAFETY: `heap` is only touched while `locked` is held.
+    unsafe impl Sync for SpinDlmalloc {}
+
+    impl SpinDlmalloc {
+        pub const fn new() -> Self {
+            Self {
+                locked: AtomicBool::new(false),
+                heap: UnsafeCell::new(Dlmalloc::new()),
+            }
+        }
+
+        fn with<R>(&self, f: impl FnOnce(&mut Dlmalloc) -> R) -> R {
+            while self
+                .locked
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                std::hint::spin_loop();
+            }
+            // SAFETY: the lock is held.
+            let out = f(unsafe { &mut *self.heap.get() });
+            self.locked.store(false, Ordering::Release);
+            out
+        }
+    }
+
+    unsafe impl GlobalAlloc for SpinDlmalloc {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            self.with(|h| unsafe { h.malloc(l.size(), l.align()) })
+        }
+        unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+            self.with(|h| unsafe { h.calloc(l.size(), l.align()) })
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            self.with(|h| unsafe { h.free(p, l.size(), l.align()) })
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
+            self.with(|h| unsafe { h.realloc(p, l.size(), l.align(), new) })
+        }
+    }
+
+    #[global_allocator]
+    static ALLOC: SpinDlmalloc = SpinDlmalloc::new();
+}

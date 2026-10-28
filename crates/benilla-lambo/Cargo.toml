@@ -31,6 +31,8 @@ benilla-lambo-synth = { path = "../benilla-lambo-synth" }
 bevy = { workspace = true, features = ["webgpu"] }
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
+# The spinning allocator of a threaded build (`web.rs`, `spin_alloc`).
+dlmalloc = "0.2"
 
 [[bin]]
 name = "benilla-lambo"

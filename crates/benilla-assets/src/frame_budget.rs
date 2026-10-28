@@ -16,9 +16,9 @@ mod gate {
     use std::time::Duration;
     use web_time::Instant;
 
-    /// Work let through per frame before the rest wait: the slack of a 60 Hz frame whose own
-    /// systems take about 6 ms.
-    const BUDGET: Duration = Duration::from_millis(8);
+    /// Work let through per frame before the rest wait: a quarter of a 60 Hz frame's slack, so a
+    /// burst spreads thin and the longest single unit sets the hitch.
+    const BUDGET: Duration = Duration::from_millis(4);
 
     struct Gate {
         /// When this frame's first task was let through.

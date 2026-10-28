@@ -815,7 +815,13 @@ struct InnerWaitCap(Duration);
 /// Deviation: a read still loading after [`INNER_WAIT_CAP`] is given up on with a warning, once
 /// per request, and its tile then streams on unwaited like the outer ring, where the reference
 /// waits for ever: a hung read costs one capped stall, not one every frame.
+///
+/// Deviation: a browser build does not wait. The page's thread cannot block, and the loads run on
+/// it, so a wait could never see one finish; the tiles stream on unwaited, as after a give-up.
 fn await_inner_tiles(world: &mut World) {
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
     let pending: Vec<((i32, i32), Handle<AdtTile>)> = {
         let state = world.resource::<TerrainStreamer>();
         if state.plan.is_none() {

@@ -226,6 +226,8 @@ impl AssetLoader for M2ModelLoader {
         crate::frame_budget::turn().await;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
+        // The read and the parse are two turns.
+        crate::frame_budget::turn().await;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
 
         // Skins fill at the spawn site, so no skin directory or list is passed.

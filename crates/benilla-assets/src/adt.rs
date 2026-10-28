@@ -143,6 +143,8 @@ impl AssetLoader for AdtLoader {
         crate::frame_budget::turn().await;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
+        // The read and the mesh build are two turns.
+        crate::frame_budget::turn().await;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
         let tile = adt_to_tile_mesh(&bytes).map_err(to_io)?;
 
@@ -169,7 +171,11 @@ impl AssetLoader for AdtLoader {
                 let key = normalize_path(name);
                 li[slot] = if let Some(&i) = layer_index.get(&key) {
                     i
-                } else if let Some(layer) = read_layer(ctx, &key).await {
+                } else if let Some(layer) = {
+                    // Each new layer texture is a read and a decode.
+                    crate::frame_budget::turn().await;
+                    read_layer(ctx, &key).await
+                } {
                     // +1: index 0 is the fallback layer, which is not in `layers`.
                     let index = layers.len() as u32 + 1;
                     layers.push(layer);

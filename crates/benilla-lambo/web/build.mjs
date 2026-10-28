@@ -36,7 +36,15 @@ const threads = nightly && !process.argv.includes("--no-threads");
 console.log(threads ? "threaded build (nightly)" : "single-thread build (no nightly toolchain, or --no-threads)");
 const flags = [
   "-C target-feature=+atomics,+bulk-memory,+mutable-globals",
+  "-C link-arg=--shared-memory",
+  "-C link-arg=--import-memory",
   "-C link-arg=--max-memory=4294967296",
+  "-C link-arg=--export=__wasm_init_tls",
+  "-C link-arg=--export=__tls_size",
+  "-C link-arg=--export=__tls_align",
+  "-C link-arg=--export=__tls_base",
+  "-C link-arg=--export=__heap_base",
+  "-C link-arg=--export=__data_end",
 ].join(" ");
 const game = join(repo, threads ? "target/web-threads" : "target");
 if (threads) process.env.CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = flags;
