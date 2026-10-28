@@ -15,6 +15,7 @@ use bevy::prelude::*;
 
 pub mod column_grid;
 pub mod coords;
+pub mod frame_budget;
 pub mod materials;
 pub mod minimap_grid;
 mod spatial_cache;
@@ -287,6 +288,9 @@ pub fn register_asset_loaders(app: &mut App) {
     app.register_asset_loader(WmoModelLoader);
     app.register_asset_loader(AdtLoader);
     app.register_asset_loader(WdtIndexLoader);
+    // A browser decodes a loaded burst in one stall; the heavy loaders wait their turn per frame.
+    #[cfg(target_arch = "wasm32")]
+    app.add_systems(First, frame_budget::new_frame);
     // The materials' WGSL, compiled in; it too needs `AssetPlugin` first.
     materials::register_shaders(app);
 }

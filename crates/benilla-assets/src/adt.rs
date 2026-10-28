@@ -140,6 +140,7 @@ impl AssetLoader for AdtLoader {
         _settings: &(),
         ctx: &mut LoadContext<'_>,
     ) -> Result<AdtTile, Self::Error> {
+        crate::frame_budget::turn().await;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
