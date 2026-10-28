@@ -619,14 +619,23 @@ version = "0.2.0"
 dependencies = [
  "benilla-assets",
  "benilla-formats",
+ "benilla-lambo-synth",
  "benilla-world",
  "bevy",
  "bevy_egui",
  "console_error_panic_hook",
- "engine-core",
  "kira",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "benilla-lambo-synth"
+version = "0.2.0"
+dependencies = [
+ "console_error_panic_hook",
+ "engine-core",
  "wasm-bindgen",
 ]
 

@@ -1,0 +1,20 @@
+[package]
+name = "benilla-lambo-synth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Lamborghini's engine sound: engine-core's synth behind a plain render call, native for kira and wasm for a browser worker"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+engine-core = { path = "../engine-core" }
+
+# The browser worker (`benilla-lambo/web/synth-worker.js`) renders the synth off the game's thread.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+wasm-bindgen = "0.2"

@@ -23,7 +23,7 @@ bevy_egui = "0.39"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 kira = { version = "0.12", features = ["cpal", "wav"] }
-engine-core = { path = "../engine-core" }
+benilla-lambo-synth = { path = "../benilla-lambo-synth" }
 
 # The browser build (`web/`): the player's `Data` folder reaches the engine through JS, and the
 # renderer is WebGPU (the engine uploads BC textures and binds more than WebGL2 can).

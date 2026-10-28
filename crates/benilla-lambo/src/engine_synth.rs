@@ -3,21 +3,24 @@
 //! Replaces toy physical oscillators with a full 0-D thermodynamic gas dynamics solver:
 //! tailpipe monopole radiation, pipe shell acoustic emission, exhaust jet noise,
 //! mechanical machinery clatter, transmission gear whine, and overrun burble/backfire.
+//!
+//! The synth itself is `benilla-lambo-synth`. Natively kira's audio thread renders it. In a
+//! browser the audio callback shares the game's thread, which the solver would take most of, so a
+//! worker renders it and the callback only copies finished samples (`web.rs`).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
+use benilla_lambo_synth::Params;
+#[cfg(not(target_arch = "wasm32"))]
+use benilla_lambo_synth::Synth;
 use kira::{
     info::Info,
     sound::{Sound, SoundData},
     Frame,
 };
 use serde::{Deserialize, Serialize};
-
-use engine_core::config::engine_by_id;
-use engine_core::sound::{default_banks, EngineSound, Quality, SoundInput, SAMPLE_RATE};
-use engine_core::tuning::{AirFilter, Cat, Header, Muffler, Tuning};
 
 /// Configuration loaded from `assets/lambo_v10.json`.
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -153,6 +156,17 @@ impl EngineSoundHandle {
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
     }
+
+    /// The state the game last set, as the synth takes it; a pending gear-shift pop is consumed.
+    fn params(&self) -> Params {
+        Params {
+            rpm: self.rpm.load(Ordering::Relaxed) as f32,
+            throttle: self.throttle.load(Ordering::Relaxed) as f32 / 1000.0,
+            volume: self.volume.load(Ordering::Relaxed) as f32 / 1000.0,
+            speed: self.speed.load(Ordering::Relaxed) as f32 / 100.0,
+            shifting: self.shift_pop.swap(false, Ordering::Relaxed),
+        }
+    }
 }
 
 impl SoundData for EngineSoundData {
@@ -160,70 +174,41 @@ impl SoundData for EngineSoundData {
     type Handle = EngineSoundHandle;
 
     fn into_sound(self) -> Result<(Box<dyn Sound>, Self::Handle), Self::Error> {
-        let rpm = Arc::new(AtomicU32::new(850));
-        let throttle = Arc::new(AtomicU32::new(0));
-        let volume = Arc::new(AtomicU32::new((self.config.volume * 1000.0) as u32));
-        let speed = Arc::new(AtomicU32::new(0));
-        let gear = Arc::new(AtomicU32::new(1));
-        let shift_pop = Arc::new(AtomicBool::new(false));
-        let stopped = Arc::new(AtomicBool::new(false));
-
         let handle = EngineSoundHandle {
-            rpm: rpm.clone(),
-            throttle: throttle.clone(),
-            volume: volume.clone(),
-            speed: speed.clone(),
-            gear: gear.clone(),
-            shift_pop: shift_pop.clone(),
-            stopped: stopped.clone(),
+            rpm: Arc::new(AtomicU32::new(850)),
+            throttle: Arc::new(AtomicU32::new(0)),
+            volume: Arc::new(AtomicU32::new((self.config.volume * 1000.0) as u32)),
+            speed: Arc::new(AtomicU32::new(0)),
+            gear: Arc::new(AtomicU32::new(1)),
+            shift_pop: Arc::new(AtomicBool::new(false)),
+            stopped: Arc::new(AtomicBool::new(false)),
         };
 
-        let cfg = engine_by_id(&self.config.engine_id)
-            .unwrap_or_else(|| engine_by_id("v8").expect("stock v8"));
-        eprintln!(
-            "benilla-lambo audio: running engine-core with {} ({} cylinders, {:.1}L)",
-            cfg.display_name,
-            cfg.cylinder_count,
-            cfg.displacement_l()
-        );
-
-        let mut tuning = Tuning::default();
-        tuning.header = Header::LongTube;
-        tuning.cat = Cat::Delete;
-        tuning.muffler = match self.config.muffler.to_lowercase().as_str() {
-            "straight" => Muffler::Straight,
-            "delete" => Muffler::Delete,
-            "stock" => Muffler::Stock,
-            _ => Muffler::Sport,
+        #[cfg(not(target_arch = "wasm32"))]
+        let sound = {
+            let synth = Synth::new(
+                &self.config.engine_id,
+                &self.config.muffler,
+                &self.config.quality,
+                self.config.burble,
+                self.sample_rate,
+            );
+            eprintln!(
+                "benilla-lambo audio: running engine-core with {} ({} cylinders)",
+                self.config.engine_id,
+                synth.cylinders()
+            );
+            EngineSoundStream {
+                synth,
+                ctl: handle.clone(),
+                scratch: Vec::new(),
+            }
         };
-        tuning.air_filter = AirFilter::ColdAir;
-
-        let quality = match self.config.quality.to_lowercase().as_str() {
-            "fast" => Quality::FAST,
-            "ultra" => Quality::ULTRA,
-            "high" => Quality::HIGH,
-            _ => Quality::BALANCED,
-        };
-
-        let banks = default_banks(&cfg);
-        let mut engine_sound = EngineSound::new(&cfg, &tuning, &banks, quality);
-        engine_sound.full_scale_pa = 9.0;
-
+        // The worker makes its own synth from the page's copy of the config.
+        #[cfg(target_arch = "wasm32")]
         let sound = EngineSoundStream {
-            engine_sound,
-            sample_rate: self.sample_rate,
-            rpm,
-            throttle,
-            volume,
-            speed,
-            gear,
-            shift_pop,
-            stopped,
-            serial: 1,
-            burble_setting: self.config.burble,
-            resample_phase: 0.0,
-            s0: 0.0,
-            s1: 0.0,
+            ctl: handle.clone(),
+            scratch: Vec::new(),
         };
 
         Ok((Box::new(sound), handle))
@@ -232,91 +217,36 @@ impl SoundData for EngineSoundData {
 
 /// An actively streaming audio sound running `engine-core` on Kira's audio thread.
 pub struct EngineSoundStream {
-    engine_sound: EngineSound,
-    sample_rate: u32,
-    rpm: Arc<AtomicU32>,
-    throttle: Arc<AtomicU32>,
-    volume: Arc<AtomicU32>,
-    speed: Arc<AtomicU32>,
-    #[allow(dead_code)]
-    gear: Arc<AtomicU32>,
-    shift_pop: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
-    serial: u64,
-    burble_setting: f32,
-    resample_phase: f32,
-    s0: f32,
-    s1: f32,
+    #[cfg(not(target_arch = "wasm32"))]
+    synth: Synth,
+    ctl: EngineSoundHandle,
+    scratch: Vec<f32>,
 }
 
 impl Sound for EngineSoundStream {
     fn process(&mut self, out: &mut [Frame], _dt: f64, _info: &Info) {
-        if self.stopped.load(Ordering::Relaxed) {
-            for frame in out.iter_mut() {
-                *frame = Frame::ZERO;
-            }
+        if self.ctl.stopped.load(Ordering::Relaxed) {
+            out.fill(Frame::ZERO);
             return;
         }
+        let params = self.ctl.params();
+        self.scratch.resize(out.len(), 0.0);
 
-        let rpm = self.rpm.load(Ordering::Relaxed) as f32;
-        let throttle = (self.throttle.load(Ordering::Relaxed) as f32) / 1000.0;
-        let speed = (self.speed.load(Ordering::Relaxed) as f32) / 100.0;
-        let master_vol = (self.volume.load(Ordering::Relaxed) as f32) / 1000.0;
-        let is_shifting = self.shift_pop.swap(false, Ordering::Relaxed);
-        self.serial += 1;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.synth.render(&params, &mut self.scratch);
+        // The output device's rate is the frame spacing kira reports.
+        #[cfg(target_arch = "wasm32")]
+        let got = crate::web::pull_synth(&params, (1.0 / _dt).round() as u32, &mut self.scratch);
+        #[cfg(target_arch = "wasm32")]
+        self.scratch[got..].fill(0.0);
 
-        let running = rpm > 50.0;
-        let lit = rpm > 150.0;
-        let load = (throttle * 1.15).clamp(0.04, 1.2);
-        let map_pa = 32_000.0 + throttle * 69_000.0;
-        let afr = 14.7 - throttle * 2.2;
-        let egt_k = 850.0 + throttle * 400.0;
-
-        let input = SoundInput {
-            rpm,
-            throttle,
-            load,
-            map_pa,
-            atm_pa: 101_325.0,
-            air_k: 293.0,
-            charge_k: 300.0,
-            afr,
-            egt_k,
-            boost: 0.0,
-            spool: 0.0,
-            running,
-            lit,
-            cranking: false,
-            knock: 0.0,
-            vehicle_speed: speed,
-            gear_whine: (speed / 35.0).clamp(0.0, 1.0),
-            burn: vec![1.0; self.engine_sound.cfg.cylinder_count],
-            master: master_vol,
-            serial: self.serial,
-            turbo_speed: 0.0,
-            burble: self.burble_setting,
-            backfire: if is_shifting { 1.0 } else { 0.0 },
-        };
-        self.engine_sound.set_input(&input);
-
-        // Resample from engine-core (44,100 Hz) to Kira's sample rate (e.g. 48,000 Hz)
-        let fs_ratio = SAMPLE_RATE as f32 / self.sample_rate as f32;
-        for frame in out.iter_mut() {
-            while self.resample_phase >= 1.0 {
-                self.s0 = self.s1;
-                self.s1 = self.engine_sound.next_sample();
-                self.resample_phase -= 1.0;
-            }
-            let sample = self.s0 + (self.s1 - self.s0) * self.resample_phase;
-            self.resample_phase += fs_ratio;
-
-            let clipped = (sample * 1.2).tanh() * 0.95;
-            *frame = Frame::from_mono(clipped);
+        for (frame, sample) in out.iter_mut().zip(&self.scratch) {
+            *frame = Frame::from_mono(*sample);
         }
     }
 
     fn finished(&self) -> bool {
-        self.stopped.load(Ordering::Relaxed)
+        self.ctl.stopped.load(Ordering::Relaxed)
     }
 }
 

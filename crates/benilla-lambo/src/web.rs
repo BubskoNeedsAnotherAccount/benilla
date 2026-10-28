@@ -32,6 +32,19 @@ extern "C" {
     /// A file the page fetched ahead of the start (the car, its sounds), by path.
     #[wasm_bindgen(js_namespace = ["globalThis", "__benillaIo"], js_name = asset)]
     fn io_asset(path: &str) -> Option<Vec<u8>>;
+    /// Tell the engine-sound worker the game's state and the output rate (`web/synth-bridge.js`).
+    #[wasm_bindgen(js_namespace = ["globalThis", "__benillaSynth"], js_name = params)]
+    fn synth_params(rpm: f32, throttle: f32, volume: f32, speed: f32, shifting: bool, rate: u32);
+    /// Fill `out` with the samples the worker has rendered; how many it had.
+    #[wasm_bindgen(js_namespace = ["globalThis", "__benillaSynth"], js_name = read)]
+    fn synth_read(out: &mut [f32]) -> u32;
+}
+
+/// The engine sound for the next `out.len()` frames: the state goes to the worker and the samples
+/// it has rendered come back, the rest of `out` untouched (the caller silences it).
+pub fn pull_synth(p: &benilla_lambo_synth::Params, rate: u32, out: &mut [f32]) -> usize {
+    synth_params(p.rpm, p.throttle, p.volume, p.speed, p.shifting, rate);
+    synth_read(out) as usize
 }
 
 /// The bytes of a file the page fetched ahead of the start, if it did.
