@@ -4,7 +4,7 @@
 // Nothing here waits: a callback with too few samples gets silence for the rest.
 
 const RING = 1 << 14; // mono frames; a power of two
-// Int32 header: 0 write count, 1 read count, 2 underruns, 3 output rate, 4 pending shift pop.
+// Int32 header: 0 write count, 1 read count, 3 output rate, 4 pending shift pop.
 // Float32 state at byte 32: rpm, throttle, volume, speed. The ring starts at byte 128.
 
 /** @param {boolean} enabled whether to start the worker at all */
@@ -31,9 +31,7 @@ export async function installSynth(enabled) {
     worker.terminate();
     return;
   }
-  // `window.__synth` is for a console: the worker's cost as a share of real time (it must stay
-  // under 1 to keep up), and how many audio callbacks found the ring short.
-  worker.onmessage = (e) => { if (e.data.type === "stats") window.__synth = { ...e.data, underruns: head[2] }; };
+  worker.onmessage = null;
 
   globalThis.__benillaSynth = {
     params(rpm, throttle, volume, speed, shifting, rate) {
@@ -49,7 +47,6 @@ export async function installSynth(enabled) {
       const n = Math.min((Atomics.load(head, 0) - r) | 0, out.length);
       for (let i = 0; i < n; i++) out[i] = ring[(r + i) & (RING - 1)];
       Atomics.store(head, 1, (r + n) | 0);
-      if (n < out.length) Atomics.add(head, 2, 1);
       return n;
     },
   };

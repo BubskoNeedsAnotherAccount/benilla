@@ -36,8 +36,7 @@ function send(req, res, file, status = 200) {
     "Content-Type": types[extname(file).toLowerCase()] ?? "application/octet-stream",
     "Accept-Ranges": "bytes",
     // `--plain` sends no isolation headers, as a host that cannot, to exercise `coi-sw.js`.
-    ...(plain ? {} : { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" }),
-    "Cache-Control": "no-store",
+    ...(plain ? {} : { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" }),    "Cache-Control": "no-store",
   };
   const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
   if (range) {

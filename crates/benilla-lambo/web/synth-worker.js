@@ -50,7 +50,6 @@ self.onmessage = async (e) => {
       const now = performance.now();
       if (now - reported > 2000) {
         const load = busy / ((rendered / rate) * 1000);
-        self.postMessage({ type: "stats", load, rate, quality: ladder[tier] });
         if (load > LOAD_MAX && tier < ladder.length - 1) {
           synth.free();
           tier++;
