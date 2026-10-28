@@ -54,7 +54,7 @@ fn benilla_checkout() -> Option<&'static Path> {
 /// The vanilla `Data` directory, or `None` when there is no install. Uncached, so a `$WOW_DATA`
 /// change is seen.
 pub fn wow_data() -> Option<PathBuf> {
-    candidates().into_iter().find(|c| c.is_dir())
+    crate::virtual_data::root().or_else(|| candidates().into_iter().find(|c| c.is_dir()))
 }
 
 /// Every place [`wow_data`] looks, in order, whether or not it exists, for a "looked in" message.

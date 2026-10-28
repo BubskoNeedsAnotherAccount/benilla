@@ -11,7 +11,10 @@ pub struct IgnitionCoilConnector {
 
 impl Default for IgnitionCoilConnector {
     fn default() -> Self {
-        Self { connected: true, corrosion: 0.0 }
+        Self {
+            connected: true,
+            corrosion: 0.0,
+        }
     }
 }
 
@@ -35,7 +38,10 @@ pub struct IgnitionCoil {
 
 impl Default for IgnitionCoil {
     fn default() -> Self {
-        Self { health: 1.0, shorted: false }
+        Self {
+            health: 1.0,
+            shorted: false,
+        }
     }
 }
 
@@ -58,13 +64,18 @@ pub struct SparkPlug {
 
 impl Default for SparkPlug {
     fn default() -> Self {
-        Self { gap_mm: SPARK_PLUG_IDEAL_GAP_MM, fouling: 0.0, electrode_wear: 0.0 }
+        Self {
+            gap_mm: SPARK_PLUG_IDEAL_GAP_MM,
+            fouling: 0.0,
+            electrode_wear: 0.0,
+        }
     }
 }
 
 impl SparkPlug {
     fn condition_misfire_probability(&self) -> f64 {
-        let gap_dev = ((self.gap_mm - SPARK_PLUG_IDEAL_GAP_MM).abs() - SPARK_PLUG_GAP_TOLERANCE_MM).max(0.0);
+        let gap_dev =
+            ((self.gap_mm - SPARK_PLUG_IDEAL_GAP_MM).abs() - SPARK_PLUG_GAP_TOLERANCE_MM).max(0.0);
         gap_dev * SPARK_PLUG_GAP_MISFIRE_PER_MM
             + self.fouling * SPARK_PLUG_FOULING_SENS
             + self.electrode_wear * SPARK_PLUG_WEAR_SENS
@@ -100,6 +111,7 @@ impl IgnitionChannel {
             || self.coil.health < 1.0
             || self.spark_plug.fouling > 0.0
             || self.spark_plug.electrode_wear > 0.0
-            || (self.spark_plug.gap_mm - SPARK_PLUG_IDEAL_GAP_MM).abs() > SPARK_PLUG_GAP_TOLERANCE_MM
+            || (self.spark_plug.gap_mm - SPARK_PLUG_IDEAL_GAP_MM).abs()
+                > SPARK_PLUG_GAP_TOLERANCE_MM
     }
 }

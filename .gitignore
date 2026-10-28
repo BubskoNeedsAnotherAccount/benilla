@@ -43,3 +43,4 @@ __pycache__/
 # beside `WoW`, or `BENILLA_ADDON_CORPUS`.
 /wow-addons-vanilla
 /crates/benilla-lambo/dist
+/crates/benilla-lambo/web/dist

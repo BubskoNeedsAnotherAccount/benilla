@@ -192,8 +192,8 @@ impl Cylinder {
                 if prev_local < 180.0 {
                     // Intake valve just closed: lock in this cycle's trapped charge and fuel energy.
                     let ivc_volume = self.volume_at(180.0);
-                    self.trapped_air_mass_kg =
-                        inp.manifold_pressure_pa * ivc_volume / (GAS_CONSTANT_AIR * inp.intake_air_temp_k);
+                    self.trapped_air_mass_kg = inp.manifold_pressure_pa * ivc_volume
+                        / (GAS_CONSTANT_AIR * inp.intake_air_temp_k);
                     self.cycle_fuel_mass_kg = self.trapped_air_mass_kg / inp.air_fuel_ratio;
                     self.fuel_metered_this_call = self.cycle_fuel_mass_kg;
                     self.cycle_heat_energy_j = self.cycle_fuel_mass_kg
@@ -204,7 +204,8 @@ impl Cylinder {
                 }
 
                 let new_volume = self.volume_at(local);
-                let mut pressure = self.pressure_pa * (self.volume_m3 / new_volume).powf(POLYTROPIC_INDEX);
+                let mut pressure =
+                    self.pressure_pa * (self.volume_m3 / new_volume).powf(POLYTROPIC_INDEX);
 
                 if local >= self.combustion_start_deg
                     && local <= self.combustion_start_deg + self.combustion_duration_deg
@@ -246,7 +247,8 @@ impl Cylinder {
             }
             StrokePhase::Exhaust => {
                 if prev_local < 540.0 && self.unburned_fuel_mass_kg > 0.0 {
-                    let chance = ((inp.exhaust_gas_temp_k - BACKFIRE_THRESHOLD_K) / BACKFIRE_SPREAD_K)
+                    let chance = ((inp.exhaust_gas_temp_k - BACKFIRE_THRESHOLD_K)
+                        / BACKFIRE_SPREAD_K)
                         .clamp(0.0, 1.0)
                         * BACKFIRE_MAX_PROB;
                     self.backfired_this_call = rng.next_f64() < chance;
@@ -262,7 +264,8 @@ impl Cylinder {
         }
 
         self.prev_local_angle_deg = local;
-        self.last_torque_nm = self.torque_at(local, inp.angular_velocity, inp.atmospheric_pressure_pa);
+        self.last_torque_nm =
+            self.torque_at(local, inp.angular_velocity, inp.atmospheric_pressure_pa);
         self.last_torque_nm
     }
 
@@ -284,7 +287,11 @@ impl Cylinder {
             label: self.label,
             local_angle_deg: self.prev_local_angle_deg,
             pressure_pa: self.pressure_pa,
-            burn_fraction: if self.spark_fired_this_cycle { self.mass_fraction_burned } else { 0.0 },
+            burn_fraction: if self.spark_fired_this_cycle {
+                self.mass_fraction_burned
+            } else {
+                0.0
+            },
             phase: self.phase,
             ignited: self.ignited_this_call,
             misfired: self.misfired_this_call,
@@ -303,7 +310,11 @@ impl Cylinder {
             piston_position_fraction: (self.volume_m3 - self.clearance_volume_m3)
                 / (self.max_volume_m3 - self.clearance_volume_m3),
             spark_fired: self.last_genuine_spark_fired,
-            burn_fraction: if self.spark_fired_this_cycle { self.mass_fraction_burned } else { 0.0 },
+            burn_fraction: if self.spark_fired_this_cycle {
+                self.mass_fraction_burned
+            } else {
+                0.0
+            },
         }
     }
 }

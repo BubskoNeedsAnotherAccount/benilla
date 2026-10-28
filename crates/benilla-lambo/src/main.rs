@@ -8,6 +8,9 @@
 //! ```
 //!
 //! Without `WOW_DATA`, a dev build looks for a `WoW` link at the repo root.
+//!
+//! The same crate builds for the browser, where the player picks their `Data` folder on the page
+//! (`web/README.md`).
 
 mod camera;
 mod car;
@@ -16,6 +19,8 @@ mod shadow;
 mod smoke;
 mod sound;
 mod trial;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 use bevy::prelude::*;
 
@@ -24,9 +29,14 @@ use benilla_world::schedule::{WorldLive, WorldStage};
 
 fn main() -> AppExit {
     // The server-less map pick (`world_map`): 0 is Eastern Kingdoms (Redridge Mountains / Lakeshire), 1 is Kalimdor.
+    // A browser has no environment to set, and the default is already 0.
+    #[cfg(not(target_arch = "wasm32"))]
     if std::env::var_os("WOW_MAP").is_none() {
         std::env::set_var("WOW_MAP", "0");
     }
+    // The page has handed over the player's `Data` files before it starts the engine.
+    #[cfg(target_arch = "wasm32")]
+    web::mount_picked_files();
 
     let mut app = App::new();
     app.insert_resource(BuildId {
@@ -64,15 +74,27 @@ fn main() -> AppExit {
     });
 
     let background = benilla_world::bgwin::background_run();
+    #[cfg(target_arch = "wasm32")]
+    let web_window = Window {
+        canvas: Some("#bevy".into()),
+        fit_canvas_to_parent: true,
+        prevent_default_event_handling: true,
+        ..default()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let web_window = Window::default();
     app.add_plugins(
         benilla_world::boot::tuned_default_plugins(Window {
             title: "benilla lambo".into(),
             resolution: (1600, 900).into(),
             focused: !background,
-            ..default()
+            ..web_window
         })
         .set(AssetPlugin {
             file_path: asset_root,
+            // The page serves the car as a plain file: there is no `.meta` beside it to ask for.
+            #[cfg(target_arch = "wasm32")]
+            meta_check: bevy::asset::AssetMetaCheck::Never,
             ..default()
         }),
     )
@@ -158,6 +180,24 @@ impl Default for GlbHints {
 /// Discovers a GLB model file: checks `LAMBO_MODEL`, then common filenames in crate assets
 /// and workspace assets. Returns `(asset_root, Option<relative_file_path>, GlbHints)`.
 fn resolve_car_model() -> (String, Option<String>, GlbHints) {
+    // The page fetches `assets/car.glb` before the start; the engine loads it by the same URL.
+    #[cfg(target_arch = "wasm32")]
+    {
+        return match web::asset("car.glb") {
+            Some(bytes) => (
+                "assets".to_string(),
+                Some("car.glb".to_string()),
+                detect_glb_bytes(&bytes),
+            ),
+            None => ("assets".to_string(), None, GlbHints::default()),
+        };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    resolve_car_model_on_disk()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_car_model_on_disk() -> (String, Option<String>, GlbHints) {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
     if let Ok(env_path) = std::env::var("LAMBO_MODEL") {
@@ -219,12 +259,18 @@ fn resolve_car_model() -> (String, Option<String>, GlbHints) {
 
 /// Inspects the GLB model geometry to determine its real dimensions, orientation, and ground contact.
 /// Normalizes ANY car model to around 4.8 yards long and aligns its forward axis with -Z.
+#[cfg(not(target_arch = "wasm32"))]
 fn detect_glb_transform(full_path: &std::path::Path) -> GlbHints {
+    match std::fs::read(full_path) {
+        Ok(bytes) => detect_glb_bytes(&bytes),
+        Err(_) => GlbHints::default(),
+    }
+}
+
+/// [`detect_glb_transform`] over the GLB's bytes.
+fn detect_glb_bytes(bytes: &[u8]) -> GlbHints {
     let mut hints = GlbHints::default();
 
-    let Ok(bytes) = std::fs::read(full_path) else {
-        return hints;
-    };
     if bytes.len() <= 20 || &bytes[0..4] != b"glTF" {
         return hints;
     }

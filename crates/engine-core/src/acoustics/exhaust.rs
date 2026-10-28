@@ -86,7 +86,10 @@ pub struct ExhaustInputs<'a> {
 /// head, a contraction (flow from the node into the small leg) `0.5 (1 - r)^0.75`.
 fn step_loss(a: f32, a_ref: f32, scale: f32) -> (f32, f32) {
     let r = (a / a_ref).min(1.0);
-    (0.9 * (1.0 - r).powi(2) * scale, 0.5 * (1.0 - r).powf(0.75) * scale)
+    (
+        0.9 * (1.0 - r).powi(2) * scale,
+        0.5 * (1.0 - r).powf(0.75) * scale,
+    )
 }
 
 struct Builder<'a> {
@@ -102,18 +105,40 @@ struct Builder<'a> {
 
 impl Builder<'_> {
     fn wall(&self, mat: PipeMaterial, base_mm: Option<f32>, wrapped: bool, dia: f32) -> Wall {
-        let t = base_mm.map(|m| m * 1e-3).unwrap_or_else(|| mat.props().wall_m) * self.wall_scale;
+        let t = base_mm
+            .map(|m| m * 1e-3)
+            .unwrap_or_else(|| mat.props().wall_m)
+            * self.wall_scale;
         Wall::pipe(mat, t, wrapped, dia)
     }
 
     fn duct(&mut self, name: &str, len: f32, d_in: f32, d_out: f32, wall: Wall) -> usize {
         // hot gas is fast, so its cells can be longer for the same CFL number; the cool tail gets finer ones
-        let hot = ["primary", "collector", "log", "pair", "turbo", "down", "cat"].iter().any(|p| name.starts_with(p));
+        let hot = [
+            "primary",
+            "collector",
+            "log",
+            "pair",
+            "turbo",
+            "down",
+            "cat",
+        ]
+        .iter()
+        .any(|p| name.starts_with(p));
         let cool = ["mu_", "tail", "hpipe"].iter().any(|p| name.starts_with(p));
-        let dx = self.dx * if hot { 1.3 } else if cool { 0.85 } else { 1.0 };
+        let dx = self.dx
+            * if hot {
+                1.3
+            } else if cool {
+                0.85
+            } else {
+                1.0
+            };
         let mut spec = DuctSpec::pipe(name, len.max(0.04), d_in, wall, dx).taper(d_out);
         // headers, collectors, logs and the turbo sit in the engine bay
-        spec.engine_bay = ["primary", "collector", "log", "pair", "turbo"].iter().any(|p| name.starts_with(p));
+        spec.engine_bay = ["primary", "collector", "log", "pair", "turbo"]
+            .iter()
+            .any(|p| name.starts_with(p));
         self.net.add_duct(&spec, self.env.p_amb, self.env.t_amb)
     }
 
@@ -123,7 +148,10 @@ impl Builder<'_> {
 
     /// Joins duct ends at one node with step losses derived from the area ratios.
     fn join(&mut self, name: &str, legs: &[(usize, End)], gentle: f32) -> usize {
-        let a_ref = legs.iter().map(|&(d, e)| self.area_of(d, e)).fold(0.0f32, f32::max);
+        let a_ref = legs
+            .iter()
+            .map(|&(d, e)| self.area_of(d, e))
+            .fold(0.0f32, f32::max);
         let mut n = Node::junction(name);
         for &(d, e) in legs {
             let (ki, ko) = step_loss(self.area_of(d, e), a_ref, gentle);
@@ -133,13 +161,27 @@ impl Builder<'_> {
     }
 
     fn chamber(&mut self, volume: f32) -> usize {
-        self.chambers.push(Reservoir::new(Gas::EXHAUST, volume, self.env.p_amb, self.env.t_amb));
+        self.chambers.push(Reservoir::new(
+            Gas::EXHAUST,
+            volume,
+            self.env.p_amb,
+            self.env.t_amb,
+        ));
         self.res_base + self.chambers.len() - 1
     }
 
     fn body(&mut self, name: &str, ducts: Vec<usize>, dia: f32, wall: Wall) {
-        let surface: f32 = ducts.iter().map(|&d| std::f32::consts::PI * dia * self.net.grid.ducts[d].length).sum();
-        self.bodies.push(Body { name: name.to_string(), ducts, surface, diameter: dia, wall });
+        let surface: f32 = ducts
+            .iter()
+            .map(|&d| std::f32::consts::PI * dia * self.net.grid.ducts[d].length)
+            .sum();
+        self.bodies.push(Body {
+            name: name.to_string(),
+            ducts,
+            surface,
+            diameter: dia,
+            wall,
+        });
     }
 }
 
@@ -161,10 +203,16 @@ impl ExhaustSystem {
             env: inp.env,
             _cfg: std::marker::PhantomData,
         };
-        let mut report = SystemReport { header_material: "", pipe_material: tun.pipe_material.label(), ..Default::default() };
+        let mut report = SystemReport {
+            header_material: "",
+            pipe_material: tun.pipe_material.label(),
+            ..Default::default()
+        };
 
         // ------------------------------------------------------------------ primaries
-        let header_mat = tun.header_material.unwrap_or_else(|| tun.header.natural_material());
+        let header_mat = tun
+            .header_material
+            .unwrap_or_else(|| tun.header.natural_material());
         report.header_material = header_mat.label();
         let (dia_k, coll_len, log) = match tun.header {
             Header::Stock => (0.40, 0.10, true),
@@ -176,17 +224,36 @@ impl ExhaustSystem {
         let d_prim = dia_k * bore * tun.primary_dia_scale as f32;
         let d_port = (0.36 * bore).min(d_prim * 1.05);
         let h_wall = |b: &Builder| {
-            let t_mm = if header_mat == PipeMaterial::CastIron { 4.0 } else { header_mat.props().wall_m * 1e3 };
-            b.wall(header_mat, Some(t_mm), tun.header_wrap && header_mat != PipeMaterial::CastIron, d_prim)
+            let t_mm = if header_mat == PipeMaterial::CastIron {
+                4.0
+            } else {
+                header_mat.props().wall_m * 1e3
+            };
+            b.wall(
+                header_mat,
+                Some(t_mm),
+                tun.header_wrap && header_mat != PipeMaterial::CastIron,
+                d_prim,
+            )
         };
         let nb = inp.banks.iter().map(|&x| x as usize).max().unwrap_or(0) + 1;
         let mut prim = Vec::with_capacity(n);
         let mut port_node = Vec::with_capacity(n);
         for i in 0..n {
             let w = h_wall(&b);
-            let d = b.duct(&format!("primary{}", i + 1), l_port + l_prim, d_port, d_prim, w);
+            let d = b.duct(
+                &format!("primary{}", i + 1),
+                l_port + l_prim,
+                d_port,
+                d_prim,
+                w,
+            );
             prim.push(d);
-            let node = b.net.add_node(Node::junction(&format!("port{}", i + 1)).with_leg(PipeLeg::new(d, End::Left)).with_valve(ValveLeg::new(i)));
+            let node = b.net.add_node(
+                Node::junction(&format!("port{}", i + 1))
+                    .with_leg(PipeLeg::new(d, End::Left))
+                    .with_valve(ValveLeg::new(i)),
+            );
             port_node.push(node);
         }
         report.primary_length = l_port + l_prim;
@@ -204,7 +271,10 @@ impl ExhaustSystem {
             }
             let m = cyls.len();
             let a_prim: f32 = std::f32::consts::FRAC_PI_4 * d_prim * d_prim;
-            let d_coll = (4.0 * a_prim * (m as f32 * if log { 0.9 } else { 0.75 }).min(5.0) / std::f32::consts::PI).sqrt().max(d_prim * 1.15);
+            let d_coll = (4.0 * a_prim * (m as f32 * if log { 0.9 } else { 0.75 }).min(5.0)
+                / std::f32::consts::PI)
+                .sqrt()
+                .max(d_prim * 1.15);
             let w = h_wall(&b);
             let coll = b.duct(&format!("collector{bk}"), coll_len, d_coll, d_coll, w);
             coll_ducts.push(coll);
@@ -222,18 +292,24 @@ impl ExhaustSystem {
                     if j > 0 {
                         legs.push((segs[j - 1], End::Right));
                     }
-                    legs.push(if j + 1 < m { (segs[j], End::Left) } else { (coll, End::Left) });
+                    legs.push(if j + 1 < m {
+                        (segs[j], End::Left)
+                    } else {
+                        (coll, End::Left)
+                    });
                     b.join(&format!("entry{}", c + 1), &legs, 0.5);
                 }
             } else {
-                let mut legs: Vec<(usize, End)> = cyls.iter().map(|&c| (prim[c], End::Right)).collect();
+                let mut legs: Vec<(usize, End)> =
+                    cyls.iter().map(|&c| (prim[c], End::Right)).collect();
                 if legs.len() > 6 {
                     // eight-into-one is really 4-2-1: pair the primaries first
                     let mut pairs = Vec::new();
                     for ch in legs.chunks(2) {
                         if ch.len() == 2 {
                             let w = h_wall(&b);
-                            let d = b.duct(&format!("pair{bk}"), 0.18, d_prim * 1.3, d_prim * 1.3, w);
+                            let d =
+                                b.duct(&format!("pair{bk}"), 0.18, d_prim * 1.3, d_prim * 1.3, w);
                             coll_ducts.push(d);
                             let mut l2 = ch.to_vec();
                             l2.push((d, End::Left));
@@ -256,7 +332,8 @@ impl ExhaustSystem {
         // ------------------------------------------------------------------ main pipe size
         let sides_wanted = if streams.len() >= 2 { 2 } else { 1 };
         let disp_side = disp_l / sides_wanted as f32;
-        let d_main = (0.040 + 0.0085 * disp_side).clamp(0.045, 0.110) * tun.pipe_scale.clamp(0.7, 1.5) as f32;
+        let d_main = (0.040 + 0.0085 * disp_side).clamp(0.045, 0.110)
+            * tun.pipe_scale.clamp(0.7, 1.5) as f32;
         report.main_diameter = d_main;
         let pmat = tun.pipe_material;
         let a_main = std::f32::consts::FRAC_PI_4 * d_main * d_main;
@@ -289,7 +366,13 @@ impl ExhaustSystem {
                 let inlet = b.duct(&format!("turbine_in{gi}"), 0.10, d_in, d_in, w1);
                 b.join("to_turbine", &[(src, End::Right), (inlet, End::Left)], 1.0);
                 let w2 = b.wall(PipeMaterial::Inconel, Some(2.0), false, d_main * 1.1);
-                let outlet = b.duct(&format!("turbine_out{gi}"), 0.14, d_main * 1.15, d_main * 1.1, w2);
+                let outlet = b.duct(
+                    &format!("turbine_out{gi}"),
+                    0.14,
+                    d_main * 1.15,
+                    d_main * 1.1,
+                    w2,
+                );
                 let nd = Node::junction("turbine")
                     .with_leg(PipeLeg::new(inlet, End::Right).with_loss(k_turb * 0.5, 0.0))
                     .with_leg(PipeLeg::new(outlet, End::Left).with_loss(0.0, k_turb * 0.5));
@@ -304,7 +387,11 @@ impl ExhaustSystem {
         report.sides = sides;
         let mut side_src: Vec<Vec<usize>> = vec![Vec::new(); sides];
         for (i, &s) in streams.iter().enumerate() {
-            let side = if streams.len() >= 4 { i * sides / streams.len() } else { i % sides };
+            let side = if streams.len() >= 4 {
+                i * sides / streams.len()
+            } else {
+                i % sides
+            };
             side_src[side].push(s);
         }
         let l_down = 0.42 * (1.0 + 0.1 * (tun.mid_len_scale as f32 - 1.0));
@@ -341,7 +428,11 @@ impl ExhaustSystem {
                 let mono = b.net.add_duct(&spec, inp.env.p_amb, inp.env.t_amb);
                 let wc2 = b.wall(pmat, Some(1.2), false, d_main);
                 let cone_out = b.duct(&format!("cat_out{si}"), 0.09, d_can, d_main, wc2);
-                b.join("cat_a", &[(tail_of_path.0, tail_of_path.1), (cone_in, End::Left)], 0.4);
+                b.join(
+                    "cat_a",
+                    &[(tail_of_path.0, tail_of_path.1), (cone_in, End::Left)],
+                    0.4,
+                );
                 // flow enters and leaves the monolith through its channel mouths: contraction in, expansion out
                 let a_open = b.area_of(mono, End::Left);
                 let a_can = std::f32::consts::FRAC_PI_4 * d_can * d_can;
@@ -357,7 +448,12 @@ impl ExhaustSystem {
                 b.net.add_node(n2);
                 ducts_body.extend([cone_in, cone_out]);
                 let wcan = b.wall(pmat, Some(1.2), false, d_can);
-                b.body(&format!("cat{si}"), vec![cone_in, mono, cone_out], d_can, wcan);
+                b.body(
+                    &format!("cat{si}"),
+                    vec![cone_in, mono, cone_out],
+                    d_can,
+                    wcan,
+                );
                 tail_of_path = (cone_out, End::Right);
             }
 
@@ -366,21 +462,42 @@ impl ExhaustSystem {
             let wmid2 = b.wall(pmat, Some(1.6), false, d_main);
             let mid1 = b.duct(&format!("mid{si}a"), 0.5 * l_mid, d_main, d_main, wmid);
             let mid2 = b.duct(&format!("mid{si}b"), 0.5 * l_mid, d_main, d_main, wmid2);
-            b.join(&format!("to_mid{si}"), &[(tail_of_path.0, tail_of_path.1), (mid1, End::Left)], 0.5);
+            b.join(
+                &format!("to_mid{si}"),
+                &[(tail_of_path.0, tail_of_path.1), (mid1, End::Left)],
+                0.5,
+            );
             ducts_body.extend([mid1, mid2]);
             mids.push((mid1, mid2));
-            side_len[si] = ducts_body.iter().map(|&d| b.net.grid.ducts[d].length).sum::<f32>();
+            side_len[si] = ducts_body
+                .iter()
+                .map(|&d| b.net.grid.ducts[d].length)
+                .sum::<f32>();
             let wb = b.wall(pmat, Some(1.6), false, d_main);
             b.body(&format!("pipes{si}"), ducts_body, d_main, wb);
         }
 
         // junctions between the mid halves: crossover and/or stock resonator
         let stock_res = tun.muffler == Muffler::Stock && !diesel;
-        let f_res_target = (cfg.redline_rpm as f32 * 0.30 / 60.0 * n as f32 * 0.5).clamp(55.0, 260.0);
-        let cross = if sides == 2 { tun.crossover } else { Crossover::None };
+        let f_res_target =
+            (cfg.redline_rpm as f32 * 0.30 / 60.0 * n as f32 * 0.5).clamp(55.0, 260.0);
+        let cross = if sides == 2 {
+            tun.crossover
+        } else {
+            Crossover::None
+        };
         match cross {
             Crossover::XPipe if sides == 2 => {
-                b.join("xpipe", &[(mids[0].0, End::Right), (mids[1].0, End::Right), (mids[0].1, End::Left), (mids[1].1, End::Left)], 0.3);
+                b.join(
+                    "xpipe",
+                    &[
+                        (mids[0].0, End::Right),
+                        (mids[1].0, End::Right),
+                        (mids[0].1, End::Left),
+                        (mids[1].1, End::Left),
+                    ],
+                    0.3,
+                );
             }
             _ => {
                 let h = if cross == Crossover::HPipe && sides == 2 {
@@ -390,9 +507,14 @@ impl ExhaustSystem {
                     None
                 };
                 for si in 0..sides {
-                    let mut node = Node::junction(&format!("mid_joint{si}")).with_leg(PipeLeg::new(mids[si].0, End::Right)).with_leg(PipeLeg::new(mids[si].1, End::Left));
+                    let mut node = Node::junction(&format!("mid_joint{si}"))
+                        .with_leg(PipeLeg::new(mids[si].0, End::Right))
+                        .with_leg(PipeLeg::new(mids[si].1, End::Left));
                     if let Some(hp) = h {
-                        node = node.with_leg(PipeLeg::new(hp, if si == 0 { End::Left } else { End::Right }).with_loss(0.3, 0.3));
+                        node = node.with_leg(
+                            PipeLeg::new(hp, if si == 0 { End::Left } else { End::Right })
+                                .with_loss(0.3, 0.3),
+                        );
                     }
                     if stock_res {
                         // Helmholtz resonator tuned to the drone band
@@ -409,7 +531,12 @@ impl ExhaustSystem {
                 }
                 if let Some(hp) = h {
                     let _ = hp;
-                    b.body("hpipe", vec![hp], 0.85 * d_main, b.wall(pmat, Some(1.5), false, 0.85 * d_main));
+                    b.body(
+                        "hpipe",
+                        vec![hp],
+                        0.85 * d_main,
+                        b.wall(pmat, Some(1.5), false, 0.85 * d_main),
+                    );
                 }
             }
         }
@@ -418,10 +545,15 @@ impl ExhaustSystem {
         let v_can = 4.5e-3 * disp_side; // m^3
         for si in 0..sides {
             let from = mids[si].1;
-            let (entry, exit, mut can_ducts, can_dia, can_len) = build_muffler(&mut b, tun.muffler, si, d_main, v_can, pmat, diesel);
+            let (entry, exit, mut can_ducts, can_dia, can_len) =
+                build_muffler(&mut b, tun.muffler, si, d_main, v_can, pmat, diesel);
             // mid2 -> muffler entry
             if let Some(entry) = entry {
-                b.join(&format!("to_muffler{si}"), &[(from, End::Right), (entry, End::Left)], 1.0);
+                b.join(
+                    &format!("to_muffler{si}"),
+                    &[(from, End::Right), (entry, End::Left)],
+                    1.0,
+                );
             }
             let after = exit.unwrap_or(from);
             // dual tips on single-sided cars with a sport or straight can
@@ -439,14 +571,27 @@ impl ExhaustSystem {
             b.join(&format!("to_tail{si}"), &legs, 1.0);
             for (t, &td) in tail_ducts.iter().enumerate() {
                 let area = b.area_of(td, End::Right);
-                let node = b.net.add_node(Node::open(&format!("mouth{si}_{t}"), PipeLeg::new(td, End::Right), OpenEnd::radiating(area)));
-                tails_out.push(Tail { node, duct: td, diameter: d_tail });
+                let node = b.net.add_node(Node::open(
+                    &format!("mouth{si}_{t}"),
+                    PipeLeg::new(td, End::Right),
+                    OpenEnd::radiating(area),
+                ));
+                tails_out.push(Tail {
+                    node,
+                    duct: td,
+                    diameter: d_tail,
+                });
             }
             let wt = b.wall(pmat, Some(1.6), false, d_tail);
             b.body(&format!("tailpipe{si}"), tail_ducts.clone(), d_tail, wt);
             if !can_ducts.is_empty() {
                 let wcan = b.wall(pmat, Some(1.1), false, can_dia);
-                b.body(&format!("muffler{si}"), std::mem::take(&mut can_ducts), can_dia, wcan);
+                b.body(
+                    &format!("muffler{si}"),
+                    std::mem::take(&mut can_ducts),
+                    can_dia,
+                    wcan,
+                );
             }
             side_len[si] += can_len + l_tail;
         }
@@ -500,7 +645,15 @@ impl ExhaustSystem {
                 break;
             }
         }
-        (0..nd).map(|d| if start[d].is_finite() { start[d] + 0.5 * self.net.grid.ducts[d].length } else { 0.0 }).collect()
+        (0..nd)
+            .map(|d| {
+                if start[d].is_finite() {
+                    start[d] + 0.5 * self.net.grid.ducts[d].length
+                } else {
+                    0.0
+                }
+            })
+            .collect()
     }
 
     /// Sets a cylinder's exhaust-valve effective area (0 = closed).
@@ -516,7 +669,9 @@ impl ExhaustSystem {
         for d in 0..self.net.grid.ducts.len() {
             let tg = t_amb + (egt_k - t_amb) * (-self.dist[d] / 3.5).exp();
             self.net.grid.fill(d, self.net.env.p_amb, tg);
-            self.net.grid.set_wall_temperature(d, t_amb + 0.8 * (tg - t_amb));
+            self.net
+                .grid
+                .set_wall_temperature(d, t_amb + 0.8 * (tg - t_amb));
         }
     }
 
@@ -548,7 +703,15 @@ impl ExhaustSystem {
 
 /// Adds the muffler of `kind` for one side. Returns (entry duct, exit duct, ducts inside the can,
 /// can diameter); both ends are `None` when there is no muffler.
-fn build_muffler(b: &mut Builder, kind: Muffler, si: usize, d_main: f32, v_can: f32, mat: PipeMaterial, _diesel: bool) -> (Option<usize>, Option<usize>, Vec<usize>, f32, f32) {
+fn build_muffler(
+    b: &mut Builder,
+    kind: Muffler,
+    si: usize,
+    d_main: f32,
+    v_can: f32,
+    mat: PipeMaterial,
+    _diesel: bool,
+) -> (Option<usize>, Option<usize>, Vec<usize>, f32, f32) {
     let a_main = std::f32::consts::FRAC_PI_4 * d_main * d_main;
     if kind == Muffler::Delete {
         return (None, None, vec![], d_main, 0.0);
@@ -558,14 +721,20 @@ fn build_muffler(b: &mut Builder, kind: Muffler, si: usize, d_main: f32, v_can: 
         Muffler::Sport => 0.48,
         _ => 0.50,
     };
-    let d_can = (4.0 * v_can / (std::f32::consts::PI * l_can)).sqrt().clamp(d_main * 1.6, 0.30);
+    let d_can = (4.0 * v_can / (std::f32::consts::PI * l_can))
+        .sqrt()
+        .clamp(d_main * 1.6, 0.30);
     let a_can = std::f32::consts::FRAC_PI_4 * d_can * d_can;
     let wall = |b: &Builder, d: f32| b.wall(mat, Some(1.1), false, d);
     let mut inside = Vec::new();
     let (entry, exit);
     match kind {
         Muffler::Stock | Muffler::Sport => {
-            let fr: &[f32] = if kind == Muffler::Stock { &[0.34, 0.28, 0.38] } else { &[0.5, 0.5] };
+            let fr: &[f32] = if kind == Muffler::Stock {
+                &[0.34, 0.28, 0.38]
+            } else {
+                &[0.5, 0.5]
+            };
             let hole = if kind == Muffler::Stock { 1.5 } else { 2.2 } * a_main;
             let w = wall(b, d_main);
             let inlet = b.duct(&format!("mu_in{si}"), 0.12, d_main, d_main, w);
@@ -584,8 +753,16 @@ fn build_muffler(b: &mut Builder, kind: Muffler, si: usize, d_main: f32, v_can: 
                 let loss = (a_can / (0.65 * hole) - 1.0).powi(2);
                 let iner = 0.045 * a_can / hole;
                 let node = Node::junction("mu_baffle")
-                    .with_leg(PipeLeg::new(prev, End::Right).with_loss(0.5 * loss, 0.5 * loss).with_inertance(0.5 * iner))
-                    .with_leg(PipeLeg::new(chs[k], End::Left).with_loss(0.5 * loss, 0.5 * loss).with_inertance(0.5 * iner));
+                    .with_leg(
+                        PipeLeg::new(prev, End::Right)
+                            .with_loss(0.5 * loss, 0.5 * loss)
+                            .with_inertance(0.5 * iner),
+                    )
+                    .with_leg(
+                        PipeLeg::new(chs[k], End::Left)
+                            .with_loss(0.5 * loss, 0.5 * loss)
+                            .with_inertance(0.5 * iner),
+                    );
                 // the middle chamber of a stock can has perforations into a closed side volume
                 if kind == Muffler::Stock && k == 1 {
                     let aux = b.chamber(0.3 * v_can);
@@ -598,7 +775,11 @@ fn build_muffler(b: &mut Builder, kind: Muffler, si: usize, d_main: f32, v_can: 
             }
             let w = wall(b, d_main);
             let outlet = b.duct(&format!("mu_out{si}"), 0.12, d_main, d_main, w);
-            b.join("mu_contract", &[(prev, End::Right), (outlet, End::Left)], 1.0);
+            b.join(
+                "mu_contract",
+                &[(prev, End::Right), (outlet, End::Left)],
+                1.0,
+            );
             inside.extend([inlet, outlet]);
             entry = inlet;
             exit = outlet;
@@ -623,7 +804,10 @@ fn build_muffler(b: &mut Builder, kind: Muffler, si: usize, d_main: f32, v_can: 
                 // absorber-packed annular chamber
                 let ci = b.chamber(v_seg);
                 let neck = SlugLeg::new(ci, a_holes, l_eff).with_resistance(380.0);
-                let n = Node::junction("mu_core_joint").with_leg(PipeLeg::new(ducts[k], End::Right)).with_leg(PipeLeg::new(ducts[k + 1], End::Left)).with_slug(neck);
+                let n = Node::junction("mu_core_joint")
+                    .with_leg(PipeLeg::new(ducts[k], End::Right))
+                    .with_leg(PipeLeg::new(ducts[k + 1], End::Left))
+                    .with_slug(neck);
                 b.net.add_node(n);
             }
             entry = ducts[0];
@@ -649,16 +833,32 @@ mod tests {
         for cfg in engines() {
             let banks = banks_for(&cfg);
             let tuning = Tuning::default();
-            let sys = ExhaustSystem::build(&ExhaustInputs { cfg: &cfg, tuning: &tuning, banks: &banks, dx: 0.035, env: Env::new(101_325.0, 293.0), res_base: cfg.cylinder_count });
+            let sys = ExhaustSystem::build(&ExhaustInputs {
+                cfg: &cfg,
+                tuning: &tuning,
+                banks: &banks,
+                dx: 0.035,
+                env: Env::new(101_325.0, 293.0),
+                res_base: cfg.cylinder_count,
+            });
             let r = &sys.report;
             println!(
                 "{:>9}: {} cells, {} nodes, {} tail(s), sides {}, primary {:.2} m d {:.0} mm, main {:.0} mm, path {:.2} m, resonator {:?} Hz",
                 cfg.id, r.cells, r.nodes, r.tails, r.sides, r.primary_length, r.primary_diameter * 1e3, r.main_diameter * 1e3, r.path_length, r.resonator_hz
             );
             assert!(r.tails >= 1);
-            assert!(r.cells > 40 && r.cells < 900, "{}: {} cells", cfg.id, r.cells);
+            assert!(
+                r.cells > 40 && r.cells < 900,
+                "{}: {} cells",
+                cfg.id,
+                r.cells
+            );
             assert_eq!(sys.port_node.len(), cfg.cylinder_count);
-            assert!(r.primary_diameter > 0.02 && r.primary_diameter < 0.09, "{}", r.primary_diameter);
+            assert!(
+                r.primary_diameter > 0.02 && r.primary_diameter < 0.09,
+                "{}",
+                r.primary_diameter
+            );
             assert!(r.main_diameter > 0.04 && r.main_diameter < 0.12);
         }
     }
@@ -676,12 +876,21 @@ mod tests {
         let mut env = Env::new(101_325.0, 293.0);
         env.tol = 0.02;
         let n = cfg.cylinder_count;
-        let mut sys = ExhaustSystem::build(&ExhaustInputs { cfg: &cfg, tuning, banks: &banks, dx: 0.03, env, res_base: n });
+        let mut sys = ExhaustSystem::build(&ExhaustInputs {
+            cfg: &cfg,
+            tuning,
+            banks: &banks,
+            dx: 0.03,
+            env,
+            res_base: n,
+        });
         for d in 0..sys.net.grid.ducts.len() {
             sys.net.grid.fill(d, env.p_amb, t_gas);
         }
         sys.net.grid.dissipation = false;
-        let mut res: Vec<Reservoir> = (0..n).map(|_| Reservoir::new(Gas::EXHAUST, 5.0e-4, env.p_amb, t_gas)).collect();
+        let mut res: Vec<Reservoir> = (0..n)
+            .map(|_| Reservoir::new(Gas::EXHAUST, 5.0e-4, env.p_amb, t_gas))
+            .collect();
         res.extend(sys.chambers.iter().map(|c| {
             let mut c = c.clone();
             c.set_state(env.p_amb, t_gas);
@@ -717,26 +926,58 @@ mod tests {
                 let k0 = (f / df) as usize;
                 let k1 = (f * 1.08 / df) as usize;
                 let tdv = psd[k0..=k1].iter().cloned().fold(0.0f64, f64::max);
-                let fdv = lin2.radiated_response(sys.port_node[0], 1.0, &[f, f * 1.02, f * 1.04, f * 1.06]).iter().cloned().fold(0.0f64, f64::max);
-                println!("{f:6.0} Hz  td {:6.1} dB   tm {:6.1} dB", 10.0 * tdv.max(1e-30).log10(), 20.0 * fdv.max(1e-30).log10());
+                let fdv = lin2
+                    .radiated_response(sys.port_node[0], 1.0, &[f, f * 1.02, f * 1.04, f * 1.06])
+                    .iter()
+                    .cloned()
+                    .fold(0.0f64, f64::max);
+                println!(
+                    "{f:6.0} Hz  td {:6.1} dB   tm {:6.1} dB",
+                    10.0 * tdv.max(1e-30).log10(),
+                    20.0 * fdv.max(1e-30).log10()
+                );
                 f *= 1.08;
             }
         }
-        let td: Vec<f64> = peaks(&spectrum(&p[2000..], 32768), 44_100.0, 150.0, 700.0, 8.0).iter().take(8).map(|x| x.0).collect();
+        let td: Vec<f64> = peaks(&spectrum(&p[2000..], 32768), 44_100.0, 150.0, 700.0, 8.0)
+            .iter()
+            .take(8)
+            .map(|x| x.0)
+            .collect();
         let mut lin = Linear::new(&sys.net, &sys.chambers, sys.res_base);
         lin.temperature = Some(t_gas);
         lin.alpha = 0.004;
-        let fd: Vec<f64> = lin.resonances(sys.port_node[0], 150.0, 700.0, 20).iter().map(|x| x.0).collect();
+        let fd: Vec<f64> = lin
+            .resonances(sys.port_node[0], 150.0, 700.0, 20)
+            .iter()
+            .map(|x| x.0)
+            .collect();
         (td, fd)
     }
 
     #[test]
     fn time_domain_and_transfer_matrix_agree_on_the_resonances_of_a_real_exhaust() {
-        for (id, tuning) in [("i4", Tuning::default()), ("v8", Tuning::default()), ("i6", Tuning { muffler: Muffler::Sport, ..Tuning::default() })] {
+        for (id, tuning) in [
+            ("i4", Tuning::default()),
+            ("v8", Tuning::default()),
+            (
+                "i6",
+                Tuning {
+                    muffler: Muffler::Sport,
+                    ..Tuning::default()
+                },
+            ),
+        ] {
             let (td, fd) = ring_and_compare(id, &tuning, 600.0);
-            println!("{id} {:?}/{:?}
+            println!(
+                "{id} {:?}/{:?}
   time domain: {:?}
-  transfer matrix: {:?}", tuning.muffler, tuning.cat, td.iter().map(|f| f.round() as i32).collect::<Vec<_>>(), fd.iter().map(|f| f.round() as i32).collect::<Vec<_>>());
+  transfer matrix: {:?}",
+                tuning.muffler,
+                tuning.cat,
+                td.iter().map(|f| f.round() as i32).collect::<Vec<_>>(),
+                fd.iter().map(|f| f.round() as i32).collect::<Vec<_>>()
+            );
             assert!(td.len() >= 3 && fd.len() >= 3);
             let mut matched = 0;
             for f in td.iter().take(6) {
@@ -752,19 +993,73 @@ mod tests {
     #[ignore]
     fn ring_configs_report() {
         let cases: Vec<(&str, Tuning)> = vec![
-            ("v8 pipes only", Tuning { muffler: Muffler::Delete, cat: Cat::Delete, ..Tuning::default() }),
-            ("v8 pipes + stock cat", Tuning { muffler: Muffler::Delete, ..Tuning::default() }),
-            ("v8 pipes + straight can", Tuning { muffler: Muffler::Straight, cat: Cat::Delete, ..Tuning::default() }),
-            ("v8 pipes + sport can", Tuning { muffler: Muffler::Sport, cat: Cat::Delete, ..Tuning::default() }),
-            ("v8 pipes + stock can", Tuning { muffler: Muffler::Stock, cat: Cat::Delete, ..Tuning::default() }),
-            ("v8 pipes, no crossover", Tuning { muffler: Muffler::Delete, cat: Cat::Delete, crossover: Crossover::None, ..Tuning::default() }),
-            ("v8 pipes, x-pipe", Tuning { muffler: Muffler::Delete, cat: Cat::Delete, crossover: Crossover::XPipe, ..Tuning::default() }),
+            (
+                "v8 pipes only",
+                Tuning {
+                    muffler: Muffler::Delete,
+                    cat: Cat::Delete,
+                    ..Tuning::default()
+                },
+            ),
+            (
+                "v8 pipes + stock cat",
+                Tuning {
+                    muffler: Muffler::Delete,
+                    ..Tuning::default()
+                },
+            ),
+            (
+                "v8 pipes + straight can",
+                Tuning {
+                    muffler: Muffler::Straight,
+                    cat: Cat::Delete,
+                    ..Tuning::default()
+                },
+            ),
+            (
+                "v8 pipes + sport can",
+                Tuning {
+                    muffler: Muffler::Sport,
+                    cat: Cat::Delete,
+                    ..Tuning::default()
+                },
+            ),
+            (
+                "v8 pipes + stock can",
+                Tuning {
+                    muffler: Muffler::Stock,
+                    cat: Cat::Delete,
+                    ..Tuning::default()
+                },
+            ),
+            (
+                "v8 pipes, no crossover",
+                Tuning {
+                    muffler: Muffler::Delete,
+                    cat: Cat::Delete,
+                    crossover: Crossover::None,
+                    ..Tuning::default()
+                },
+            ),
+            (
+                "v8 pipes, x-pipe",
+                Tuning {
+                    muffler: Muffler::Delete,
+                    cat: Cat::Delete,
+                    crossover: Crossover::XPipe,
+                    ..Tuning::default()
+                },
+            ),
         ];
         for (name, t) in cases {
             let (td, fd) = ring_and_compare("v8", &t, 600.0);
-            println!("{name}
+            println!(
+                "{name}
   time domain: {:?}
-  transfer matrix: {:?}", td.iter().map(|f| f.round() as i32).collect::<Vec<_>>(), fd.iter().map(|f| f.round() as i32).collect::<Vec<_>>());
+  transfer matrix: {:?}",
+                td.iter().map(|f| f.round() as i32).collect::<Vec<_>>(),
+                fd.iter().map(|f| f.round() as i32).collect::<Vec<_>>()
+            );
         }
     }
 
@@ -775,10 +1070,29 @@ mod tests {
         let env = Env::new(101_325.0, 293.0);
         let mut counts = Vec::new();
         for cross in Crossover::ALL {
-            let t = Tuning { crossover: cross, muffler: Muffler::Delete, cat: Cat::Delete, ..Tuning::default() };
-            let sys = ExhaustSystem::build(&ExhaustInputs { cfg: &cfg, tuning: &t, banks: &banks, dx: 0.035, env, res_base: 8 });
+            let t = Tuning {
+                crossover: cross,
+                muffler: Muffler::Delete,
+                cat: Cat::Delete,
+                ..Tuning::default()
+            };
+            let sys = ExhaustSystem::build(&ExhaustInputs {
+                cfg: &cfg,
+                tuning: &t,
+                banks: &banks,
+                dx: 0.035,
+                env,
+                res_base: 8,
+            });
             let legs: Vec<usize> = sys.net.nodes.iter().map(|n| n.legs.len()).collect();
-            println!("{:?}: {} nodes, {} ducts, max legs {}, 4-leg nodes {}", cross, sys.net.nodes.len(), sys.net.grid.ducts.len(), legs.iter().max().unwrap(), legs.iter().filter(|&&l| l == 4).count());
+            println!(
+                "{:?}: {} nodes, {} ducts, max legs {}, 4-leg nodes {}",
+                cross,
+                sys.net.nodes.len(),
+                sys.net.grid.ducts.len(),
+                legs.iter().max().unwrap(),
+                legs.iter().filter(|&&l| l == 4).count()
+            );
             counts.push((sys.net.nodes.len(), sys.net.grid.ducts.len()));
         }
         assert_ne!(counts[0], counts[1], "an H-pipe adds a duct");
@@ -789,26 +1103,63 @@ mod tests {
     /// outlet duct, pipe area).
     fn muffler_rig(kind: Muffler, gas: Gas) -> (Network, Vec<Reservoir>, usize, usize, usize, f32) {
         let env = Env::new(101_325.0, 293.0);
-        let mut b = Builder { net: Network::new(env, gas), chambers: Vec::new(), res_base: 0, bodies: Vec::new(), dx: 0.03, wall_scale: 1.0, env, _cfg: std::marker::PhantomData };
+        let mut b = Builder {
+            net: Network::new(env, gas),
+            chambers: Vec::new(),
+            res_base: 0,
+            bodies: Vec::new(),
+            dx: 0.03,
+            wall_scale: 1.0,
+            env,
+            _cfg: std::marker::PhantomData,
+        };
         let d_main = 0.063;
         let w = |b: &Builder| b.wall(PipeMaterial::MildSteel, Some(1.6), false, d_main);
         let (wa, wb) = (w(&b), w(&b));
         let inlet = b.duct("src", 1.5, d_main, d_main, wa);
-        let (entry, exit, _, _, _) = build_muffler(&mut b, kind, 0, d_main, 4.5e-3 * 3.1, PipeMaterial::MildSteel, false);
+        let (entry, exit, _, _, _) = build_muffler(
+            &mut b,
+            kind,
+            0,
+            d_main,
+            4.5e-3 * 3.1,
+            PipeMaterial::MildSteel,
+            false,
+        );
         let outlet = b.duct("out", 1.5, d_main, d_main, wb);
         let a_in = b.net.grid.end_area(inlet, End::Left);
-        let n_in = b.net.add_node(Node::open("src_end", PipeLeg::new(inlet, End::Left), OpenEnd::anechoic(a_in)));
-        b.join("to_can", &[(inlet, End::Right), (entry.unwrap(), End::Left)], 1.0);
-        b.join("from_can", &[(exit.unwrap(), End::Right), (outlet, End::Left)], 1.0);
+        let n_in = b.net.add_node(Node::open(
+            "src_end",
+            PipeLeg::new(inlet, End::Left),
+            OpenEnd::anechoic(a_in),
+        ));
+        b.join(
+            "to_can",
+            &[(inlet, End::Right), (entry.unwrap(), End::Left)],
+            1.0,
+        );
+        b.join(
+            "from_can",
+            &[(exit.unwrap(), End::Right), (outlet, End::Left)],
+            1.0,
+        );
         let a_out = b.net.grid.end_area(outlet, End::Right);
-        b.net.add_node(Node::open("out_end", PipeLeg::new(outlet, End::Right), OpenEnd::anechoic(a_out)));
+        b.net.add_node(Node::open(
+            "out_end",
+            PipeLeg::new(outlet, End::Right),
+            OpenEnd::anechoic(a_out),
+        ));
         (b.net, b.chambers, n_in, inlet, outlet, a_in)
     }
 
     /// Transmission loss (dB) of a muffler design from the transfer-matrix method.
     fn muffler_tl_tm(kind: Muffler, freqs: &[f64]) -> Vec<f64> {
         let (net, chambers, n_in, _, _, a_in) = muffler_rig(kind, Gas::AIR);
-        let lin = Linear { temperature: Some(293.0), alpha: 0.0, ..Linear::new(&net, &chambers, 0) };
+        let lin = Linear {
+            temperature: Some(293.0),
+            alpha: 0.0,
+            ..Linear::new(&net, &chambers, 0)
+        };
         let out_node = net.nodes.len() - 1;
         let z0 = 1.2 * 343.0 / a_in as f64;
         freqs
@@ -830,14 +1181,31 @@ mod tests {
             let avg = tl.iter().sum::<f64>() / tl.len() as f64;
             let worst = tl.iter().cloned().fold(f64::MAX, f64::min);
             let best = tl.iter().cloned().fold(f64::MIN, f64::max);
-            println!("{kind:?}: mean TL {avg:.1} dB over 100-1000 Hz, min {worst:.1}, max {best:.1}");
+            println!(
+                "{kind:?}: mean TL {avg:.1} dB over 100-1000 Hz, min {worst:.1}, max {best:.1}"
+            );
             mean.push(avg);
         }
         // real production mufflers: 20-40 dB; chambered performance cans 10-30 dB; glass-pack straight-throughs 5-20 dB
-        assert!((12.0..45.0).contains(&mean[0]), "stock muffler TL {}", mean[0]);
-        assert!((6.0..32.0).contains(&mean[1]), "sport muffler TL {}", mean[1]);
-        assert!((2.0..22.0).contains(&mean[2]), "straight-through TL {}", mean[2]);
-        assert!(mean[0] > mean[1] && mean[1] > mean[2], "stock > sport > straight-through: {mean:?}");
+        assert!(
+            (12.0..45.0).contains(&mean[0]),
+            "stock muffler TL {}",
+            mean[0]
+        );
+        assert!(
+            (6.0..32.0).contains(&mean[1]),
+            "sport muffler TL {}",
+            mean[1]
+        );
+        assert!(
+            (2.0..22.0).contains(&mean[2]),
+            "straight-through TL {}",
+            mean[2]
+        );
+        assert!(
+            mean[0] > mean[1] && mean[1] > mean[2],
+            "stock > sport > straight-through: {mean:?}"
+        );
     }
 
     #[test]
@@ -864,7 +1232,11 @@ mod tests {
             let td: Vec<f64> = freqs
                 .iter()
                 .map(|f| {
-                    let sel: Vec<f64> = curve.iter().filter(|(g, _)| (g - f).abs() < 15.0).map(|(_, r)| -10.0 * r.log10()).collect();
+                    let sel: Vec<f64> = curve
+                        .iter()
+                        .filter(|(g, _)| (g - f).abs() < 15.0)
+                        .map(|(_, r)| -10.0 * r.log10())
+                        .collect();
                     sel.iter().sum::<f64>() / sel.len() as f64
                 })
                 .collect();
@@ -874,7 +1246,10 @@ mod tests {
             let n = td.len() as f64;
             let (mt, mm) = (td.iter().sum::<f64>() / n, tm.iter().sum::<f64>() / n);
             let cov: f64 = td.iter().zip(&tm).map(|(a, b)| (a - mt) * (b - mm)).sum();
-            let (vt, vm): (f64, f64) = (td.iter().map(|a| (a - mt).powi(2)).sum(), tm.iter().map(|b| (b - mm).powi(2)).sum());
+            let (vt, vm): (f64, f64) = (
+                td.iter().map(|a| (a - mt).powi(2)).sum(),
+                tm.iter().map(|b| (b - mm).powi(2)).sum(),
+            );
             let corr = cov / (vt * vm).sqrt();
             println!("{kind:?}: time-domain vs transfer-matrix TL: correlation {corr:.2}, median offset {median:.1} dB, mean TL {mt:.1} vs {mm:.1} dB");
             if std::env::var_os("TL_DEBUG").is_some() {
@@ -885,8 +1260,14 @@ mod tests {
             results.push((kind, corr, median));
         }
         for (kind, corr, median) in results {
-            assert!(corr > 0.75, "{kind:?}: TL curves do not follow each other (correlation {corr})");
-            assert!(median < 6.0, "{kind:?}: the two methods are {median} dB apart");
+            assert!(
+                corr > 0.75,
+                "{kind:?}: TL curves do not follow each other (correlation {corr})"
+            );
+            assert!(
+                median < 6.0,
+                "{kind:?}: the two methods are {median} dB apart"
+            );
         }
     }
 }

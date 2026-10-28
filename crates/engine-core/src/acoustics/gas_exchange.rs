@@ -117,16 +117,36 @@ impl GasPath {
         let n = cfg.cylinder_count;
         let valves = valve_train(cfg);
         let geom = CylGeom::new(cfg);
-        let exhaust = ExhaustSystem::build(&ExhaustInputs { cfg, tuning, banks, dx, env, res_base: n });
+        let exhaust = ExhaustSystem::build(&ExhaustInputs {
+            cfg,
+            tuning,
+            banks,
+            dx,
+            env,
+            res_base: n,
+        });
         let offsets = firing_offsets(cfg);
         // each cylinder starts as ambient air in the volume its piston sits at (crank angle 0)
-        let mut res: Vec<Reservoir> = (0..n).map(|i| {
-            let mut r = Reservoir::new(super::gas::Gas::EXHAUST, geom.volume((0.0f32 - offsets[i]).rem_euclid(720.0)), env.p_amb, env.t_amb);
-            r.min_mass = 1.0e-8;
-            r
-        }).collect();
+        let mut res: Vec<Reservoir> = (0..n)
+            .map(|i| {
+                let mut r = Reservoir::new(
+                    super::gas::Gas::EXHAUST,
+                    geom.volume((0.0f32 - offsets[i]).rem_euclid(720.0)),
+                    env.p_amb,
+                    env.t_amb,
+                );
+                r.min_mass = 1.0e-8;
+                r
+            })
+            .collect();
         res.extend(exhaust.chambers.iter().cloned());
-        let intake = IntakeSystem::build(&IntakeInputs { cfg, tuning, dx: dx * 1.1, env, res_base: res.len() });
+        let intake = IntakeSystem::build(&IntakeInputs {
+            cfg,
+            tuning,
+            dx: dx * 1.1,
+            env,
+            res_base: res.len(),
+        });
         res.extend(intake.chambers.iter().cloned());
         let nb = exhaust.bodies.len();
         let nt = exhaust.tails.len();
@@ -197,7 +217,11 @@ impl GasPath {
             }
         }
         let n = self.cfg.cylinder_count;
-        let nc = self.exhaust.chambers.len().min(other.exhaust.chambers.len());
+        let nc = self
+            .exhaust
+            .chambers
+            .len()
+            .min(other.exhaust.chambers.len());
         for k in 0..nc {
             let t = other.res[n + k].t();
             let r = &mut self.res[n + k];
@@ -217,7 +241,11 @@ impl GasPath {
 
     /// Advances the gas path by `dt` seconds at `rpm`, splitting the step if the CFL limit needs it.
     pub fn step(&mut self, dt: f32, rpm: f32) {
-        let sub = self.exhaust.net.substeps_for(dt, 0.95).max(self.intake.net.substeps_for(dt, 0.95));
+        let sub = self
+            .exhaust
+            .net
+            .substeps_for(dt, 0.95)
+            .max(self.intake.net.substeps_for(dt, 0.95));
         self.substeps = sub;
         self.calls += 1;
         self.sub_total += sub as u64;
@@ -229,12 +257,20 @@ impl GasPath {
         // sound sources read once per call
         for (k, t) in self.exhaust.tails.iter().enumerate() {
             if let Some(oe) = self.exhaust.net.nodes[t.node].open_end() {
-                self.mouths[k] = MouthSample { q: oe.q, dq_dt: (oe.q - oe.q_prev) / h, u: oe.u_face };
+                self.mouths[k] = MouthSample {
+                    q: oe.q,
+                    dq_dt: (oe.q - oe.q_prev) / h,
+                    u: oe.u_face,
+                };
             }
         }
         for (k, &(node, _)) in self.intake.mouths.iter().enumerate() {
             if let Some(oe) = self.intake.net.nodes[node].open_end() {
-                self.intake_mouths[k] = MouthSample { q: -oe.q, dq_dt: -(oe.q - oe.q_prev) / h, u: oe.u_face };
+                self.intake_mouths[k] = MouthSample {
+                    q: -oe.q,
+                    dq_dt: -(oe.q - oe.q_prev) / h,
+                    u: oe.u_face,
+                };
             }
         }
         for b in 0..self.body_p.len() {
@@ -252,7 +288,11 @@ impl GasPath {
             let local = self.local(i);
             let prev = self.prev_local[i];
             // the exhaust valve just opened: the cylinder holds the burned charge the engine model says
-            let crossed = if prev <= local { prev < evo && local >= evo } else { prev < evo || local >= evo };
+            let crossed = if prev <= local {
+                prev < evo && local >= evo
+            } else {
+                prev < evo || local >= evo
+            };
             self.res[i].set_volume(self.geom.volume(local));
             if crossed {
                 // the charge burned: its fuel joins the gas and its temperature jumps; the mass the intake
@@ -277,7 +317,8 @@ impl GasPath {
             self.prev_local[i] = local;
             let area = self.valves.exhaust.area(local);
             self.exhaust.set_valve_area(i, area);
-            self.intake.set_valve_area(i, self.valves.intake.area(local));
+            self.intake
+                .set_valve_area(i, self.valves.intake.area(local));
         }
         // a stopped engine has nothing to hold the manifold below ambient: the pump would otherwise drive a
         // steady draught through whichever cylinder rests in valve overlap, and the solver noise riding on
@@ -308,14 +349,22 @@ impl GasPath {
             if v.area > 1.0e-7 && v.mdot.abs() > 1.0e-6 {
                 let (pc, pp) = (r.p(), nd.legs[0].p_face);
                 // out of the cylinder the jet is burned gas at the cylinder's temperature; back into it, port gas
-                wx += if v.mdot > 0.0 { jet_power(pc, pp, r.t(), v.mdot, 1.33, 288.7) } else { jet_power(pp, pc, 800.0, v.mdot, 1.33, 288.7) };
+                wx += if v.mdot > 0.0 {
+                    jet_power(pc, pp, r.t(), v.mdot, 1.33, 288.7)
+                } else {
+                    jet_power(pp, pc, 800.0, v.mdot, 1.33, 288.7)
+                };
             }
             let nd = &self.intake.net.nodes[self.intake.port_node[c]];
             let v = &nd.valves[0];
             if v.area > 1.0e-7 && v.mdot.abs() > 1.0e-6 {
                 let (pc, pp) = (r.p(), nd.legs[0].p_face);
                 // the reservoir is the cylinder: flow into it is negative
-                wi += if v.mdot < 0.0 { jet_power(pp, pc, self.env.t_amb + 10.0, v.mdot, 1.4, 287.0) } else { jet_power(pc, pp, r.t(), v.mdot, 1.33, 288.7) };
+                wi += if v.mdot < 0.0 {
+                    jet_power(pp, pc, self.env.t_amb + 10.0, v.mdot, 1.4, 287.0)
+                } else {
+                    jet_power(pc, pp, r.t(), v.mdot, 1.33, 288.7)
+                };
             }
         }
         (wx, wi)
@@ -360,19 +409,36 @@ mod tests {
         assert!(q.iter().all(|v| v.is_finite()));
         for n in &gp.exhaust.net.nodes {
             if n.fallbacks > 0 {
-                println!("  fallbacks in node {}: {} of {} solves; first: {}", n.name, n.fallbacks, n.solves, n.last_fail);
+                println!(
+                    "  fallbacks in node {}: {} of {} solves; first: {}",
+                    n.name, n.fallbacks, n.solves, n.last_fail
+                );
             }
         }
         let tail = &q[22_050..];
         let mean = tail.iter().sum::<f32>() / tail.len() as f32;
         let peak = tail.iter().cloned().fold(f32::MIN, f32::max);
         let trough = tail.iter().cloned().fold(f32::MAX, f32::min);
-        println!("tail flow: mean {:.4} m3/s, peak {:.4}, trough {:.4}; substeps {}; fallbacks {}", mean, peak, trough, gp.substeps, gp.exhaust.net.fallbacks());
+        println!(
+            "tail flow: mean {:.4} m3/s, peak {:.4}, trough {:.4}; substeps {}; fallbacks {}",
+            mean,
+            peak,
+            trough,
+            gp.substeps,
+            gp.exhaust.net.fallbacks()
+        );
         // gas leaves on average, and the flow pulses at the firing rate
         assert!(mean > 0.0, "net flow must be out of the pipe");
-        assert!(peak > 2.0 * mean, "flow should be pulsed: peak {peak} vs mean {mean}");
+        assert!(
+            peak > 2.0 * mean,
+            "flow should be pulsed: peak {peak} vs mean {mean}"
+        );
         let solves: u64 = gp.exhaust.net.nodes.iter().map(|n| n.solves).sum();
-        assert!((gp.exhaust.net.fallbacks() as f64) < 1.0e-3 * solves as f64, "Newton fallbacks {} of {solves}", gp.exhaust.net.fallbacks());
+        assert!(
+            (gp.exhaust.net.fallbacks() as f64) < 1.0e-3 * solves as f64,
+            "Newton fallbacks {} of {solves}",
+            gp.exhaust.net.fallbacks()
+        );
     }
 }
 
@@ -385,11 +451,29 @@ mod header_tuning {
     /// Mean pressure at the exhaust valve of cylinder 1 during the valve overlap, at WOT, in bar.
     fn overlap_pressure(id: &str, plen: f32, rpm: f32) -> f32 {
         let cfg = engine_by_id(id).unwrap();
-        let tuning = Tuning { header: Header::LongTube, primary_len_scale: plen as f64, crossover: crate::tuning::Crossover::None, ..Tuning::default() };
+        let tuning = Tuning {
+            header: Header::LongTube,
+            primary_len_scale: plen as f64,
+            crossover: crate::tuning::Crossover::None,
+            ..Tuning::default()
+        };
         let mut snd = EngineSound::new(&cfg, &tuning, &default_banks(&cfg), Quality::BALANCED);
         let inp = SoundInput {
-            rpm, throttle: 1.0, load: 1.0, map_pa: 95_000.0, atm_pa: 101_325.0, air_k: 293.0, charge_k: 305.0, afr: 12.8, egt_k: 950.0,
-            running: true, lit: true, burn: vec![1.0; cfg.cylinder_count], master: 1.0, serial: 1, ..Default::default()
+            rpm,
+            throttle: 1.0,
+            load: 1.0,
+            map_pa: 95_000.0,
+            atm_pa: 101_325.0,
+            air_k: 293.0,
+            charge_k: 305.0,
+            afr: 12.8,
+            egt_k: 950.0,
+            running: true,
+            lit: true,
+            burn: vec![1.0; cfg.cylinder_count],
+            master: 1.0,
+            serial: 1,
+            ..Default::default()
         };
         snd.preheat(900.0);
         snd.set_input(&inp);
@@ -406,7 +490,8 @@ mod header_tuning {
                     let local = snd.gas.local(c);
                     let open = ov.intake.open;
                     if local >= open - 12.0 || local < ov.exhaust.close() + 4.0 {
-                        let d = snd.gas.exhaust.net.nodes[snd.gas.exhaust.port_node[c]].legs[0].duct;
+                        let d =
+                            snd.gas.exhaust.net.nodes[snd.gas.exhaust.port_node[c]].legs[0].duct;
                         acc += snd.gas.exhaust.net.grid.p_at(d, 0) as f64;
                         n += 1;
                     }
@@ -423,7 +508,16 @@ mod header_tuning {
         let evo = crate::acoustics::valve_train(&cfg).exhaust.open;
         let ed = 180.0 + (540.0 - evo as f64);
         for plen in [0.6f32, 0.8, 1.0, 1.3] {
-            let sys = EngineSound::new(&cfg, &Tuning { header: Header::LongTube, primary_len_scale: plen as f64, ..Tuning::default() }, &default_banks(&cfg), Quality::BALANCED);
+            let sys = EngineSound::new(
+                &cfg,
+                &Tuning {
+                    header: Header::LongTube,
+                    primary_len_scale: plen as f64,
+                    ..Tuning::default()
+                },
+                &default_banks(&cfg),
+                Quality::BALANCED,
+            );
             let l = sys.gas.exhaust.report.primary_length as f64;
             let formula = 850.0 * ed / (l / 0.0254 + 3.0);
             let mut line = String::new();

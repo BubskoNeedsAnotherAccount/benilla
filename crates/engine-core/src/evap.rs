@@ -12,7 +12,11 @@ pub struct PurgeValve {
 
 impl Default for PurgeValve {
     fn default() -> Self {
-        Self { connected: true, stuck_open: false, stuck_closed: false }
+        Self {
+            connected: true,
+            stuck_open: false,
+            stuck_closed: false,
+        }
     }
 }
 
@@ -38,7 +42,11 @@ pub struct CanisterVentValve {
 
 impl Default for CanisterVentValve {
     fn default() -> Self {
-        Self { connected: true, stuck_open: false, stuck_closed: false }
+        Self {
+            connected: true,
+            stuck_open: false,
+            stuck_closed: false,
+        }
     }
 }
 
@@ -90,7 +98,9 @@ impl EvapSystem {
 
     /// Negative = richening, from vapor purge.
     pub fn purge_afr_adjustment(&self, commanded: f64) -> f64 {
-        -self.purge_valve.effective_open_fraction(commanded) * self.canister_saturation * EVAP_PURGE_RICHEN_SENSITIVITY
+        -self.purge_valve.effective_open_fraction(commanded)
+            * self.canister_saturation
+            * EVAP_PURGE_RICHEN_SENSITIVITY
     }
 
     /// Positive = leaning, from an unmetered line leak.
@@ -98,7 +108,13 @@ impl EvapSystem {
         self.leak_fraction * EVAP_LEAK_LEAN_SENSITIVITY
     }
 
-    pub fn update_tank_pressure(&mut self, dt: f64, manifold_vacuum_pa: f64, vent_commanded_closed: bool, purge_open_fraction: f64) {
+    pub fn update_tank_pressure(
+        &mut self,
+        dt: f64,
+        manifold_vacuum_pa: f64,
+        vent_commanded_closed: bool,
+        purge_open_fraction: f64,
+    ) {
         if !self.vent_valve.is_effectively_closed(vent_commanded_closed) {
             let alpha = 1.0 - (-dt / EVAP_VENT_OPEN_TIME_CONSTANT_S).exp();
             self.tank_pressure_pa += (0.0 - self.tank_pressure_pa) * alpha;

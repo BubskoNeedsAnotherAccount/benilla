@@ -88,7 +88,12 @@ pub enum Runners {
 }
 
 impl Runners {
-    pub const ALL: [Runners; 4] = [Runners::LongRunner, Runners::Stock, Runners::ShortRunner, Runners::Itb];
+    pub const ALL: [Runners; 4] = [
+        Runners::LongRunner,
+        Runners::Stock,
+        Runners::ShortRunner,
+        Runners::Itb,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Runners::LongRunner => "Long runners (torque)",
@@ -223,7 +228,12 @@ pub enum Muffler {
 }
 
 impl Muffler {
-    pub const ALL: [Muffler; 4] = [Muffler::Stock, Muffler::Sport, Muffler::Straight, Muffler::Delete];
+    pub const ALL: [Muffler; 4] = [
+        Muffler::Stock,
+        Muffler::Sport,
+        Muffler::Straight,
+        Muffler::Delete,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Muffler::Stock => "Stock muffler",
@@ -400,12 +410,19 @@ impl Tuning {
     }
 
     pub fn turbo_count_for(&self, cfg: &EngineConfig) -> u8 {
-        self.turbo_count.unwrap_or_else(|| stock_turbo_count(cfg)).min(MAX_TURBOS)
+        self.turbo_count
+            .unwrap_or_else(|| stock_turbo_count(cfg))
+            .min(MAX_TURBOS)
     }
 
     pub fn boost_bar_for(&self, cfg: &EngineConfig) -> f64 {
         self.boost_bar
-            .unwrap_or_else(|| cfg.turbo.as_ref().map(|t| t.max_boost_pa / 1.0e5).unwrap_or(0.7))
+            .unwrap_or_else(|| {
+                cfg.turbo
+                    .as_ref()
+                    .map(|t| t.max_boost_pa / 1.0e5)
+                    .unwrap_or(0.7)
+            })
             .clamp(BOOST_MIN_BAR, BOOST_MAX_BAR)
     }
 
@@ -434,14 +451,24 @@ impl Tuning {
         // Flow capacity vs demand. The stock layout is sized so it never chokes; a naturally
         // aspirated engine's single unit covers ~62% of what it would need at redline.
         let boost_bar = self.boost_bar_for(cfg);
-        let stock_boost_bar = cfg.turbo.as_ref().map(|t| t.max_boost_pa / 1.0e5).unwrap_or(0.7);
+        let stock_boost_bar = cfg
+            .turbo
+            .as_ref()
+            .map(|t| t.max_boost_pa / 1.0e5)
+            .unwrap_or(0.7);
         let stock_capacity = if cfg.turbo.is_some() { ref_count } else { 1.6 };
         let capacity = count as f64 * size;
         let pressure_demand = (1.0 + boost_bar) / (1.0 + stock_boost_bar);
         let ratio = capacity / stock_capacity / pressure_demand;
         let choke_rpm = cfg.redline_rpm * 1.05 * ratio.min(1.0e3);
 
-        Some(TurboSetup { count, max_boost_pa: boost_bar * 1.0e5, full_spool_rpm, spool_tau_s, choke_rpm })
+        Some(TurboSetup {
+            count,
+            max_boost_pa: boost_bar * 1.0e5,
+            full_spool_rpm,
+            spool_tau_s,
+            choke_rpm,
+        })
     }
 
     /// Fraction of target boost still delivered at `rpm` once the compressors start to choke.
@@ -491,9 +518,17 @@ impl Tuning {
         let pipe_mult = 1.0 / pipe.powf(2.4);
         // longer pipes rub more gas (friction ~ length / diameter^5); fatter primaries flow better.
         // All of these are exactly 1 at their stock values.
-        let primary = self.primary_len_scale.clamp(0.5, 2.0).powf(0.35) / self.primary_dia_scale.clamp(0.7, 1.5).powf(1.8);
-        let run = (0.6 * self.mid_len_scale.clamp(0.3, 2.5) + 0.4 * self.tail_len_scale.clamp(0.3, 2.5)).powf(0.25);
-        self.header.flow_mult() * self.cat.flow_mult() * self.muffler.flow_mult() * pipe_mult * primary * run
+        let primary = self.primary_len_scale.clamp(0.5, 2.0).powf(0.35)
+            / self.primary_dia_scale.clamp(0.7, 1.5).powf(1.8);
+        let run = (0.6 * self.mid_len_scale.clamp(0.3, 2.5)
+            + 0.4 * self.tail_len_scale.clamp(0.3, 2.5))
+        .powf(0.25);
+        self.header.flow_mult()
+            * self.cat.flow_mult()
+            * self.muffler.flow_mult()
+            * pipe_mult
+            * primary
+            * run
     }
 
     /// Length of the port (valve to header flange), m.
@@ -530,7 +565,8 @@ impl Tuning {
 
     /// Valve-to-collector length of the primaries as fitted, m.
     pub fn primary_total_length(&self, cfg: &EngineConfig) -> f64 {
-        Self::port_length(cfg) + self.header_base_length(cfg) * self.primary_len_scale.clamp(0.5, 2.0)
+        Self::port_length(cfg)
+            + self.header_base_length(cfg) * self.primary_len_scale.clamp(0.5, 2.0)
     }
 
     /// Scavenging multiplier (1.0 at stock tube geometry) from how well the primary tubes are tuned to
@@ -578,7 +614,9 @@ impl Tuning {
             })
         };
         for kv in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            let (k, v) = kv.split_once('=').ok_or_else(|| format!("expected key=value, got {kv}"))?;
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or_else(|| format!("expected key=value, got {kv}"))?;
             let f = v.parse::<f64>().ok();
             match (k, v) {
                 ("turbos", _) => t.turbo_count = v.parse().ok(),

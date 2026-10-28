@@ -22,7 +22,13 @@ impl CylGeom {
         let stroke = cfg.stroke_meters as f32;
         let piston_area = std::f32::consts::FRAC_PI_4 * bore * bore;
         let clearance = piston_area * stroke / (cfg.compression_ratio as f32 - 1.0);
-        CylGeom { bore, stroke, rod: cfg.rod_length_meters as f32, clearance, piston_area }
+        CylGeom {
+            bore,
+            stroke,
+            rod: cfg.rod_length_meters as f32,
+            clearance,
+            piston_area,
+        }
     }
 
     /// Cylinder volume at a local crank angle, m^3.
@@ -99,10 +105,22 @@ pub fn valve_train(cfg: &EngineConfig) -> ValveTrain {
     let ivo = 720.0 - 0.5 * overlap;
     let evc_abs = 720.0 + 0.5 * overlap;
     let evo = evc_abs - dur_ex;
-    let (a_ex, a_in) = if diesel { (0.085, 0.12) } else { (0.105, 0.145) };
+    let (a_ex, a_in) = if diesel {
+        (0.085, 0.12)
+    } else {
+        (0.105, 0.145)
+    };
     ValveTrain {
-        intake: Valve { open: ivo, dur: dur_in, peak_area: a_in * g.piston_area },
-        exhaust: Valve { open: evo, dur: dur_ex, peak_area: a_ex * g.piston_area },
+        intake: Valve {
+            open: ivo,
+            dur: dur_in,
+            peak_area: a_in * g.piston_area,
+        },
+        exhaust: Valve {
+            open: evo,
+            dur: dur_ex,
+            peak_area: a_ex * g.piston_area,
+        },
     }
 }
 
@@ -116,7 +134,12 @@ mod tests {
         for cfg in engines() {
             let g = CylGeom::new(&cfg);
             let (tdc, bdc) = (g.volume(0.0), g.volume(180.0));
-            assert!((bdc / tdc - cfg.compression_ratio as f32).abs() < 0.05, "{}: CR {}", cfg.id, bdc / tdc);
+            assert!(
+                (bdc / tdc - cfg.compression_ratio as f32).abs() < 0.05,
+                "{}: CR {}",
+                cfg.id,
+                bdc / tdc
+            );
             // derivative agrees with a finite difference
             let d = (g.volume(91.0) - g.volume(89.0)) / (2.0f32).to_radians();
             assert!((g.dv_dtheta(90.0) / d - 1.0).abs() < 0.01, "{}", cfg.id);
@@ -128,13 +151,31 @@ mod tests {
         for cfg in engines() {
             let vt = valve_train(&cfg);
             // exhaust opens before bottom dead centre (540) and closes just after top (720 -> ~10)
-            assert!(vt.exhaust.open > 440.0 && vt.exhaust.open < 520.0, "{}: EVO {}", cfg.id, vt.exhaust.open);
-            assert!(vt.exhaust.close() < 40.0, "{}: EVC {}", cfg.id, vt.exhaust.close());
+            assert!(
+                vt.exhaust.open > 440.0 && vt.exhaust.open < 520.0,
+                "{}: EVO {}",
+                cfg.id,
+                vt.exhaust.open
+            );
+            assert!(
+                vt.exhaust.close() < 40.0,
+                "{}: EVC {}",
+                cfg.id,
+                vt.exhaust.close()
+            );
             // intake opens a little before top and closes after bottom (180)
             assert!(vt.intake.open > 690.0, "{}: IVO {}", cfg.id, vt.intake.open);
-            assert!(vt.intake.close() > 200.0 && vt.intake.close() < 280.0, "{}: IVC {}", cfg.id, vt.intake.close());
+            assert!(
+                vt.intake.close() > 200.0 && vt.intake.close() < 280.0,
+                "{}: IVC {}",
+                cfg.id,
+                vt.intake.close()
+            );
             // they overlap at TDC
-            assert!(vt.exhaust.is_open(715.0) && vt.intake.is_open(725.0 % 720.0 + 0.0) || cfg.ignition_type == IgnitionType::Compression);
+            assert!(
+                vt.exhaust.is_open(715.0) && vt.intake.is_open(725.0 % 720.0 + 0.0)
+                    || cfg.ignition_type == IgnitionType::Compression
+            );
             assert_eq!(vt.exhaust.area(300.0), 0.0);
             assert!(vt.exhaust.area(600.0) > 0.9 * vt.exhaust.peak_area * 0.9);
         }

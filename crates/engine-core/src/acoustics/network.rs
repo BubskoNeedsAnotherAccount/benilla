@@ -29,7 +29,12 @@ fn tsc() -> u64 {
 
 impl Network {
     pub fn new(env: Env, gas: Gas) -> Self {
-        Network { grid: Grid::new(gas, env.t_amb), nodes: Vec::new(), env, prof: [0; 4] }
+        Network {
+            grid: Grid::new(gas, env.t_amb),
+            nodes: Vec::new(),
+            env,
+            prof: [0; 4],
+        }
     }
 
     pub fn add_duct(&mut self, spec: &DuctSpec, p: f32, t: f32) -> usize {
@@ -96,7 +101,10 @@ impl Network {
 
     /// Mean Newton iterations per junction solve.
     pub fn mean_iterations(&self) -> f32 {
-        let (i, s) = self.nodes.iter().fold((0u64, 0u64), |a, n| (a.0 + n.iters, a.1 + n.solves));
+        let (i, s) = self
+            .nodes
+            .iter()
+            .fold((0u64, 0u64), |a, n| (a.0 + n.iters, a.1 + n.solves));
         i as f32 / s.max(1) as f32
     }
 

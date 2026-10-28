@@ -21,7 +21,11 @@ fn net_for(gas: Gas, t_amb: f32) -> Network {
 fn bump(net: &mut Network, d: usize, i0: usize, i1: usize, amp: f32) {
     net.grid.update_primitives();
     for i in i0..i1 {
-        let (p0, rho0, t0) = (net.grid.p_at(d, i), net.grid.rho_at(d, i), net.grid.t_at(d, i));
+        let (p0, rho0, t0) = (
+            net.grid.p_at(d, i),
+            net.grid.rho_at(d, i),
+            net.grid.t_at(d, i),
+        );
         let p = p0 + amp;
         let rho = rho0 * (p / p0).powf(1.0 / net.grid.gas.gamma(t0));
         net.grid.set_cell(d, i, rho, 0.0, p);
@@ -35,7 +39,11 @@ fn right_pulse(net: &mut Network, d: usize, c: usize, half: usize, amp: f32) {
     for k in 0..=half {
         let a = amp * 0.5 * (1.0 + (std::f32::consts::PI * k as f32 / (half as f32 + 1.0)).cos());
         for i in [c + k, c.saturating_sub(k)] {
-            let (p0, rho0, t0) = (net.grid.p_at(d, i), net.grid.rho_at(d, i), net.grid.t_at(d, i));
+            let (p0, rho0, t0) = (
+                net.grid.p_at(d, i),
+                net.grid.rho_at(d, i),
+                net.grid.t_at(d, i),
+            );
             let g = net.grid.gas;
             let p = p0 + a;
             let rho = rho0 * (p / p0).powf(1.0 / g.gamma(t0));
@@ -50,7 +58,12 @@ fn run(net: &mut Network, steps: usize, probe: impl FnMut(&Network) -> f32) -> V
     run_res(net, &mut [], steps, probe)
 }
 
-fn run_res(net: &mut Network, res: &mut [Reservoir], steps: usize, mut probe: impl FnMut(&Network) -> f32) -> Vec<f32> {
+fn run_res(
+    net: &mut Network,
+    res: &mut [Reservoir],
+    steps: usize,
+    mut probe: impl FnMut(&Network) -> f32,
+) -> Vec<f32> {
     let dt = 1.0 / FS;
     let mut out = Vec::with_capacity(steps);
     for _ in 0..steps {
@@ -64,7 +77,11 @@ fn run_res(net: &mut Network, res: &mut [Reservoir], steps: usize, mut probe: im
 }
 
 fn closest(peaks: &[(f64, f64)], f: f64) -> f64 {
-    peaks.iter().map(|p| p.0).min_by(|a, b| (a - f).abs().partial_cmp(&(b - f).abs()).unwrap()).unwrap_or(0.0)
+    peaks
+        .iter()
+        .map(|p| p.0)
+        .min_by(|a, b| (a - f).abs().partial_cmp(&(b - f).abs()).unwrap())
+        .unwrap_or(0.0)
 }
 
 // ------------------------------------------------------------------ the numerics themselves
@@ -73,7 +90,11 @@ fn closest(peaks: &[(f64, f64)], f: f64) -> f64 {
 fn uniform_gas_at_rest_stays_at_rest_even_in_a_cone() {
     let mut net = net_for(Gas::AIR, 293.0);
     let wall = Wall::pipe(PipeMaterial::MildSteel, 0.0015, false, 0.05);
-    let d = net.add_duct(&DuctSpec::pipe("cone", 1.0, 0.03, wall, 0.025).taper(0.09), P_AMB, 293.0);
+    let d = net.add_duct(
+        &DuctSpec::pipe("cone", 1.0, 0.03, wall, 0.025).taper(0.09),
+        P_AMB,
+        293.0,
+    );
     net.add_node(Node::closed("l", PipeLeg::new(d, End::Left)));
     net.add_node(Node::closed("r", PipeLeg::new(d, End::Right)));
     run(&mut net, 4000, |_| 0.0);
@@ -90,27 +111,51 @@ fn closed_network_conserves_mass_and_energy() {
     let b = net.add_duct(&spec("b", 0.6, 0.08, 0.02), P_AMB, 293.0);
     net.grid.dissipation = false;
     net.add_node(Node::closed("l", PipeLeg::new(a, End::Left)));
-    net.add_node(Node::junction("j").with_leg(PipeLeg::new(a, End::Right)).with_leg(PipeLeg::new(b, End::Left)));
+    net.add_node(
+        Node::junction("j")
+            .with_leg(PipeLeg::new(a, End::Right))
+            .with_leg(PipeLeg::new(b, End::Left)),
+    );
     net.add_node(Node::closed("r", PipeLeg::new(b, End::Right)));
     bump(&mut net, a, 0, 8, 30_000.0);
     let e0: f32 = (0..2).map(|d| net.grid.energy(d)).sum();
     let m0 = net.mass();
     run(&mut net, 6000, |_| 0.0);
     let e1: f32 = (0..2).map(|d| net.grid.energy(d)).sum();
-    assert!((net.mass() / m0 - 1.0).abs() < 2e-4, "mass drift {}", net.mass() / m0 - 1.0);
-    assert!((e1 / e0 - 1.0).abs() < 2e-3, "energy drift {}", e1 / e0 - 1.0);
+    assert!(
+        (net.mass() / m0 - 1.0).abs() < 2e-4,
+        "mass drift {}",
+        net.mass() / m0 - 1.0
+    );
+    assert!(
+        (e1 / e0 - 1.0).abs() < 2e-3,
+        "energy drift {}",
+        e1 / e0 - 1.0
+    );
     assert_eq!(net.fallbacks(), 0);
 }
 
 #[test]
 fn small_pulse_travels_at_the_speed_of_sound() {
-    for (gas, t) in [(Gas::AIR, 293.0f32), (Gas::EXHAUST, 500.0), (Gas::EXHAUST, 900.0)] {
+    for (gas, t) in [
+        (Gas::AIR, 293.0f32),
+        (Gas::EXHAUST, 500.0),
+        (Gas::EXHAUST, 900.0),
+    ] {
         let mut net = net_for(gas, 293.0);
         let d = net.add_duct(&spec("p", 6.0, 0.05, 0.02), P_AMB, t);
         net.grid.dissipation = false;
         let ar = net.grid.end_area(d, End::Left);
-        net.add_node(Node::open("l", PipeLeg::new(d, End::Left), OpenEnd::anechoic(ar)));
-        net.add_node(Node::open("r", PipeLeg::new(d, End::Right), OpenEnd::anechoic(ar)));
+        net.add_node(Node::open(
+            "l",
+            PipeLeg::new(d, End::Left),
+            OpenEnd::anechoic(ar),
+        ));
+        net.add_node(Node::open(
+            "r",
+            PipeLeg::new(d, End::Right),
+            OpenEnd::anechoic(ar),
+        ));
         right_pulse(&mut net, d, 40, 20, 150.0);
         let probe = 200usize;
         let (mut tt, mut best, mut best_t) = (0.0f32, 0.0f32, 0.0f32);
@@ -126,7 +171,10 @@ fn small_pulse_travels_at_the_speed_of_sound() {
         }
         let c = gas.sound_speed(t);
         let meas = (probe as f32 - 40.0) * 0.02 / best_t;
-        assert!((meas / c - 1.0).abs() < 0.01, "T={t}: measured {meas} vs {c}");
+        assert!(
+            (meas / c - 1.0).abs() < 0.01,
+            "T={t}: measured {meas} vs {c}"
+        );
         assert!(best > 120.0, "pulse smeared away: {best} Pa");
     }
 }
@@ -139,7 +187,11 @@ fn sod_shock_tube_has_the_right_plateau_and_shock_position() {
     net.add_node(Node::closed("l", PipeLeg::new(d, End::Left)));
     net.add_node(Node::closed("r", PipeLeg::new(d, End::Right)));
     for i in 0..net.grid.n(d) {
-        let (p, rho) = if i < net.grid.n(d) / 2 { (1.0e5, 1.0) } else { (1.0e4, 0.125) };
+        let (p, rho) = if i < net.grid.n(d) / 2 {
+            (1.0e5, 1.0)
+        } else {
+            (1.0e4, 0.125)
+        };
         net.grid.set_cell(d, i, rho, 0.0, p);
     }
     net.grid.update_primitives();
@@ -150,9 +202,21 @@ fn sod_shock_tube_has_the_right_plateau_and_shock_position() {
     // exact solution (gamma 1.4): plateau between rarefaction tail (x = 0.487) and contact (0.676)
     // has p* = 30 313 Pa and u* = 293 m/s; the caloric law differs a little from gamma = 1.4
     let i = ((0.5 + 0.12) / net.grid.dx(d)) as usize;
-    assert!((net.grid.p_at(d, i) / 3.03e4 - 1.0).abs() < 0.06, "plateau pressure {}", net.grid.p_at(d, i));
-    assert!((net.grid.u_at(d, i) / 293.0 - 1.0).abs() < 0.08, "plateau velocity {}", net.grid.u_at(d, i));
-    let shock = (0..net.grid.n(d)).rev().find(|&k| net.grid.p_at(d, k) > 2.0e4).unwrap() as f32 * net.grid.dx(d);
+    assert!(
+        (net.grid.p_at(d, i) / 3.03e4 - 1.0).abs() < 0.06,
+        "plateau pressure {}",
+        net.grid.p_at(d, i)
+    );
+    assert!(
+        (net.grid.u_at(d, i) / 293.0 - 1.0).abs() < 0.08,
+        "plateau velocity {}",
+        net.grid.u_at(d, i)
+    );
+    let shock = (0..net.grid.n(d))
+        .rev()
+        .find(|&k| net.grid.p_at(d, k) > 2.0e4)
+        .unwrap() as f32
+        * net.grid.dx(d);
     assert!((shock - 0.832).abs() < 0.03, "shock at {shock}");
 }
 
@@ -165,8 +229,16 @@ fn travelling_waves_keep_their_amplitude_at_audio_resolution() {
         let d = net.add_duct(&spec("p", 16.0, 0.05, dx), P_AMB, 293.0);
         net.grid.dissipation = false;
         let ar = net.grid.end_area(d, End::Left);
-        net.add_node(Node::open("l", PipeLeg::new(d, End::Left), OpenEnd::anechoic(ar)));
-        net.add_node(Node::open("r", PipeLeg::new(d, End::Right), OpenEnd::anechoic(ar)));
+        net.add_node(Node::open(
+            "l",
+            PipeLeg::new(d, End::Left),
+            OpenEnd::anechoic(ar),
+        ));
+        net.add_node(Node::open(
+            "r",
+            PipeLeg::new(d, End::Right),
+            OpenEnd::anechoic(ar),
+        ));
         let c = Gas::AIR.sound_speed(293.0);
         let lam = c / f;
         let n_cells = ((4.0 * lam) / dx) as usize;
@@ -179,7 +251,8 @@ fn travelling_waves_keep_their_amplitude_at_audio_resolution() {
             let a_p = 100.0 * env * (std::f32::consts::TAU * 4.0 * x).sin();
             let (p0, rho0) = (net.grid.p_at(d, idx), net.grid.rho_at(d, idx));
             let p = p0 + a_p;
-            net.grid.set_cell(d, idx, rho0 * (p / p0).powf(1.0 / 1.4), a_p / (rho0 * c), p);
+            net.grid
+                .set_cell(d, idx, rho0 * (p / p0).powf(1.0 / 1.4), a_p / (rho0 * c), p);
         }
         net.grid.update_primitives();
         let (near, far) = ((6.0 / dx) as usize, (12.0 / dx) as usize);
@@ -190,7 +263,10 @@ fn travelling_waves_keep_their_amplitude_at_audio_resolution() {
             pk_far = pk_far.max((net.grid.p_at(d, far) - P_AMB).abs());
         }
         let loss = -20.0 * (pk_far / pk_near).log10();
-        println!("{f:.0} Hz ({:.0} cells/wave): {loss:.2} dB lost over 6 m", lam / dx);
+        println!(
+            "{f:.0} Hz ({:.0} cells/wave): {loss:.2} dB lost over 6 m",
+            lam / dx
+        );
         assert!(loss < max_loss_db, "{f} Hz packet lost {loss} dB");
     }
 }
@@ -204,7 +280,11 @@ fn closed_open_pipe_rings_at_odd_quarter_waves() {
     let d = net.add_duct(&spec("p", l, dia, 0.02), P_AMB, 293.0);
     net.add_node(Node::closed("closed", PipeLeg::new(d, End::Left)));
     let area = net.grid.end_area(d, End::Right);
-    net.add_node(Node::open("mouth", PipeLeg::new(d, End::Right), OpenEnd::radiating(area)));
+    net.add_node(Node::open(
+        "mouth",
+        PipeLeg::new(d, End::Right),
+        OpenEnd::radiating(area),
+    ));
     bump(&mut net, d, 0, 3, 1500.0);
     let sig = run(&mut net, 32_000, |n| n.grid.p_at(0, 0) - P_AMB);
     let psd = spectrum(&sig[2000..], 16384);
@@ -215,7 +295,10 @@ fn closed_open_pipe_rings_at_odd_quarter_waves() {
         let want = (2 * k - 1) as f64 * c / (4.0 * (l as f64 + delta));
         let got = closest(&pk, want);
         println!("closed-open mode {k}: want {want:.1} Hz, got {got:.1} Hz");
-        assert!((got / want - 1.0).abs() < 0.015, "mode {k}: want {want:.1} got {got:.1}");
+        assert!(
+            (got / want - 1.0).abs() < 0.015,
+            "mode {k}: want {want:.1} got {got:.1}"
+        );
     }
 }
 
@@ -225,8 +308,16 @@ fn open_open_pipe_rings_at_half_waves_with_both_end_corrections() {
     let mut net = net_for(Gas::AIR, 293.0);
     let d = net.add_duct(&spec("p", l, dia, 0.02), P_AMB, 293.0);
     let area = net.grid.end_area(d, End::Right);
-    net.add_node(Node::open("a", PipeLeg::new(d, End::Left), OpenEnd::radiating(area)));
-    net.add_node(Node::open("b", PipeLeg::new(d, End::Right), OpenEnd::radiating(area)));
+    net.add_node(Node::open(
+        "a",
+        PipeLeg::new(d, End::Left),
+        OpenEnd::radiating(area),
+    ));
+    net.add_node(Node::open(
+        "b",
+        PipeLeg::new(d, End::Right),
+        OpenEnd::radiating(area),
+    ));
     let off = (0.3 * l / net.grid.dx(d)) as usize;
     bump(&mut net, d, off, off + 3, 1500.0);
     let sig = run(&mut net, 32_000, move |n| n.grid.p_at(0, off + 6) - P_AMB);
@@ -238,7 +329,10 @@ fn open_open_pipe_rings_at_half_waves_with_both_end_corrections() {
         let want = k as f64 * c / (2.0 * leff);
         let got = closest(&pk, want);
         println!("open-open mode {k}: want {want:.1} Hz, got {got:.1} Hz");
-        assert!((got / want - 1.0).abs() < 0.015, "mode {k}: want {want:.1} got {got:.1}");
+        assert!(
+            (got / want - 1.0).abs() < 0.015,
+            "mode {k}: want {want:.1} got {got:.1}"
+        );
     }
 }
 
@@ -257,7 +351,11 @@ fn hot_gas_raises_every_resonance_with_the_speed_of_sound() {
         net.grid.dissipation = false;
         net.add_node(Node::closed("closed", PipeLeg::new(d, End::Left)));
         let area = net.grid.end_area(d, End::Right);
-        net.add_node(Node::open("mouth", PipeLeg::new(d, End::Right), OpenEnd::radiating(area)));
+        net.add_node(Node::open(
+            "mouth",
+            PipeLeg::new(d, End::Right),
+            OpenEnd::radiating(area),
+        ));
         bump(&mut net, d, 0, 3, 1500.0);
         let sig = run(&mut net, 32_000, |n| n.grid.p_at(0, 0) - P_AMB);
         let psd = spectrum(&sig[2000..], 16384);
@@ -284,14 +382,23 @@ fn cold_air_outside_a_hot_pipe_lowers_its_resonance() {
         net.grid.dissipation = false;
         net.add_node(Node::closed("closed", PipeLeg::new(d, End::Left)));
         let area = net.grid.end_area(d, End::Right);
-        net.add_node(Node::open("mouth", PipeLeg::new(d, End::Right), OpenEnd::radiating(area)));
+        net.add_node(Node::open(
+            "mouth",
+            PipeLeg::new(d, End::Right),
+            OpenEnd::radiating(area),
+        ));
         bump(&mut net, d, 0, 3, 300.0);
         let sig = run(&mut net, 32_000, |n| n.grid.p_at(0, 0) - P_AMB);
         strongest_peak(&spectrum(&sig[2000..], 16384), FS as f64, 30.0, 400.0).unwrap()
     };
     let (hot, cold) = (f1_for(true), f1_for(false));
-    println!("hot-pipe fundamental: {hot:.1} Hz with hot ambient, {cold:.1} Hz with 293 K air outside");
-    assert!(cold < hot * 0.99, "cold outside air must lengthen the pipe acoustically");
+    println!(
+        "hot-pipe fundamental: {hot:.1} Hz with hot ambient, {cold:.1} Hz with 293 K air outside"
+    );
+    assert!(
+        cold < hot * 0.99,
+        "cold outside air must lengthen the pipe acoustically"
+    );
     assert!(cold > hot * 0.92);
 }
 
@@ -307,7 +414,11 @@ fn helmholtz_resonator_between_two_volumes_rings_at_its_formula() {
     let (a_n, l_eff, v) = (1.5e-4f32, 0.05f32, 4.0e-3f32);
     let mut neck = SlugLeg::new(0, a_n, l_eff);
     neck.k = 0.0;
-    net.add_node(Node::junction("j").with_leg(PipeLeg::new(d, End::Right)).with_slug(neck));
+    net.add_node(
+        Node::junction("j")
+            .with_leg(PipeLeg::new(d, End::Right))
+            .with_slug(neck),
+    );
     let mut res = vec![Reservoir::new(gas, v, P_AMB, 293.0)];
     let c = gas.sound_speed(293.0);
     let v_pipe = net.grid.volume(d);
@@ -322,7 +433,12 @@ fn helmholtz_resonator_between_two_volumes_rings_at_its_formula() {
 
 /// Transmission |P_t|^2/|P_i|^2 of a pulse through a network built by `build`, which returns the
 /// (inlet duct, outlet duct, reservoirs). Anechoic ends on both sides.
-pub(super) fn transmission(build: impl FnOnce(&mut Network) -> (usize, usize, Vec<Reservoir>), t_end: f32, window_s: f32, n: usize) -> Vec<(f64, f64)> {
+pub(super) fn transmission(
+    build: impl FnOnce(&mut Network) -> (usize, usize, Vec<Reservoir>),
+    t_end: f32,
+    window_s: f32,
+    n: usize,
+) -> Vec<(f64, f64)> {
     let mut net = net_for(Gas::AIR, 293.0);
     let (a, b, mut res) = build(&mut net);
     let c0 = (0.8 / net.grid.dx(a)) as usize;
@@ -337,18 +453,28 @@ pub(super) fn transmission(build: impl FnOnce(&mut Network) -> (usize, usize, Ve
             r.commit();
         }
         let t = s as f32 * dt;
-        pin.push(if t < window_s { net.grid.p_at(a, probe_a) - P_AMB } else { 0.0 });
+        pin.push(if t < window_s {
+            net.grid.p_at(a, probe_a) - P_AMB
+        } else {
+            0.0
+        });
         pout.push(net.grid.p_at(b, probe_b) - P_AMB);
     }
     let spec_of = |x: &[f32]| {
-        let mut re: Vec<f64> = (0..n).map(|i| x.get(i).copied().unwrap_or(0.0) as f64).collect();
+        let mut re: Vec<f64> = (0..n)
+            .map(|i| x.get(i).copied().unwrap_or(0.0) as f64)
+            .collect();
         let mut im = vec![0.0; n];
         fft(&mut re, &mut im);
-        (0..n / 2).map(|k| re[k] * re[k] + im[k] * im[k]).collect::<Vec<f64>>()
+        (0..n / 2)
+            .map(|k| re[k] * re[k] + im[k] * im[k])
+            .collect::<Vec<f64>>()
     };
     let (si, so) = (spec_of(&pin), spec_of(&pout));
     let df = FS as f64 / n as f64;
-    (1..n / 2).map(|k| (k as f64 * df, so[k] / si[k].max(1e-30))).collect()
+    (1..n / 2)
+        .map(|k| (k as f64 * df, so[k] / si[k].max(1e-30)))
+        .collect()
 }
 
 #[test]
@@ -361,12 +487,28 @@ fn side_branch_resonator_notches_the_transmission_at_its_helmholtz_frequency() {
             let a = net.add_duct(&spec("in", 3.0, 0.05, 0.02), P_AMB, 293.0);
             let b = net.add_duct(&spec("out", 3.0, 0.05, 0.02), P_AMB, 293.0);
             net.grid.dissipation = false;
-            let (ar1, ar2) = (net.grid.end_area(a, End::Left), net.grid.end_area(b, End::Right));
-            net.add_node(Node::open("src", PipeLeg::new(a, End::Left), OpenEnd::anechoic(ar1)));
+            let (ar1, ar2) = (
+                net.grid.end_area(a, End::Left),
+                net.grid.end_area(b, End::Right),
+            );
+            net.add_node(Node::open(
+                "src",
+                PipeLeg::new(a, End::Left),
+                OpenEnd::anechoic(ar1),
+            ));
             let mut neck = SlugLeg::new(0, a_n, l_eff);
             neck.k = 0.0;
-            net.add_node(Node::junction("j").with_leg(PipeLeg::new(a, End::Right)).with_leg(PipeLeg::new(b, End::Left)).with_slug(neck));
-            net.add_node(Node::open("end", PipeLeg::new(b, End::Right), OpenEnd::anechoic(ar2)));
+            net.add_node(
+                Node::junction("j")
+                    .with_leg(PipeLeg::new(a, End::Right))
+                    .with_leg(PipeLeg::new(b, End::Left))
+                    .with_slug(neck),
+            );
+            net.add_node(Node::open(
+                "end",
+                PipeLeg::new(b, End::Right),
+                OpenEnd::anechoic(ar2),
+            ));
             (a, b, vec![Reservoir::new(gas, v, P_AMB, 293.0)])
         },
         0.12,
@@ -380,11 +522,27 @@ fn side_branch_resonator_notches_the_transmission_at_its_helmholtz_frequency() {
             best_f = *f;
         }
     }
-    let at = |f0: f64| curve.iter().min_by(|a, b| (a.0 - f0).abs().partial_cmp(&(b.0 - f0).abs()).unwrap()).unwrap().1;
+    let at = |f0: f64| {
+        curve
+            .iter()
+            .min_by(|a, b| (a.0 - f0).abs().partial_cmp(&(b.0 - f0).abs()).unwrap())
+            .unwrap()
+            .1
+    };
     println!("side branch: Helmholtz {f_h:.1} Hz, deepest notch {best_f:.1} Hz ({:.1} dB), at 2 f_H {:.1} dB", 10.0 * best.log10(), 10.0 * at(2.0 * f_h).log10());
-    assert!((best_f / f_h - 1.0).abs() < 0.04, "notch at {best_f} vs {f_h}");
-    assert!(10.0 * best.log10() < -15.0, "notch too shallow: {} dB", 10.0 * best.log10());
-    assert!(10.0 * at(2.0 * f_h).log10() > -4.0, "far from resonance sound should pass");
+    assert!(
+        (best_f / f_h - 1.0).abs() < 0.04,
+        "notch at {best_f} vs {f_h}"
+    );
+    assert!(
+        10.0 * best.log10() < -15.0,
+        "notch too shallow: {} dB",
+        10.0 * best.log10()
+    );
+    assert!(
+        10.0 * at(2.0 * f_h).log10() > -4.0,
+        "far from resonance sound should pass"
+    );
 }
 
 // ------------------------------------------------------------------ area changes and chambers
@@ -395,10 +553,25 @@ fn step_scattering(d1: f32, d2: f32, k_in1: f32, k_out2: f32) -> (f32, f32, f32)
     let a = net.add_duct(&spec("in", 3.0, d1, 0.02), P_AMB, 293.0);
     let b = net.add_duct(&spec("out", 3.0, d2, 0.02), P_AMB, 293.0);
     net.grid.dissipation = false;
-    let (ar1, ar2) = (net.grid.end_area(a, End::Left), net.grid.end_area(b, End::Right));
-    net.add_node(Node::open("src", PipeLeg::new(a, End::Left), OpenEnd::anechoic(ar1)));
-    net.add_node(Node::junction("step").with_leg(PipeLeg::new(a, End::Right).with_loss(k_in1, 0.0)).with_leg(PipeLeg::new(b, End::Left).with_loss(0.0, k_out2)));
-    net.add_node(Node::open("end", PipeLeg::new(b, End::Right), OpenEnd::anechoic(ar2)));
+    let (ar1, ar2) = (
+        net.grid.end_area(a, End::Left),
+        net.grid.end_area(b, End::Right),
+    );
+    net.add_node(Node::open(
+        "src",
+        PipeLeg::new(a, End::Left),
+        OpenEnd::anechoic(ar1),
+    ));
+    net.add_node(
+        Node::junction("step")
+            .with_leg(PipeLeg::new(a, End::Right).with_loss(k_in1, 0.0))
+            .with_leg(PipeLeg::new(b, End::Left).with_loss(0.0, k_out2)),
+    );
+    net.add_node(Node::open(
+        "end",
+        PipeLeg::new(b, End::Right),
+        OpenEnd::anechoic(ar2),
+    ));
     right_pulse(&mut net, a, (0.8 / 0.02) as usize, 20, 150.0);
     let (probe_a, probe_b) = ((1.5 / 0.02) as usize, (1.0 / 0.02) as usize);
     let (mut inc, mut refl, mut trans) = (0.0f32, 0.0f32, 0.0f32);
@@ -424,9 +597,24 @@ fn area_step_reflects_and_transmits_like_plane_wave_theory() {
         let (inc, refl, trans) = step_scattering(d1, d2, 0.0, 0.0);
         let r_theory = (a1 - a2) / (a1 + a2);
         let t_theory = 2.0 * a1 / (a1 + a2);
-        println!("A2/A1 = {:.1}: R {:.3} (theory {r_theory:.3}), T {:.3} (theory {t_theory:.3})", a2 / a1, refl / inc, trans / inc);
-        assert!((refl / inc - r_theory).abs() < 0.02, "R {} vs {}", refl / inc, r_theory);
-        assert!((trans / inc - t_theory).abs() < 0.03, "T {} vs {}", trans / inc, t_theory);
+        println!(
+            "A2/A1 = {:.1}: R {:.3} (theory {r_theory:.3}), T {:.3} (theory {t_theory:.3})",
+            a2 / a1,
+            refl / inc,
+            trans / inc
+        );
+        assert!(
+            (refl / inc - r_theory).abs() < 0.02,
+            "R {} vs {}",
+            refl / inc,
+            r_theory
+        );
+        assert!(
+            (trans / inc - t_theory).abs() < 0.03,
+            "T {} vs {}",
+            trans / inc,
+            t_theory
+        );
     }
 }
 
@@ -446,11 +634,30 @@ fn expansion_chamber_transmission_loss_matches_the_plane_wave_formula() {
             let m = net.add_duct(&spec("chamber", lc, dc, 0.02), P_AMB, 293.0);
             let b = net.add_duct(&spec("out", 3.0, dp, 0.02), P_AMB, 293.0);
             net.grid.dissipation = false;
-            let (ar1, ar2) = (net.grid.end_area(a, End::Left), net.grid.end_area(b, End::Right));
-            net.add_node(Node::open("src", PipeLeg::new(a, End::Left), OpenEnd::anechoic(ar1)));
-            net.add_node(Node::junction("j1").with_leg(PipeLeg::new(a, End::Right)).with_leg(PipeLeg::new(m, End::Left)));
-            net.add_node(Node::junction("j2").with_leg(PipeLeg::new(m, End::Right)).with_leg(PipeLeg::new(b, End::Left)));
-            net.add_node(Node::open("end", PipeLeg::new(b, End::Right), OpenEnd::anechoic(ar2)));
+            let (ar1, ar2) = (
+                net.grid.end_area(a, End::Left),
+                net.grid.end_area(b, End::Right),
+            );
+            net.add_node(Node::open(
+                "src",
+                PipeLeg::new(a, End::Left),
+                OpenEnd::anechoic(ar1),
+            ));
+            net.add_node(
+                Node::junction("j1")
+                    .with_leg(PipeLeg::new(a, End::Right))
+                    .with_leg(PipeLeg::new(m, End::Left)),
+            );
+            net.add_node(
+                Node::junction("j2")
+                    .with_leg(PipeLeg::new(m, End::Right))
+                    .with_leg(PipeLeg::new(b, End::Left)),
+            );
+            net.add_node(Node::open(
+                "end",
+                PipeLeg::new(b, End::Right),
+                OpenEnd::anechoic(ar2),
+            ));
             (a, b, vec![])
         },
         0.05,
@@ -467,16 +674,31 @@ fn expansion_chamber_transmission_loss_matches_the_plane_wave_formula() {
     for (f, ratio) in curve.iter().filter(|(f, _)| (120.0..1000.0).contains(f)) {
         worst = worst.max((-10.0 * ratio.log10() - tl_theory(*f)).abs());
     }
-    let at = |f0: f64| curve.iter().min_by(|a, b| (a.0 - f0).abs().partial_cmp(&(b.0 - f0).abs()).unwrap()).unwrap();
+    let at = |f0: f64| {
+        curve
+            .iter()
+            .min_by(|a, b| (a.0 - f0).abs().partial_cmp(&(b.0 - f0).abs()).unwrap())
+            .unwrap()
+    };
     let f_peak = c / (4.0 * lc as f64);
     let (_, r_peak) = at(f_peak);
     println!("expansion chamber: TL at {f_peak:.0} Hz = {:.1} dB (theory {:.1}); worst deviation {worst:.2} dB", -10.0 * r_peak.log10(), tl_theory(f_peak));
     assert!((-10.0 * r_peak.log10() - tl_theory(f_peak)).abs() < 1.0);
     // the null is flat (TL ~ (k dL)^2): look for the transparent band near the half-wave frequency
     let f_null = c / (2.0 * lc as f64);
-    let best = curve.iter().filter(|(f, _)| (*f - f_null).abs() < 0.12 * f_null).map(|(f, r)| (*f, -10.0 * r.log10())).fold((0.0, f64::MAX), |a, b| if b.1 < a.1 { b } else { a });
-    println!("most transparent point near the null: {:.0} Hz, TL {:.2} dB", best.0, best.1);
-    assert!(best.1 < 1.0, "chamber must be transparent near the half-wave frequency");
+    let best = curve
+        .iter()
+        .filter(|(f, _)| (*f - f_null).abs() < 0.12 * f_null)
+        .map(|(f, r)| (*f, -10.0 * r.log10()))
+        .fold((0.0, f64::MAX), |a, b| if b.1 < a.1 { b } else { a });
+    println!(
+        "most transparent point near the null: {:.0} Hz, TL {:.2} dB",
+        best.0, best.1
+    );
+    assert!(
+        best.1 < 1.0,
+        "chamber must be transparent near the half-wave frequency"
+    );
     assert!((best.0 / f_null - 1.0).abs() < 0.06);
     assert!(worst < 2.0, "worst TL deviation {worst} dB");
 }
@@ -487,7 +709,12 @@ fn expansion_chamber_transmission_loss_matches_the_plane_wave_formula() {
 #[test]
 #[ignore]
 fn bench_cells_per_second() {
-    for (segs, len, simd) in [(1usize, 10.08f32, true), (1, 10.08, false), (24, 0.42, true), (24, 0.42, false)] {
+    for (segs, len, simd) in [
+        (1usize, 10.08f32, true),
+        (1, 10.08, false),
+        (24, 0.42, true),
+        (24, 0.42, false),
+    ] {
         let mut net = net_for(Gas::EXHAUST, 293.0);
         net.grid.set_simd(simd);
         let mut prev: Option<usize> = None;
@@ -495,7 +722,11 @@ fn bench_cells_per_second() {
         for _ in 0..segs {
             let d = net.add_duct(&spec("seg", len, 0.06, 0.028), P_AMB, 700.0);
             if let Some(p) = prev {
-                net.add_node(Node::junction("j").with_leg(PipeLeg::new(p, End::Right)).with_leg(PipeLeg::new(d, End::Left)));
+                net.add_node(
+                    Node::junction("j")
+                        .with_leg(PipeLeg::new(p, End::Right))
+                        .with_leg(PipeLeg::new(d, End::Left)),
+                );
             } else {
                 first = d;
             }
@@ -504,7 +735,11 @@ fn bench_cells_per_second() {
         let last = prev.unwrap();
         net.add_node(Node::closed("c", PipeLeg::new(first, End::Left)));
         let ar = net.grid.end_area(last, End::Right);
-        net.add_node(Node::open("m", PipeLeg::new(last, End::Right), OpenEnd::radiating(ar)));
+        net.add_node(Node::open(
+            "m",
+            PipeLeg::new(last, End::Right),
+            OpenEnd::radiating(ar),
+        ));
         bump(&mut net, first, 0, 3, 20_000.0);
         let cells: usize = (0..net.grid.ducts.len()).map(|d| net.grid.n(d)).sum();
         let dt = 1.0 / FS;
@@ -533,7 +768,12 @@ fn bench_cells_per_second() {
             tb += (c - b).as_secs_f64();
             tc += (d - c).as_secs_f64();
         }
-        println!("  stages per step: primitives {:.2} us, nodes {:.2} us, advance {:.2} us", ta / steps as f64 * 1e6, tb / steps as f64 * 1e6, tc / steps as f64 * 1e6);
+        println!(
+            "  stages per step: primitives {:.2} us, nodes {:.2} us, advance {:.2} us",
+            ta / steps as f64 * 1e6,
+            tb / steps as f64 * 1e6,
+            tc / steps as f64 * 1e6
+        );
         println!(
             "BENCH simd={simd} {segs} segments, {cells} cells: {:.1} ns per cell-step, {:.1}% of one core at 44.1 kHz, fallbacks {}, {:.2} Newton iterations per junction",
             el / (steps * cells) as f64 * 1e9,
@@ -551,7 +791,11 @@ fn bench_junction_solve() {
     let mut net = net_for(Gas::EXHAUST, 293.0);
     let a = net.add_duct(&spec("a", 0.4, 0.05, 0.028), P_AMB, 700.0);
     let b = net.add_duct(&spec("b", 0.4, 0.07, 0.028), P_AMB, 700.0);
-    net.add_node(Node::junction("j").with_leg(PipeLeg::new(a, End::Right)).with_leg(PipeLeg::new(b, End::Left)));
+    net.add_node(
+        Node::junction("j")
+            .with_leg(PipeLeg::new(a, End::Right))
+            .with_leg(PipeLeg::new(b, End::Left)),
+    );
     bump(&mut net, a, 0, 4, 5000.0);
     for _ in 0..200 {
         net.step(1.0 / FS, &mut []);
@@ -564,7 +808,11 @@ fn bench_junction_solve() {
         net.nodes[0].solve(&mut net.grid, &mut [], 1.0 / FS, &env);
     }
     let el = t0.elapsed().as_secs_f64();
-    println!("JUNCTION {:.1} ns per solve, {:.2} iterations", el / n as f64 * 1e9, net.mean_iterations());
+    println!(
+        "JUNCTION {:.1} ns per solve, {:.2} iterations",
+        el / n as f64 * 1e9,
+        net.mean_iterations()
+    );
 }
 
 /// Amplitude lost by a travelling packet over 6 m of hot pipe, by frequency, cell size and amplitude. Prints a table
@@ -575,7 +823,9 @@ fn scheme_loss_table() {
     let temp = 850.0f32;
     let c = Gas::AIR.sound_speed(temp);
     for amp in [100.0f32, 15_000.0] {
-        println!("packet amplitude {amp:.0} Pa in {temp:.0} K air (c = {c:.0} m/s): loss over 6 m, dB");
+        println!(
+            "packet amplitude {amp:.0} Pa in {temp:.0} K air (c = {c:.0} m/s): loss over 6 m, dB"
+        );
         for dx in [0.014f32, 0.028, 0.05] {
             let mut line = format!("  dx {:.0} mm:", dx * 1e3);
             for f in [400.0f32, 800.0, 1200.0, 1600.0, 2400.0] {
@@ -583,8 +833,16 @@ fn scheme_loss_table() {
                 let d = net.add_duct(&spec("p", 16.0, 0.05, dx), P_AMB, temp);
                 net.grid.dissipation = false;
                 let ar = net.grid.end_area(d, End::Left);
-                net.add_node(Node::open("l", PipeLeg::new(d, End::Left), OpenEnd::anechoic(ar)));
-                net.add_node(Node::open("r", PipeLeg::new(d, End::Right), OpenEnd::anechoic(ar)));
+                net.add_node(Node::open(
+                    "l",
+                    PipeLeg::new(d, End::Left),
+                    OpenEnd::anechoic(ar),
+                ));
+                net.add_node(Node::open(
+                    "r",
+                    PipeLeg::new(d, End::Right),
+                    OpenEnd::anechoic(ar),
+                ));
                 let lam = c / f;
                 let n_cells = ((4.0 * lam) / dx) as usize;
                 net.grid.update_primitives();
@@ -609,7 +867,11 @@ fn scheme_loss_table() {
                     pk_near = pk_near.max((net.grid.p_at(d, near) - P_AMB).abs());
                     pk_far = pk_far.max((net.grid.p_at(d, far) - P_AMB).abs());
                 }
-                line += &format!(" {f:.0} Hz ({:.0}/wave): {:.2}", lam / dx, -20.0 * (pk_far / pk_near).log10());
+                line += &format!(
+                    " {f:.0} Hz ({:.0}/wave): {:.2}",
+                    lam / dx,
+                    -20.0 * (pk_far / pk_near).log10()
+                );
             }
             println!("{line}");
         }

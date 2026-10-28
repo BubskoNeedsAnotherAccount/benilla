@@ -15,6 +15,7 @@ default = ["dev"]
 dev = ["benilla-formats/dev"]
 
 [dependencies]
+web-time = "1"
 anyhow.workspace = true
 bevy.workspace = true
 benilla-formats = { path = "../benilla-formats", default-features = false }

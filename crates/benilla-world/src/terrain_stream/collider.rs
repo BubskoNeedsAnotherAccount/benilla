@@ -2,7 +2,8 @@
 //! ([`build_collider_task`]) and [`finish_colliders`] attaches the results under a per-frame
 //! budget, since a streamed burst finishes together and each attach is main-thread work.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use avian3d::prelude::{Collider, CollisionLayers, RigidBody};
 use benilla_assets::coords::wow_to_bevy;
@@ -178,6 +179,17 @@ pub(super) fn attach_inner_colliders(
         };
         let collider = match (pc.built.take(), pc.task.take()) {
             (Some(collider), _) => collider,
+            // A browser has one thread, and the build only runs between frames: take the shape if
+            // it is done and leave the wait to `finish_colliders` otherwise.
+            #[cfg(target_arch = "wasm32")]
+            (None, Some(mut task)) => match block_on(future::poll_once(&mut task)) {
+                Some(collider) => collider,
+                None => {
+                    pc.task = Some(task);
+                    continue;
+                }
+            },
+            #[cfg(not(target_arch = "wasm32"))]
             (None, Some(task)) => block_on(task),
             (None, None) => continue,
         };

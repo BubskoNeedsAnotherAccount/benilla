@@ -37,7 +37,11 @@ impl Lowpass4 {
             b[i] = [(1.0 - c) * 0.5 / a0, (1.0 - c) / a0, (1.0 - c) * 0.5 / a0];
             a[i] = [-2.0 * c / a0, (1.0 - alpha) / a0];
         }
-        Lowpass4 { b, a, z: [[0.0; 2]; 2] }
+        Lowpass4 {
+            b,
+            a,
+            z: [[0.0; 2]; 2],
+        }
     }
 
     #[inline]
@@ -75,7 +79,11 @@ impl FlowHist {
         let h = h.max(1.0e-7);
         if !self.primed {
             // the first value stands for the whole history, so it does not read as a jump from zero
-            *self = FlowHist { q: [q; 4], h: [h; 3], primed: true };
+            *self = FlowHist {
+                q: [q; 4],
+                h: [h; 3],
+                primed: true,
+            };
         }
         self.q = [self.q[1], self.q[2], self.q[3], q];
         self.h = [self.h[1], self.h[2], h];
@@ -96,7 +104,9 @@ impl FlowHist {
         let m2 = Self::slope(q[1], q[2], q[3], h[1], h[2]);
         let s = s.clamp(0.0, 1.0);
         let h1 = h[1];
-        (6.0 * s * s - 6.0 * s) * (q[1] - q[2]) / h1 + (3.0 * s * s - 4.0 * s + 1.0) * m1 + (3.0 * s * s - 2.0 * s) * m2
+        (6.0 * s * s - 6.0 * s) * (q[1] - q[2]) / h1
+            + (3.0 * s * s - 4.0 * s + 1.0) * m1
+            + (3.0 * s * s - 2.0 * s) * m2
     }
 }
 
@@ -114,7 +124,13 @@ pub struct JetNoise {
 
 impl JetNoise {
     pub fn new(diameter: f32, seed: u32) -> Self {
-        JetNoise { rng: seed | 1, lp1: 0.0, lp2: 0.0, hp: 0.0, diameter }
+        JetNoise {
+            rng: seed | 1,
+            lp1: 0.0,
+            lp2: 0.0,
+            hp: 0.0,
+            diameter,
+        }
     }
 
     fn noise(&mut self) -> f32 {
@@ -183,7 +199,10 @@ impl ShellBody {
         let mut modes = Vec::new();
         for n in 2..=7usize {
             let nf = n as f32;
-            let f = cl * t / (std::f32::consts::TAU * radius * radius * 12f32.sqrt()) * nf * (nf * nf - 1.0) / (nf * nf + 1.0).sqrt();
+            let f = cl * t / (std::f32::consts::TAU * radius * radius * 12f32.sqrt())
+                * nf
+                * (nf * nf - 1.0)
+                / (nf * nf + 1.0).sqrt();
             if f < 40.0 || f > 0.12 * fs {
                 continue;
             }
@@ -195,17 +214,27 @@ impl ShellBody {
                 w,
                 zeta: 0.5 * eta,
                 drive: kappa / ms,
-                rad: RHO0 * sigma * body.surface / (4.0 * std::f32::consts::PI * listener_r) / (nf * nf).sqrt(),
+                rad: RHO0 * sigma * body.surface
+                    / (4.0 * std::f32::consts::PI * listener_r)
+                    / (nf * nf).sqrt(),
                 x: 0.0,
                 v: 0.0,
             });
         }
-        ShellBody { modes, p_lp: 0.0, primed: false, name: body.name.clone() }
+        ShellBody {
+            modes,
+            p_lp: 0.0,
+            primed: false,
+            name: body.name.clone(),
+        }
     }
 
     /// Frequencies of the modes, Hz (for reports and tests).
     pub fn frequencies(&self) -> Vec<f32> {
-        self.modes.iter().map(|m| m.w / std::f32::consts::TAU).collect()
+        self.modes
+            .iter()
+            .map(|m| m.w / std::f32::consts::TAU)
+            .collect()
     }
 
     /// `p_body` is the mean gas pressure in the body; returns the radiated pressure at the listener.
@@ -235,7 +264,13 @@ mod tests {
 
     fn body(mat: PipeMaterial, t_mm: f32, dia: f32) -> Body {
         let wall = Wall::pipe(mat, t_mm * 1e-3, false, dia);
-        Body { name: "b".into(), ducts: vec![], surface: std::f32::consts::PI * dia * 0.5, diameter: dia, wall }
+        Body {
+            name: "b".into(),
+            ducts: vec![],
+            surface: std::f32::consts::PI * dia * 0.5,
+            diameter: dia,
+            wall,
+        }
     }
 
     /// A sine of `f` Hz sampled by solver steps of slowly varying length (about 1.8 samples, as the CFL limit gives), differentiated per audio sample.
@@ -290,8 +325,14 @@ mod tests {
         let natural = w / 44_100.0;
         println!("derivative error / step-boundary jump (relative to the amplitude): hermite {err_h:.3} / {jump_h:.3}, linear {err_l:.3} / {jump_l:.3}");
         assert!(err_h < 0.06, "hermite derivative error {err_h}");
-        assert!(jump_h < 1.15 * natural, "no jumps beyond the signal's own slope: {jump_h} vs {natural}");
-        assert!(jump_l > 1.5 * natural, "the straight-line derivative is a staircase: {jump_l} vs {natural}");
+        assert!(
+            jump_h < 1.15 * natural,
+            "no jumps beyond the signal's own slope: {jump_h} vs {natural}"
+        );
+        assert!(
+            jump_l > 1.5 * natural,
+            "the straight-line derivative is a staircase: {jump_l} vs {natural}"
+        );
     }
 
     #[test]
@@ -311,20 +352,43 @@ mod tests {
             20.0 * ((acc / cnt as f64 * 2.0).sqrt()).log10()
         };
         let (g1, g5, g7, g18) = (gain(1_000.0), gain(5_000.0), gain(7_500.0), gain(18_000.0));
-        println!("low-pass gain: 1 kHz {g1:.2} dB, 5 kHz {g5:.2}, 7.5 kHz {g7:.2}, 18 kHz {g18:.1}");
-        assert!(g1.abs() < 0.1 && g5.abs() < 1.0, "the passband must be flat");
+        println!(
+            "low-pass gain: 1 kHz {g1:.2} dB, 5 kHz {g5:.2}, 7.5 kHz {g7:.2}, 18 kHz {g18:.1}"
+        );
+        assert!(
+            g1.abs() < 0.1 && g5.abs() < 1.0,
+            "the passband must be flat"
+        );
         assert!((g7 + 3.0).abs() < 0.6, "-3 dB at the corner");
         assert!(g18 < -35.0, "the top of the band must be gone ({g18} dB)");
     }
 
     #[test]
     fn shell_modes_follow_thickness_and_radius() {
-        let thin = ShellBody::new(&body(PipeMaterial::MildSteel, 1.0, 0.15), &PipeMaterial::MildSteel.props(), 1.5, 44100.0);
-        let thick = ShellBody::new(&body(PipeMaterial::MildSteel, 2.0, 0.15), &PipeMaterial::MildSteel.props(), 1.5, 44100.0);
-        let small = ShellBody::new(&body(PipeMaterial::MildSteel, 1.0, 0.06), &PipeMaterial::MildSteel.props(), 1.5, 44100.0);
+        let thin = ShellBody::new(
+            &body(PipeMaterial::MildSteel, 1.0, 0.15),
+            &PipeMaterial::MildSteel.props(),
+            1.5,
+            44100.0,
+        );
+        let thick = ShellBody::new(
+            &body(PipeMaterial::MildSteel, 2.0, 0.15),
+            &PipeMaterial::MildSteel.props(),
+            1.5,
+            44100.0,
+        );
+        let small = ShellBody::new(
+            &body(PipeMaterial::MildSteel, 1.0, 0.06),
+            &PipeMaterial::MildSteel.props(),
+            1.5,
+            44100.0,
+        );
         let (ft, fk, fs) = (thin.frequencies(), thick.frequencies(), small.frequencies());
         println!("can modes: thin {:?}", ft);
-        assert!((fk[0] / ft[0] - 2.0).abs() < 0.05, "mode frequency scales with thickness");
+        assert!(
+            (fk[0] / ft[0] - 2.0).abs() < 0.05,
+            "mode frequency scales with thickness"
+        );
         assert!(fs[0] > 3.0 * ft[0], "a narrower shell is much stiffer");
     }
 
@@ -337,7 +401,11 @@ mod tests {
             let mut early = 0.0f32;
             let mut late = 0.0f32;
             for i in 0..22_050 {
-                let p = if i < 130 { 8000.0 * (std::f32::consts::PI * i as f32 / 130.0).sin() } else { 0.0 };
+                let p = if i < 130 {
+                    8000.0 * (std::f32::consts::PI * i as f32 / 130.0).sin()
+                } else {
+                    0.0
+                };
                 let o = sb.step(101_325.0 + p, dt);
                 if (130..2000).contains(&i) {
                     early = early.max(o.abs());
@@ -353,7 +421,10 @@ mod tests {
         let (ce, cl) = run(PipeMaterial::CastIron, 4.0);
         println!("shell response: steel {se:.2e}/{sl:.2e}, titanium {te:.2e}/{tl:.2e}, cast iron {ce:.2e}/{cl:.2e}");
         assert!(te > se, "thin titanium radiates more than steel");
-        assert!(tl / te > sl / se, "titanium rings longer relative to its onset");
+        assert!(
+            tl / te > sl / se,
+            "titanium rings longer relative to its onset"
+        );
         assert!(ce < se, "a thick cast-iron shell is much quieter");
     }
 }

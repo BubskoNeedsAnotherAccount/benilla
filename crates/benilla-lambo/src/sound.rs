@@ -44,16 +44,42 @@ pub struct CarAudio {
     limiter_timer: f32,
 }
 
+/// One sound effect, by file name: from `assets/sounds/` on disk, or from the files the page
+/// fetched ahead of the start in a browser.
+fn load_effect(
+    sounds_dir: Option<&std::path::Path>,
+    name: &str,
+) -> Result<StaticSoundData, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = sounds_dir;
+        let bytes = crate::web::asset(&format!("sounds/{name}"))
+            .ok_or_else(|| format!("{name} was not fetched"))?;
+        StaticSoundData::from_cursor(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = sounds_dir.ok_or_else(|| "no assets/sounds directory".to_string())?;
+        StaticSoundData::from_file(dir.join(name)).map_err(|e| e.to_string())
+    }
+}
+
 impl CarAudio {
     /// Attempts to locate `assets/sounds/` and load all sound effects.
     pub fn new() -> Option<Self> {
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let candidates = [
-            manifest.join("assets").join("sounds"),
-            PathBuf::from("assets/sounds"),
-            PathBuf::from("crates/benilla-lambo/assets/sounds"),
-        ];
-        let sounds_dir = candidates.into_iter().find(|p| p.exists());
+        // A browser has no directory to find; `load_effect` asks the page.
+        #[cfg(target_arch = "wasm32")]
+        let sounds_dir = Some(PathBuf::new());
+        #[cfg(not(target_arch = "wasm32"))]
+        let sounds_dir = {
+            let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let candidates = [
+                manifest.join("assets").join("sounds"),
+                PathBuf::from("assets/sounds"),
+                PathBuf::from("crates/benilla-lambo/assets/sounds"),
+            ];
+            candidates.into_iter().find(|p| p.exists())
+        };
 
         let mut manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())
         {
@@ -80,7 +106,7 @@ impl CarAudio {
         // 2. Load static sound effects if sounds directory is available
         let skid_handle = if let Some(ref dir) = sounds_dir {
             let skid_path = dir.join("skid_loop.wav");
-            match StaticSoundData::from_file(&skid_path) {
+            match load_effect(Some(dir), "skid_loop.wav") {
                 Ok(data) => {
                     let looped = data.loop_region(..);
                     match manager.play(looped) {
@@ -105,7 +131,7 @@ impl CarAudio {
 
         let nitro_data = if let Some(ref dir) = sounds_dir {
             let nitro_path = dir.join("nitro.wav");
-            match StaticSoundData::from_file(&nitro_path) {
+            match load_effect(Some(dir), "nitro.wav") {
                 Ok(data) => Some(data),
                 Err(e) => {
                     eprintln!("benilla-lambo audio: failed to load {nitro_path:?}: {e}");
@@ -255,7 +281,8 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 }
 
                 let rpm_smooth_rate = if throttle_pos > 0.05 { 10.0 } else { 5.0 };
-                audio.simulated_rpm += (target_rpm - audio.simulated_rpm) * smooth(dt, rpm_smooth_rate);
+                audio.simulated_rpm +=
+                    (target_rpm - audio.simulated_rpm) * smooth(dt, rpm_smooth_rate);
 
                 let effective_throttle = if audio.gear_shift_timer > 0.0 {
                     0.0
@@ -264,7 +291,8 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 };
 
                 let speed_ratio = (speed / TOP_SPEED).clamp(0.0, 1.0);
-                let target_vol = 0.38 + speed_ratio * 0.16 + (if car.nitro_timer > 0.0 { 0.14 } else { 0.0 });
+                let target_vol =
+                    0.38 + speed_ratio * 0.16 + (if car.nitro_timer > 0.0 { 0.14 } else { 0.0 });
 
                 synth.set_rpm(audio.simulated_rpm);
                 synth.set_throttle(effective_throttle);

@@ -12,7 +12,9 @@
 
 use crate::acoustics::cylinder_gas::CylGeom;
 use crate::config::{EngineConfig, IgnitionType};
-use crate::constants::{COMBUSTION_EFFICIENCY, COMBUSTION_WALL_HEAT_LOSS_FRACTION, GAS_CONSTANT_AIR, POLYTROPIC_INDEX};
+use crate::constants::{
+    COMBUSTION_EFFICIENCY, COMBUSTION_WALL_HEAT_LOSS_FRACTION, GAS_CONSTANT_AIR, POLYTROPIC_INDEX,
+};
 
 /// Resolution of the tables, degrees.
 const STEP_DEG: f32 = 0.5;
@@ -60,7 +62,9 @@ fn wiebe(x: f32, d: f32) -> f32 {
 impl Combustion {
     pub fn new(cfg: &EngineConfig, evo_deg: f32) -> Combustion {
         let geom = CylGeom::new(cfg);
-        let dv = (0..N).map(|k| geom.dv_dtheta(k as f32 * STEP_DEG)).collect();
+        let dv = (0..N)
+            .map(|k| geom.dv_dtheta(k as f32 * STEP_DEG))
+            .collect();
         let mut c = Combustion {
             geom,
             diesel: cfg.ignition_type == IgnitionType::Compression,
@@ -73,7 +77,12 @@ impl Combustion {
             dv,
             peak_rise: 0.0,
         };
-        c.set_charge(&Charge { map_pa: 101_325.0, charge_k: 300.0, air_fuel_ratio: 14.7, ambient_pa: 101_325.0 });
+        c.set_charge(&Charge {
+            map_pa: 101_325.0,
+            charge_k: 300.0,
+            air_fuel_ratio: 14.7,
+            ambient_pa: 101_325.0,
+        });
         c
     }
 
@@ -84,8 +93,14 @@ impl Combustion {
         self.ambient = c.ambient_pa;
         let v_ivc = g.volume(180.0);
         let mass = c.map_pa * v_ivc / (GAS_CONSTANT_AIR as f32 * c.charge_k.max(200.0));
-        let lhv = if self.diesel { LHV_DIESEL } else { LHV_GASOLINE };
-        let heat = mass / c.air_fuel_ratio.max(5.0) * lhv * (COMBUSTION_EFFICIENCY * (1.0 - COMBUSTION_WALL_HEAT_LOSS_FRACTION)) as f32;
+        let lhv = if self.diesel {
+            LHV_DIESEL
+        } else {
+            LHV_GASOLINE
+        };
+        let heat = mass / c.air_fuel_ratio.max(5.0)
+            * lhv
+            * (COMBUSTION_EFFICIENCY * (1.0 - COMBUSTION_WALL_HEAT_LOSS_FRACTION)) as f32;
         // the compounding of the engine model: every step compresses or expands everything in the cylinder by the
         // polytropic law and adds the heat of that step
         let steps = (N as f32 * 0.5) as usize; // 0..360 degrees of table
@@ -117,7 +132,14 @@ impl Combustion {
             } else {
                 // the exhaust valve opens: down to ambient over 25 degrees
                 let f = ((th - self.evo_deg) / 25.0).clamp(0.0, 1.0);
-                let (m0, b0) = if k > 0 { (self.motor[(self.evo_deg / STEP_DEG) as usize], self.burn[(self.evo_deg / STEP_DEG) as usize]) } else { (c.map_pa, 0.0) };
+                let (m0, b0) = if k > 0 {
+                    (
+                        self.motor[(self.evo_deg / STEP_DEG) as usize],
+                        self.burn[(self.evo_deg / STEP_DEG) as usize],
+                    )
+                } else {
+                    (c.map_pa, 0.0)
+                };
                 self.motor[k] = m0 + (c.ambient_pa - m0) * f;
                 self.burn[k] = b0 * (1.0 - f);
                 p_m = c.map_pa;
@@ -188,7 +210,12 @@ mod tests {
     use crate::config::engine_by_id;
 
     fn charge(map: f32) -> Charge {
-        Charge { map_pa: map, charge_k: 310.0, air_fuel_ratio: 14.7, ambient_pa: 101_325.0 }
+        Charge {
+            map_pa: map,
+            charge_k: 310.0,
+            air_fuel_ratio: 14.7,
+            ambient_pa: 101_325.0,
+        }
     }
 
     #[test]
@@ -196,13 +223,30 @@ mod tests {
         let cfg = engine_by_id("v8").unwrap();
         let mut c = Combustion::new(&cfg, 490.0);
         c.set_charge(&charge(95_000.0));
-        let peak = |burn: f32| (360..540).map(|d| (d, c.pressure(d as f32, burn))).fold((0, 0.0f32), |a, b| if b.1 > a.1 { b } else { a });
+        let peak = |burn: f32| {
+            (360..540)
+                .map(|d| (d, c.pressure(d as f32, burn)))
+                .fold((0, 0.0f32), |a, b| if b.1 > a.1 { b } else { a })
+        };
         let (d_fired, p_fired) = peak(1.0);
         let (d_motor, p_motor) = peak(0.0);
-        println!("v8: fired peak {:.1} bar at {d_fired} deg, motored {:.1} bar at {d_motor} deg", p_fired / 1e5, p_motor / 1e5);
-        assert!(d_motor <= 363 && p_motor > 1.0e6, "motored peak {p_motor} at {d_motor}");
-        assert!((368..390).contains(&d_fired), "fired cylinder peaks at {d_fired}");
-        assert!(p_fired > 2.5 * p_motor && p_fired < 1.0e7, "fired {p_fired}, motored {p_motor}");
+        println!(
+            "v8: fired peak {:.1} bar at {d_fired} deg, motored {:.1} bar at {d_motor} deg",
+            p_fired / 1e5,
+            p_motor / 1e5
+        );
+        assert!(
+            d_motor <= 363 && p_motor > 1.0e6,
+            "motored peak {p_motor} at {d_motor}"
+        );
+        assert!(
+            (368..390).contains(&d_fired),
+            "fired cylinder peaks at {d_fired}"
+        );
+        assert!(
+            p_fired > 2.5 * p_motor && p_fired < 1.0e7,
+            "fired {p_fired}, motored {p_motor}"
+        );
     }
 
     #[test]
@@ -215,15 +259,26 @@ mod tests {
         let wot = c.peak_rise_bar_per_deg();
         let di = engine_by_id("dieseli6").unwrap();
         let mut d = Combustion::new(&di, 490.0);
-        let at = |afr: f32| Charge { map_pa: 100_000.0, charge_k: 310.0, air_fuel_ratio: afr, ambient_pa: 101_325.0 };
+        let at = |afr: f32| Charge {
+            map_pa: 100_000.0,
+            charge_k: 310.0,
+            air_fuel_ratio: afr,
+            ambient_pa: 101_325.0,
+        };
         d.set_charge(&at(60.0));
         let light = d.peak_rise_bar_per_deg();
         d.set_charge(&at(21.0));
         let loaded = d.peak_rise_bar_per_deg();
         println!("rate of rise, bar per degree: v8 idle {idle:.2}, v8 wot {wot:.2}, diesel light {light:.2}, loaded {loaded:.2}");
-        assert!(wot > 2.0 * idle && wot < 6.0 * idle, "idle {idle}, wot {wot}");
+        assert!(
+            wot > 2.0 * idle && wot < 6.0 * idle,
+            "idle {idle}, wot {wot}"
+        );
         assert!(idle > 0.3 && wot < 8.0);
-        assert!(loaded > 2.0 * light, "a loaded diesel burns more fuel per cycle: light {light}, loaded {loaded}");
+        assert!(
+            loaded > 2.0 * light,
+            "a loaded diesel burns more fuel per cycle: light {light}, loaded {loaded}"
+        );
     }
 
     #[test]
@@ -234,8 +289,13 @@ mod tests {
         let n = 720;
         let t: Vec<f32> = (0..n).map(|d| c.torque(d as f32, 1.0)).collect();
         let mean = t.iter().sum::<f32>() / n as f32;
-        let (lo, hi) = (t.iter().cloned().fold(f32::MAX, f32::min), t.iter().cloned().fold(f32::MIN, f32::max));
-        println!("one cylinder: mean {mean:.1} Nm per cycle-degree-average, range {lo:.0}..{hi:.0}");
+        let (lo, hi) = (
+            t.iter().cloned().fold(f32::MAX, f32::min),
+            t.iter().cloned().fold(f32::MIN, f32::max),
+        );
+        println!(
+            "one cylinder: mean {mean:.1} Nm per cycle-degree-average, range {lo:.0}..{hi:.0}"
+        );
         assert!(mean > 0.0 && hi > 4.0 * mean);
     }
 }

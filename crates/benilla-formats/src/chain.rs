@@ -69,7 +69,25 @@ impl Chain {
     /// missing files far downstream.
     pub fn open(path: &Path) -> Result<Self> {
         let mut archives = Vec::new();
-        if path.is_dir() {
+        if let Some(mounted) =
+            crate::virtual_data::mounted().filter(|_| crate::virtual_data::is_root(path))
+        {
+            let names: Vec<String> = mounted.iter().map(|(n, _)| n.clone()).collect();
+            for name in mount_order(&names) {
+                if let Some((_, source)) = mounted.iter().find(|(n, _)| *n == name) {
+                    archives.push(
+                        Archive::from_source(&name, source.clone())
+                            .with_context(|| format!("opening {name}"))?,
+                    );
+                }
+            }
+            if archives.is_empty() {
+                bail!(
+                    "no known vanilla MPQs among the {} picked files",
+                    mounted.len()
+                );
+            }
+        } else if path.is_dir() {
             let mut names: Vec<String> = std::fs::read_dir(path)
                 .with_context(|| format!("listing {}", path.display()))?
                 .filter_map(|entry| {

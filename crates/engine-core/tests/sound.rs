@@ -4,7 +4,10 @@ use engine_core::sound::{default_banks, EngineSound, Quality, SoundInput};
 use engine_core::*;
 
 fn input(cfg: &EngineConfig, tuning: &Tuning, rpm: f64, throttle: f64) -> SoundInput {
-    let fuel = fuels().into_iter().find(|f| f.ignition_type == cfg.ignition_type).unwrap();
+    let fuel = fuels()
+        .into_iter()
+        .find(|f| f.ignition_type == cfg.ignition_type)
+        .unwrap();
     let mut e = CombustionEngine::new(cfg.clone(), &transmissions()[1], &brakes()[0], fuel);
     e.set_tuning(tuning.clone());
     e.warm_up();
@@ -12,7 +15,8 @@ fn input(cfg: &EngineConfig, tuning: &Tuning, rpm: f64, throttle: f64) -> SoundI
     SoundInput {
         rpm: rpm as f32,
         throttle: throttle as f32,
-        load: (tel.display_torque_nm / (75.0 * cfg.displacement_l()).max(60.0)).clamp(0.0, 1.3) as f32,
+        load: (tel.display_torque_nm / (75.0 * cfg.displacement_l()).max(60.0)).clamp(0.0, 1.3)
+            as f32,
         map_pa: tel.manifold_pressure_pa as f32,
         atm_pa: tel.atmospheric_pressure_pa as f32,
         air_k: tel.air_temperature_k as f32,
@@ -58,7 +62,11 @@ fn every_engine_and_every_kit_renders_finite_bounded_sound() {
                 let (mut peak, mut q_sum, mut q_n) = (0.0f32, 0.0f64, 0usize);
                 for i in 0..n {
                     let s = snd.next_sample();
-                    assert!(s.is_finite(), "{} / {name} at {rpm:.0} rpm: non-finite sample {i}", cfg.id);
+                    assert!(
+                        s.is_finite(),
+                        "{} / {name} at {rpm:.0} rpm: non-finite sample {i}",
+                        cfg.id
+                    );
                     peak = peak.max(s.abs());
                     if i > n / 2 {
                         q_sum += snd.gas.mouths.iter().map(|m| m.q as f64).sum::<f64>();
@@ -66,18 +74,30 @@ fn every_engine_and_every_kit_renders_finite_bounded_sound() {
                     }
                 }
                 worst_load = worst_load.max(t0.elapsed().as_secs_f64() / 0.7);
-                assert!(peak <= 1.0, "{} / {name}: output beyond full scale ({peak})", cfg.id);
+                assert!(
+                    peak <= 1.0,
+                    "{} / {name}: output beyond full scale ({peak})",
+                    cfg.id
+                );
                 let mean_q = q_sum / q_n as f64;
                 assert!(mean_q > 0.0, "{} / {name} at {rpm:.0} rpm: gas must leave the tailpipes on average (mean flow {mean_q})", cfg.id);
                 // the pipes must not have run away thermally or in pressure
                 let g = &snd.gas.exhaust.net.grid;
                 for k in 0..g.m {
-                    assert!(g.p[k].is_finite() && g.p[k] > 5.0e3 && g.p[k] < 3.0e6, "{} / {name}: pressure {} Pa in cell {k}", cfg.id, g.p[k]);
+                    assert!(
+                        g.p[k].is_finite() && g.p[k] > 5.0e3 && g.p[k] < 3.0e6,
+                        "{} / {name}: pressure {} Pa in cell {k}",
+                        cfg.id,
+                        g.p[k]
+                    );
                 }
             }
         }
     }
-    println!("slowest case rendered at {:.1}x real time", 1.0 / worst_load);
+    println!(
+        "slowest case rendered at {:.1}x real time",
+        1.0 / worst_load
+    );
 }
 
 #[test]
@@ -108,7 +128,10 @@ fn materials_change_the_shell_radiation_and_not_the_firing_note() {
     println!("tail {t_steel:.3} / {t_thin:.3} / {t_thick:.3} Pa, shells {s_steel:.4} / {s_thin:.4} / {s_thick:.4} Pa");
     // the tailpipe note barely moves with the wall gauge, the shells move, in the direction physics says
     assert!((t_thin / t_steel - 1.0).abs() < 0.15 && (t_thick / t_steel - 1.0).abs() < 0.15);
-    assert!(s_thin > s_thick * 1.3, "a thin shell must radiate more than a thick one ({s_thin} vs {s_thick})");
+    assert!(
+        s_thin > s_thick * 1.3,
+        "a thin shell must radiate more than a thick one ({s_thin} vs {s_thick})"
+    );
 }
 
 #[test]
@@ -118,36 +141,67 @@ fn longer_pipes_pack_in_more_resonances_and_hotter_gas_raises_them_all() {
     let peaks = |spec: &str, t_gas: f32| {
         let tuning = Tuning::parse_spec(spec).unwrap();
         let env = engine_core::acoustics::Env::new(101_325.0, 293.0);
-        let sys = engine_core::acoustics::ExhaustSystem::build(&engine_core::acoustics::ExhaustInputs { cfg: &cfg, tuning: &tuning, banks: &default_banks(&cfg), dx: 0.04, env, res_base: 4 });
-        let lin = Linear { temperature: Some(t_gas), alpha: 0.01, ..Linear::new(&sys.net, &sys.chambers, sys.res_base) };
+        let sys =
+            engine_core::acoustics::ExhaustSystem::build(&engine_core::acoustics::ExhaustInputs {
+                cfg: &cfg,
+                tuning: &tuning,
+                banks: &default_banks(&cfg),
+                dx: 0.04,
+                env,
+                res_base: 4,
+            });
+        let lin = Linear {
+            temperature: Some(t_gas),
+            alpha: 0.01,
+            ..Linear::new(&sys.net, &sys.chambers, sys.res_base)
+        };
         lin.resonances(sys.port_node[0], 20.0, 600.0, 200)
     };
     // the mode density of a pipe grows with its length: count the resonances below 300 Hz
     let count = |spec: &str| peaks(spec, 650.0).iter().filter(|p| p.0 < 300.0).count();
-    let (short, stock, long) = (count("mid=0.5,tail=0.5,muffler=delete,cat=delete"), count("muffler=delete,cat=delete"), count("mid=1.8,tail=2.0,muffler=delete,cat=delete"));
+    let (short, stock, long) = (
+        count("mid=0.5,tail=0.5,muffler=delete,cat=delete"),
+        count("muffler=delete,cat=delete"),
+        count("mid=1.8,tail=2.0,muffler=delete,cat=delete"),
+    );
     println!("resonances below 300 Hz: short pipes {short}, stock {stock}, long {long}");
     assert!(short < long, "{short} < {stock} < {long}");
     assert!(short <= stock && stock <= long);
     // every resonance scales with the speed of sound: the whole set of peaks moves up with sqrt(T)
     let set = |t: f32| {
-        let mut p: Vec<f64> = peaks("muffler=delete,cat=delete", t).iter().filter(|x| x.0 < 450.0).map(|x| x.0).collect();
+        let mut p: Vec<f64> = peaks("muffler=delete,cat=delete", t)
+            .iter()
+            .filter(|x| x.0 < 450.0)
+            .map(|x| x.0)
+            .collect();
         p.sort_by(|a, b| a.partial_cmp(b).unwrap());
         p
     };
     let (cool, hot) = (set(450.0), set(900.0));
     // the c ratio: gamma and R vary a little with temperature
-    let ratio = (engine_core::acoustics::Gas::EXHAUST.sound_speed(900.0) / engine_core::acoustics::Gas::EXHAUST.sound_speed(450.0)) as f64;
+    let ratio = (engine_core::acoustics::Gas::EXHAUST.sound_speed(900.0)
+        / engine_core::acoustics::Gas::EXHAUST.sound_speed(450.0)) as f64;
     // every cool peak has a hot partner at c-ratio times the frequency (within 12 %: the cold-air end correction does not scale)
-    let matched = cool.iter().filter(|f| hot.iter().any(|g| (g / (*f * ratio) - 1.0).abs() < 0.12)).count();
+    let matched = cool
+        .iter()
+        .filter(|f| hot.iter().any(|g| (g / (*f * ratio) - 1.0).abs() < 0.12))
+        .count();
     println!("{matched} of {} resonances found again at {:.2}x the frequency when the gas is 450 K hotter", cool.len(), ratio);
-    assert!(matched * 2 >= cool.len(), "only {matched} of {} resonances moved with the speed of sound", cool.len());
+    assert!(
+        matched * 2 >= cool.len(),
+        "only {matched} of {} resonances moved with the speed of sound",
+        cool.len()
+    );
 }
 
 // ------------------------------------------------------------------ the engine at rest and being started
 
 /// The state the viewer publishes for an engine that is standing still.
 fn resting_input(cfg: &EngineConfig) -> SoundInput {
-    let fuel = fuels().into_iter().find(|f| f.ignition_type == cfg.ignition_type).unwrap();
+    let fuel = fuels()
+        .into_iter()
+        .find(|f| f.ignition_type == cfg.ignition_type)
+        .unwrap();
     let e = CombustionEngine::new(cfg.clone(), &transmissions()[1], &brakes()[0], fuel);
     let tel = e.telemetry();
     SoundInput {
@@ -174,13 +228,23 @@ fn an_engine_that_is_off_is_silent() {
     // has a floor of round-off noise: with the engine off that floor was a faint airy hiss. It must stay digital zero.
     for id in ["i4", "v8", "i4_16", "w24"] {
         let cfg = engine_by_id(id).unwrap();
-        let mut snd = EngineSound::new(&cfg, &Tuning::default(), &default_banks(&cfg), Quality::FAST);
+        let mut snd = EngineSound::new(
+            &cfg,
+            &Tuning::default(),
+            &default_banks(&cfg),
+            Quality::FAST,
+        );
         let inp = resting_input(&cfg);
         snd.set_input(&inp);
-        let x: Vec<f32> = (0..(2.0 * 44_100.0) as usize).map(|_| snd.next_sample()).collect();
+        let x: Vec<f32> = (0..(2.0 * 44_100.0) as usize)
+            .map(|_| snd.next_sample())
+            .collect();
         let r = rms_of(&x[22_050..]);
         println!("{id}: cold and still, rms {r:.2e}");
-        assert!(r < 1.0e-6, "{id}: a stopped cold engine makes sound (rms {r:.2e})");
+        assert!(
+            r < 1.0e-6,
+            "{id}: a stopped cold engine makes sound (rms {r:.2e})"
+        );
 
         // hot pipes that have just been running, then the engine stops
         snd.preheat(850.0);
@@ -190,11 +254,19 @@ fn an_engine_that_is_off_is_silent() {
             snd.next_sample();
         }
         let loud = rms_of(&(0..11_025).map(|_| snd.next_sample()).collect::<Vec<_>>());
-        snd.set_input(&SoundInput { serial: 3, ..inp.clone() });
-        let y: Vec<f32> = (0..(4.0 * 44_100.0) as usize).map(|_| snd.next_sample()).collect();
+        snd.set_input(&SoundInput {
+            serial: 3,
+            ..inp.clone()
+        });
+        let y: Vec<f32> = (0..(4.0 * 44_100.0) as usize)
+            .map(|_| snd.next_sample())
+            .collect();
         let tail = rms_of(&y[3 * 44_100..]);
         println!("{id}: running rms {loud:.3}, three seconds after stopping {tail:.2e}");
-        assert!(tail < loud * 1.0e-3, "{id}: still audible 3 s after stopping ({tail:.2e} vs {loud:.3})");
+        assert!(
+            tail < loud * 1.0e-3,
+            "{id}: still audible 3 s after stopping ({tail:.2e} vs {loud:.3})"
+        );
     }
 }
 
@@ -205,8 +277,17 @@ fn intake_and_exhaust_share_one_ambient_pressure() {
     // cylinder rested in valve overlap.
     for id in ["i4", "v8", "i6"] {
         let cfg = engine_by_id(id).unwrap();
-        let mut snd = EngineSound::new(&cfg, &Tuning::default(), &default_banks(&cfg), Quality::FAST);
-        let inp = SoundInput { atm_pa: 105_500.0, map_pa: 105_500.0, ..resting_input(&cfg) };
+        let mut snd = EngineSound::new(
+            &cfg,
+            &Tuning::default(),
+            &default_banks(&cfg),
+            Quality::FAST,
+        );
+        let inp = SoundInput {
+            atm_pa: 105_500.0,
+            map_pa: 105_500.0,
+            ..resting_input(&cfg)
+        };
         snd.set_input(&inp);
         let mut peak = 0.0f32;
         for i in 0..(2.0 * 44_100.0) as usize {
@@ -216,14 +297,20 @@ fn intake_and_exhaust_share_one_ambient_pressure() {
             }
         }
         println!("{id}: largest flow at a tailpipe at rest {peak:.2e} m3/s");
-        assert!(peak < 2.0e-4, "{id}: a stopped engine blows {peak:.2e} m3/s out of the tailpipe");
+        assert!(
+            peak < 2.0e-4,
+            "{id}: a stopped engine blows {peak:.2e} m3/s out of the tailpipe"
+        );
     }
 }
 
 /// Drives the real engine model through a key turn and returns the sound input of every 60 Hz frame and the engine
 /// model's crank speed extremes between 0.9 s and 1.4 s.
 fn cranking_inputs(cfg: &EngineConfig, secs: f32) -> (Vec<SoundInput>, (f64, f64)) {
-    let fuel = fuels().into_iter().find(|f| f.ignition_type == cfg.ignition_type).unwrap();
+    let fuel = fuels()
+        .into_iter()
+        .find(|f| f.ignition_type == cfg.ignition_type)
+        .unwrap();
     let mut e = CombustionEngine::new(cfg.clone(), &transmissions()[1], &brakes()[0], fuel);
     e.set_ignition_holdoff(1.1);
     e.warm_up();
@@ -240,7 +327,9 @@ fn cranking_inputs(cfg: &EngineConfig, secs: f32) -> (Vec<SoundInput>, (f64, f64
         }
         let (mut dt, mut acc, mut tacc) = (1.0 / 60.0, 0.0f64, 0.0f64);
         while dt > 1e-9 {
-            let h = (1.2 / (e.rpm() * 6.0).max(1.0)).clamp(1.0 / 20_000.0, 1.0 / 240.0).min(dt);
+            let h = (1.2 / (e.rpm() * 6.0).max(1.0))
+                .clamp(1.0 / 20_000.0, 1.0 / 240.0)
+                .min(dt);
             e.update(h);
             acc += e.rpm() * h;
             tacc += h;
@@ -260,7 +349,8 @@ fn cranking_inputs(cfg: &EngineConfig, secs: f32) -> (Vec<SoundInput>, (f64, f64
         frames.push(SoundInput {
             rpm: (acc / tacc) as f32,
             throttle: tel.throttle as f32,
-            load: (tel.display_torque_nm / (75.0 * cfg.displacement_l()).max(60.0)).clamp(0.0, 1.3) as f32,
+            load: (tel.display_torque_nm / (75.0 * cfg.displacement_l()).max(60.0)).clamp(0.0, 1.3)
+                as f32,
             map_pa: tel.manifold_pressure_pa as f32,
             atm_pa: tel.atmospheric_pressure_pa as f32,
             air_k: tel.air_temperature_k as f32,
@@ -287,7 +377,12 @@ fn cranking_sags_and_surges_like_the_engine_model() {
     for id in ["i4", "v6", "v8"] {
         let cfg = engine_by_id(id).unwrap();
         let (frames, (lo, hi)) = cranking_inputs(&cfg, 1.5);
-        let mut snd = EngineSound::new(&cfg, &Tuning::default(), &default_banks(&cfg), Quality::FAST);
+        let mut snd = EngineSound::new(
+            &cfg,
+            &Tuning::default(),
+            &default_banks(&cfg),
+            Quality::FAST,
+        );
         let (mut dmin, mut dmax) = (f32::MAX, f32::MIN);
         for (f, inp) in frames.iter().enumerate() {
             snd.set_input(inp);
@@ -302,10 +397,17 @@ fn cranking_sags_and_surges_like_the_engine_model() {
         }
         let mean = 0.5 * (lo + hi);
         let (sim_pp, snd_pp) = ((hi - lo) / mean, (dmax - dmin) as f64);
-        println!("{id}: speed ripple peak to peak, engine model {:.1} %, sound model {:.1} %", sim_pp * 100.0, snd_pp * 100.0);
+        println!(
+            "{id}: speed ripple peak to peak, engine model {:.1} %, sound model {:.1} %",
+            sim_pp * 100.0,
+            snd_pp * 100.0
+        );
         assert!(sim_pp > 0.01 && snd_pp > 0.01, "{id}: no ripple at all");
         let ratio = snd_pp / sim_pp;
-        assert!((0.5..2.0).contains(&ratio), "{id}: ripple off by {ratio:.2}x");
+        assert!(
+            (0.5..2.0).contains(&ratio),
+            "{id}: ripple off by {ratio:.2}x"
+        );
     }
 }
 
@@ -315,7 +417,12 @@ fn cranking_is_a_rich_buzz_with_energy_through_the_kilohertz_range() {
     // the old starter was a swept sine: nothing between its two lines
     let cfg = engine_by_id("i4_16").unwrap();
     let (frames, _) = cranking_inputs(&cfg, 1.4);
-    let mut snd = EngineSound::new(&cfg, &Tuning::default(), &default_banks(&cfg), Quality::FAST);
+    let mut snd = EngineSound::new(
+        &cfg,
+        &Tuning::default(),
+        &default_banks(&cfg),
+        Quality::FAST,
+    );
     let mut x = Vec::new();
     for (f, inp) in frames.iter().enumerate() {
         snd.set_input(inp);
@@ -336,7 +443,10 @@ fn cranking_is_a_rich_buzz_with_energy_through_the_kilohertz_range() {
     let level = rms_of(&x);
     println!("cranking: output rms {level:.3}, spectral flatness 300 Hz - 4 kHz {flat:.1} dB");
     assert!(level > 0.005, "the starter is inaudible ({level})");
-    assert!(flat > -30.0, "cranking is a pure tone (flatness {flat:.1} dB)");
+    assert!(
+        flat > -30.0,
+        "cranking is a pure tone (flatness {flat:.1} dB)"
+    );
 }
 
 #[test]
@@ -353,11 +463,20 @@ fn the_quality_ladder_gets_finer_and_stays_stable_at_every_tier() {
         snd.set_input(&inp);
         for i in 0..22_050 {
             let s = snd.next_sample();
-            assert!(s.is_finite() && s.abs() <= 1.0, "tier {:.0} mm: bad sample {s} at {i}", q.dx * 1e3);
+            assert!(
+                s.is_finite() && s.abs() <= 1.0,
+                "tier {:.0} mm: bad sample {s} at {i}",
+                q.dx * 1e3
+            );
         }
         let g = &snd.gas.exhaust.net.grid;
         for k in 0..g.m {
-            assert!(g.p[k].is_finite() && g.p[k] > 5.0e3 && g.p[k] < 3.0e6, "tier {:.0} mm: pressure {} Pa in cell {k}", q.dx * 1e3, g.p[k]);
+            assert!(
+                g.p[k].is_finite() && g.p[k] > 5.0e3 && g.p[k] < 3.0e6,
+                "tier {:.0} mm: pressure {} Pa in cell {k}",
+                q.dx * 1e3,
+                g.p[k]
+            );
         }
     }
 }
@@ -369,7 +488,9 @@ fn rms_pa(x: &[f32]) -> f64 {
 /// Level (dB, arbitrary reference) of the 1/3-octave-wide band around `c` Hz of `x`.
 fn band_level(x: &[f32], lo: f64, hi: f64) -> f64 {
     use engine_core::acoustics::analysis::{band_power, spectrum};
-    10.0 * band_power(&spectrum(x, 8192), 44_100.0, lo, hi).max(1e-30).log10()
+    10.0 * band_power(&spectrum(x, 8192), 44_100.0, lo, hi)
+        .max(1e-30)
+        .log10()
 }
 
 #[test]
@@ -379,7 +500,12 @@ fn an_engine_that_is_switched_off_but_still_turning_is_nearly_silent() {
     for id in ["v8", "i4", "v12"] {
         let cfg = engine_by_id(id).unwrap();
         let mut inp = input(&cfg, &Tuning::default(), 3500.0, 0.6);
-        let mut snd = EngineSound::new(&cfg, &Tuning::default(), &default_banks(&cfg), Quality::FAST);
+        let mut snd = EngineSound::new(
+            &cfg,
+            &Tuning::default(),
+            &default_banks(&cfg),
+            Quality::FAST,
+        );
         snd.preheat(inp.egt_k * 0.9);
         snd.set_input(&inp);
         snd.soak(1.0, 60.0);
@@ -392,7 +518,10 @@ fn an_engine_that_is_switched_off_but_still_turning_is_nearly_silent() {
         let off: Vec<f32> = (0..22_050).map(|_| snd.next_sample()).collect();
         let drop_db = 20.0 * (rms_pa(&off) / rms_pa(&running)).log10();
         println!("{id}: switched off at 3500 rpm, 1 s later {drop_db:.1} dB re running");
-        assert!(drop_db < -30.0, "{id}: the engine is only {drop_db:.1} dB down a second after the key went off");
+        assert!(
+            drop_db < -30.0,
+            "{id}: the engine is only {drop_db:.1} dB down a second after the key went off"
+        );
     }
 }
 
@@ -411,18 +540,28 @@ fn the_tiers_of_the_solver_sound_alike() {
             snd.soak(1.0, 60.0);
             let mut sink = vec![0.0f32; 11_025];
             snd.render(&mut sink);
-            (0..44_100).map(|_| {
-                snd.next_sample();
-                snd.p_tail
-            }).collect()
+            (0..44_100)
+                .map(|_| {
+                    snd.next_sample();
+                    snd.p_tail
+                })
+                .collect()
         };
         let fine = render(Quality::HIGH);
         for q in [Quality::BALANCED, Quality::FAST, Quality::ECO] {
             let coarse = render(q);
-            for (lo, hi, name) in [(60.0, 150.0, "low end"), (150.0, 400.0, "firing note"), (400.0, 900.0, "body")] {
+            for (lo, hi, name) in [
+                (60.0, 150.0, "low end"),
+                (150.0, 400.0, "firing note"),
+                (400.0, 900.0, "body"),
+            ] {
                 let d = band_level(&coarse, lo, hi) - band_level(&fine, lo, hi);
                 println!("{id} {:.0} mm vs 28 mm, {name}: {d:+.1} dB", q.dx * 1e3);
-                assert!(d.abs() < 4.0, "{id} at {:.0} mm: the {name} is {d:+.1} dB off the finer tier", q.dx * 1e3);
+                assert!(
+                    d.abs() < 4.0,
+                    "{id} at {:.0} mm: the {name} is {d:+.1} dB off the finer tier",
+                    q.dx * 1e3
+                );
             }
         }
     }
@@ -436,20 +575,34 @@ fn engines_with_a_high_firing_frequency_still_have_a_low_end() {
         let cfg = engine_by_id(id).unwrap();
         for rpm in [2500.0, 4500.0] {
             let inp = input(&cfg, &Tuning::default(), rpm, 0.8);
-            let mut snd = EngineSound::new(&cfg, &Tuning::default(), &default_banks(&cfg), Quality::FAST);
+            let mut snd = EngineSound::new(
+                &cfg,
+                &Tuning::default(),
+                &default_banks(&cfg),
+                Quality::FAST,
+            );
             snd.preheat(inp.egt_k * 0.9);
             snd.set_input(&inp);
             snd.soak(1.5, 60.0);
             let mut sink = vec![0.0f32; 22_050];
             snd.render(&mut sink);
-            let x: Vec<f32> = (0..88_200).map(|_| {
-                snd.next_sample();
-                snd.p_tail + snd.p_jet + snd.p_shell + snd.p_mech + snd.p_intake + snd.p_low
-            }).collect();
+            let x: Vec<f32> = (0..88_200)
+                .map(|_| {
+                    snd.next_sample();
+                    snd.p_tail + snd.p_jet + snd.p_shell + snd.p_mech + snd.p_intake + snd.p_low
+                })
+                .collect();
             let low = band_level(&x, 30.0, 150.0);
             let body = band_level(&x, 260.0, 1500.0);
-            println!("{id} {rpm:.0} rpm: 30-150 Hz is {:+.1} dB re 260-1500 Hz", low - body);
-            assert!(low - body > -13.5, "{id} at {rpm:.0} rpm has no low end ({:+.1} dB)", low - body);
+            println!(
+                "{id} {rpm:.0} rpm: 30-150 Hz is {:+.1} dB re 260-1500 Hz",
+                low - body
+            );
+            assert!(
+                low - body > -13.5,
+                "{id} at {rpm:.0} rpm has no low end ({:+.1} dB)",
+                low - body
+            );
         }
     }
 }
@@ -458,7 +611,10 @@ fn engines_with_a_high_firing_frequency_still_have_a_low_end() {
 /// ear takes for crackle).
 fn crackle_db(x: &[f32]) -> f64 {
     let hp: Vec<f32> = x.windows(3).map(|w| w[2] - 2.0 * w[1] + w[0]).collect();
-    let mut env: Vec<f64> = hp.chunks(88).map(|c| (c.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / c.len() as f64).sqrt()).collect();
+    let mut env: Vec<f64> = hp
+        .chunks(88)
+        .map(|c| (c.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / c.len() as f64).sqrt())
+        .collect();
     env.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let q = |p: f64| env[((env.len() - 1) as f64 * p) as usize];
     20.0 * (q(0.995) / q(0.5).max(1e-12)).log10()
@@ -499,7 +655,10 @@ fn burble_is_low_and_round_not_a_click() {
         assert!(x.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
         let c = crackle_db(&x[44_100..]);
         println!("overrun [{spec}]: crackle {c:.1} dB");
-        assert!(c < 18.0, "[{spec}] the burble is a train of clicks: {c:.1} dB");
+        assert!(
+            c < 18.0,
+            "[{spec}] the burble is a train of clicks: {c:.1} dB"
+        );
     }
 }
 
@@ -508,8 +667,18 @@ fn a_running_engine_has_a_bounded_crank_speed_ripple() {
     // the within-cycle ripple and the slow wander of the combustion torque: there, and nowhere near the cranking surge
     for id in ["i4", "v8", "w16", "dieseli6"] {
         let cfg = engine_by_id(id).unwrap();
-        let inp = input(&cfg, &Tuning::default(), (cfg.redline_rpm * 0.13).max(750.0), 0.0);
-        let mut snd = EngineSound::new(&cfg, &Tuning::default(), &default_banks(&cfg), Quality::FAST);
+        let inp = input(
+            &cfg,
+            &Tuning::default(),
+            (cfg.redline_rpm * 0.13).max(750.0),
+            0.0,
+        );
+        let mut snd = EngineSound::new(
+            &cfg,
+            &Tuning::default(),
+            &default_banks(&cfg),
+            Quality::FAST,
+        );
         snd.preheat(inp.egt_k * 0.9);
         snd.set_input(&inp);
         snd.soak(1.0, 60.0);
@@ -520,8 +689,19 @@ fn a_running_engine_has_a_bounded_crank_speed_ripple() {
             lo = lo.min(d);
             hi = hi.max(d);
         }
-        println!("{id}: idle crank speed {:+.2} %..{:+.2} %", lo * 100.0, hi * 100.0);
-        assert!(hi - lo > 0.003, "{id}: a dead-steady crank ({:.4})", hi - lo);
-        assert!(hi - lo < 0.15 && hi < 0.12 && lo > -0.12, "{id}: ripple out of bounds {lo}..{hi}");
+        println!(
+            "{id}: idle crank speed {:+.2} %..{:+.2} %",
+            lo * 100.0,
+            hi * 100.0
+        );
+        assert!(
+            hi - lo > 0.003,
+            "{id}: a dead-steady crank ({:.4})",
+            hi - lo
+        );
+        assert!(
+            hi - lo < 0.15 && hi < 0.12 && lo > -0.12,
+            "{id}: ripple out of bounds {lo}..{hi}"
+        );
     }
 }

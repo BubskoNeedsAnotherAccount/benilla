@@ -53,7 +53,16 @@ pub struct IntakeSystem {
     pub report: IntakeReport,
 }
 
-fn pipe(net: &mut Network, env: Env, name: &str, len: f32, d_in: f32, d_out: f32, wall: Wall, dx: f32) -> usize {
+fn pipe(
+    net: &mut Network,
+    env: Env,
+    name: &str,
+    len: f32,
+    d_in: f32,
+    d_out: f32,
+    wall: Wall,
+    dx: f32,
+) -> usize {
     let spec = DuctSpec::pipe(name, len.max(0.04), d_in, wall, dx).taper(d_out);
     net.add_duct(&spec, env.p_amb, env.t_amb)
 }
@@ -85,7 +94,11 @@ impl IntakeSystem {
         let l_port = 0.035 + 0.30 * bore;
         let d_run = 0.46 * bore * if itb { 1.1 } else { 1.0 };
         let d_port = 0.52 * bore;
-        let mut report = IntakeReport { runner_length: l_port + run_len, runner_diameter: d_run, ..Default::default() };
+        let mut report = IntakeReport {
+            runner_length: l_port + run_len,
+            runner_diameter: d_run,
+            ..Default::default()
+        };
         let mut port_node = Vec::with_capacity(n);
         let mut mouths = Vec::new();
         let mut itb_nodes = Vec::new();
@@ -97,8 +110,23 @@ impl IntakeSystem {
         let runners: Vec<usize> = (0..n)
             .map(|i| {
                 let w = wall(d_run, plastic, 2.5);
-                let d = pipe(&mut net, env, &format!("runner{}", i + 1), l_port + run_len, d_port, d_run, w, inp.dx);
-                port_node.push(net.add_node(Node::junction(&format!("iport{}", i + 1)).with_leg(PipeLeg::new(d, End::Left)).with_valve(ValveLeg::new(i))));
+                let d = pipe(
+                    &mut net,
+                    env,
+                    &format!("runner{}", i + 1),
+                    l_port + run_len,
+                    d_port,
+                    d_run,
+                    w,
+                    inp.dx,
+                );
+                port_node.push(
+                    net.add_node(
+                        Node::junction(&format!("iport{}", i + 1))
+                            .with_leg(PipeLeg::new(d, End::Left))
+                            .with_valve(ValveLeg::new(i)),
+                    ),
+                );
                 d
             })
             .collect();
@@ -110,15 +138,32 @@ impl IntakeSystem {
             plenum = Some(pl);
             report.plenum_litres = v_pl * 1e3;
             for &r in &runners {
-                net.add_node(Node::tank("plenum_in", PipeLeg::new(r, End::Right).with_loss(1.0, 0.25), pl));
+                net.add_node(Node::tank(
+                    "plenum_in",
+                    PipeLeg::new(r, End::Right).with_loss(1.0, 0.25),
+                    pl,
+                ));
             }
             let d_tube = (0.050 + 0.0075 * disp_l).clamp(0.052, 0.090);
             a_max = std::f32::consts::FRAC_PI_4 * d_tube * d_tube * 0.85;
             let wt = wall(d_tube, PipeMaterial::MildSteel, 2.0);
-            let tube = pipe(&mut net, env, "intake_tube", 0.32, d_tube, d_tube, wt, inp.dx);
+            let tube = pipe(
+                &mut net,
+                env,
+                "intake_tube",
+                0.32,
+                d_tube,
+                d_tube,
+                wt,
+                inp.dx,
+            );
             let mut th = ValveLeg::new(pl);
             th.area = 0.2 * a_max;
-            let nd = net.add_node(Node::junction("throttle").with_leg(PipeLeg::new(tube, End::Right).with_loss(0.0, 0.2)).with_valve(th));
+            let nd = net.add_node(
+                Node::junction("throttle")
+                    .with_leg(PipeLeg::new(tube, End::Right).with_loss(0.0, 0.2))
+                    .with_valve(th),
+            );
             throttle_node = Some(nd);
             // ---- airbox, snorkel and filter, or a bare cone on the tube
             match tun.air_filter {
@@ -132,24 +177,68 @@ impl IntakeSystem {
                     let a_neck = 1.8 * std::f32::consts::FRAC_PI_4 * d_tube * d_tube;
                     // the airbox: a volume in parallel on the line between snorkel and tube, behind the filter
                     let filt = SlugLeg::new(ab, a_neck, l_neck).with_resistance(30.0);
-                    net.add_node(Node::junction("airbox").with_leg(PipeLeg::new(snorkel, End::Right).with_loss(0.0, 0.5)).with_leg(PipeLeg::new(tube, End::Left).with_loss(0.8, 0.0)).with_slug(filt));
+                    net.add_node(
+                        Node::junction("airbox")
+                            .with_leg(PipeLeg::new(snorkel, End::Right).with_loss(0.0, 0.5))
+                            .with_leg(PipeLeg::new(tube, End::Left).with_loss(0.8, 0.0))
+                            .with_slug(filt),
+                    );
                     let area = net.grid.end_area(snorkel, End::Left);
                     let mut oe = OpenEnd::radiating(area);
                     oe.k_in = 1.2;
-                    let m = net.add_node(Node::open("intake_mouth", PipeLeg::new(snorkel, End::Left), oe));
+                    let m = net.add_node(Node::open(
+                        "intake_mouth",
+                        PipeLeg::new(snorkel, End::Left),
+                        oe,
+                    ));
                     mouths.push((m, d_sn));
-                    report.airbox_hz = Some(343.0 / std::f32::consts::TAU * (a_neck / (v_ab * (l_neck + 0.85 * (a_neck / std::f32::consts::PI).sqrt()))).sqrt());
+                    report.airbox_hz = Some(
+                        343.0 / std::f32::consts::TAU
+                            * (a_neck
+                                / (v_ab
+                                    * (l_neck + 0.85 * (a_neck / std::f32::consts::PI).sqrt())))
+                            .sqrt(),
+                    );
                 }
                 AirFilter::ColdAir | AirFilter::OpenStack => {
-                    let l = if tun.air_filter == AirFilter::ColdAir { 0.55 } else { 0.12 };
+                    let l = if tun.air_filter == AirFilter::ColdAir {
+                        0.55
+                    } else {
+                        0.12
+                    };
                     let wc = wall(d_tube, PipeMaterial::MildSteel, 1.5);
-                    let cone = pipe(&mut net, env, "cold_air_pipe", l, d_tube, d_tube, wc, inp.dx);
-                    net.add_node(Node::junction("tube_joint").with_leg(PipeLeg::new(cone, End::Right)).with_leg(PipeLeg::new(tube, End::Left)));
+                    let cone = pipe(
+                        &mut net,
+                        env,
+                        "cold_air_pipe",
+                        l,
+                        d_tube,
+                        d_tube,
+                        wc,
+                        inp.dx,
+                    );
+                    net.add_node(
+                        Node::junction("tube_joint")
+                            .with_leg(PipeLeg::new(cone, End::Right))
+                            .with_leg(PipeLeg::new(tube, End::Left)),
+                    );
                     let area = net.grid.end_area(cone, End::Left);
                     let mut oe = OpenEnd::radiating(area * 1.0);
-                    oe.k_in = if tun.air_filter == AirFilter::ColdAir { 0.9 } else { 0.4 };
-                    oe.delta *= if tun.air_filter == AirFilter::OpenStack { 1.4 } else { 1.0 };
-                    let m = net.add_node(Node::open("intake_mouth", PipeLeg::new(cone, End::Left), oe));
+                    oe.k_in = if tun.air_filter == AirFilter::ColdAir {
+                        0.9
+                    } else {
+                        0.4
+                    };
+                    oe.delta *= if tun.air_filter == AirFilter::OpenStack {
+                        1.4
+                    } else {
+                        1.0
+                    };
+                    let m = net.add_node(Node::open(
+                        "intake_mouth",
+                        PipeLeg::new(cone, End::Left),
+                        oe,
+                    ));
                     mouths.push((m, d_tube));
                 }
             }
@@ -158,14 +247,31 @@ impl IntakeSystem {
             a_max = std::f32::consts::FRAC_PI_4 * d_run * d_run * 0.85;
             for (i, &r) in runners.iter().enumerate() {
                 let ws = wall(d_run, PipeMaterial::MildSteel, 1.5);
-                let stack = pipe(&mut net, env, &format!("stack{}", i + 1), 0.09, d_run * 1.5, d_run, ws, inp.dx);
-                let nd = net.add_node(Node::junction("itb").with_leg(PipeLeg::new(r, End::Right)).with_leg(PipeLeg::new(stack, End::Right)));
+                let stack = pipe(
+                    &mut net,
+                    env,
+                    &format!("stack{}", i + 1),
+                    0.09,
+                    d_run * 1.5,
+                    d_run,
+                    ws,
+                    inp.dx,
+                );
+                let nd = net.add_node(
+                    Node::junction("itb")
+                        .with_leg(PipeLeg::new(r, End::Right))
+                        .with_leg(PipeLeg::new(stack, End::Right)),
+                );
                 itb_nodes.push((nd, net.grid.end_area(r, End::Right)));
                 let area = net.grid.end_area(stack, End::Left);
                 let mut oe = OpenEnd::radiating(area);
                 oe.k_in = 0.1;
                 oe.delta *= 0.9;
-                let m = net.add_node(Node::open("stack_mouth", PipeLeg::new(stack, End::Left), oe));
+                let m = net.add_node(Node::open(
+                    "stack_mouth",
+                    PipeLeg::new(stack, End::Left),
+                    oe,
+                ));
                 mouths.push((m, d_run * 1.5));
             }
         }
@@ -209,13 +315,18 @@ impl IntakeSystem {
                     s += self.net.nodes[nd].legs[0].p_face;
                     k += 1.0;
                 }
-                if k > 0.0 { s / k } else { self.net.env.p_amb }
+                if k > 0.0 {
+                    s / k
+                } else {
+                    self.net.env.p_amb
+                }
             }
         };
         self.plenum_avg += (p_now - self.plenum_avg) * (1.0 - (-dt / 0.02).exp());
         let err = (self.plenum_avg - tgt) / tgt;
         // plenum too high: close the throttle; too low: open it
-        self.throttle_area = (self.throttle_area * (-12.0 * err * dt * 6.0).exp()).clamp(self.a_min, self.a_max);
+        self.throttle_area =
+            (self.throttle_area * (-12.0 * err * dt * 6.0).exp()).clamp(self.a_min, self.a_max);
         if let Some(nd) = self.throttle_node {
             self.net.nodes[nd].valves[0].area = self.throttle_area;
         }
@@ -242,13 +353,39 @@ mod tests {
     #[test]
     fn every_engine_gets_an_intake() {
         for cfg in engines() {
-            for runners in [Runners::Stock, Runners::Itb, Runners::LongRunner, Runners::ShortRunner] {
+            for runners in [
+                Runners::Stock,
+                Runners::Itb,
+                Runners::LongRunner,
+                Runners::ShortRunner,
+            ] {
                 for filter in [AirFilter::Stock, AirFilter::ColdAir, AirFilter::OpenStack] {
-                    let t = Tuning { runners, air_filter: filter, ..Tuning::default() };
-                    let s = IntakeSystem::build(&IntakeInputs { cfg: &cfg, tuning: &t, dx: 0.04, env: Env::new(101_325.0, 293.0), res_base: cfg.cylinder_count + 10 });
-                    assert!(s.report.mouths >= 1, "{} {:?} {:?}", cfg.id, runners, filter);
+                    let t = Tuning {
+                        runners,
+                        air_filter: filter,
+                        ..Tuning::default()
+                    };
+                    let s = IntakeSystem::build(&IntakeInputs {
+                        cfg: &cfg,
+                        tuning: &t,
+                        dx: 0.04,
+                        env: Env::new(101_325.0, 293.0),
+                        res_base: cfg.cylinder_count + 10,
+                    });
+                    assert!(
+                        s.report.mouths >= 1,
+                        "{} {:?} {:?}",
+                        cfg.id,
+                        runners,
+                        filter
+                    );
                     assert_eq!(s.port_node.len(), cfg.cylinder_count);
-                    assert!(s.report.cells < 1200, "{}: {} cells", cfg.id, s.report.cells);
+                    assert!(
+                        s.report.cells < 1200,
+                        "{}: {} cells",
+                        cfg.id,
+                        s.report.cells
+                    );
                 }
             }
         }

@@ -70,7 +70,15 @@ impl Section {
         let (s, c) = w.sin_cos();
         let alpha = s / (2.0 * q);
         let a0 = 1.0 + alpha / a;
-        Section { b: [(1.0 + alpha * a) / a0, -2.0 * c / a0, (1.0 - alpha * a) / a0], a: [-2.0 * c / a0, (1.0 - alpha / a) / a0], z: [0.0; 2] }
+        Section {
+            b: [
+                (1.0 + alpha * a) / a0,
+                -2.0 * c / a0,
+                (1.0 - alpha * a) / a0,
+            ],
+            a: [-2.0 * c / a0, (1.0 - alpha / a) / a0],
+            z: [0.0; 2],
+        }
     }
 
     #[inline]
@@ -91,7 +99,14 @@ pub struct TierEq {
 impl TierEq {
     pub fn new(dx: f32, fs: f32) -> TierEq {
         let g = gains_for(dx);
-        TierEq { sections: CENTRES.iter().zip(g.iter()).filter(|(_, g)| g.abs() > 0.05).map(|(f, g)| Section::peaking(*f, *g, Q, fs)).collect() }
+        TierEq {
+            sections: CENTRES
+                .iter()
+                .zip(g.iter())
+                .filter(|(_, g)| g.abs() > 0.05)
+                .map(|(f, g)| Section::peaking(*f, *g, Q, fs))
+                .collect(),
+        }
     }
 
     #[inline]
@@ -113,9 +128,16 @@ impl TierEq {
         for (f0, gain) in CENTRES.iter().zip(g.iter()) {
             let s = Section::peaking(*f0, *gain, Q, fs);
             let z2 = mul(z, z);
-            let num = (s.b[0] + s.b[1] * z.0 + s.b[2] * z2.0, s.b[1] * z.1 + s.b[2] * z2.1);
-            let den = (1.0 + s.a[0] * z.0 + s.a[1] * z2.0, s.a[0] * z.1 + s.a[1] * z2.1);
-            db += 10.0 * ((num.0 * num.0 + num.1 * num.1) / (den.0 * den.0 + den.1 * den.1)).log10();
+            let num = (
+                s.b[0] + s.b[1] * z.0 + s.b[2] * z2.0,
+                s.b[1] * z.1 + s.b[2] * z2.1,
+            );
+            let den = (
+                1.0 + s.a[0] * z.0 + s.a[1] * z2.0,
+                s.a[0] * z.1 + s.a[1] * z2.1,
+            );
+            db +=
+                10.0 * ((num.0 * num.0 + num.1 * num.1) / (den.0 * den.0 + den.1 * den.1)).log10();
         }
         db
     }
@@ -131,10 +153,20 @@ mod tests {
         let at = |dx: f32, f: f32| TierEq::response_db(dx, f, 44_100.0);
         for f in [100.0, 400.0, 1000.0, 2000.0] {
             assert!(at(0.020, f).abs() < 1e-3);
-            assert!(at(0.028, f) <= at(0.040, f) + 0.2 && at(0.040, f) <= at(0.055, f) + 0.2, "{f} Hz: {} {} {}", at(0.028, f), at(0.040, f), at(0.055, f));
+            assert!(
+                at(0.028, f) <= at(0.040, f) + 0.2 && at(0.040, f) <= at(0.055, f) + 0.2,
+                "{f} Hz: {} {} {}",
+                at(0.028, f),
+                at(0.040, f),
+                at(0.055, f)
+            );
         }
         // the fit: the 40 mm tier lost about 4.7 dB at 1 kHz and 12 at 2.5 kHz
-        assert!((at(0.040, 1008.0) - 5.0).abs() < 2.0, "{}", at(0.040, 1008.0));
+        assert!(
+            (at(0.040, 1008.0) - 5.0).abs() < 2.0,
+            "{}",
+            at(0.040, 1008.0)
+        );
         assert!(at(0.040, 2400.0) > 8.0);
         // and a low end is put back on the 55 mm one: it lost 3-4 dB at 100-250 Hz
         assert!(at(0.055, 160.0) > 3.0, "{}", at(0.055, 160.0));
@@ -158,7 +190,10 @@ mod tests {
         }
         let measured = 10.0 * (eout / ein).log10() as f32;
         let predicted = TierEq::response_db(0.055, f, fs);
-        assert!((measured - predicted).abs() < 0.3, "{measured} vs {predicted}");
+        assert!(
+            (measured - predicted).abs() < 0.3,
+            "{measured} vs {predicted}"
+        );
         // nothing blows up on an impulse
         let mut eq = TierEq::new(0.07, fs);
         let mut peak = 0.0f32;

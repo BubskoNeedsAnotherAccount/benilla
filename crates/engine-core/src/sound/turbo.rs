@@ -142,24 +142,39 @@ impl Turbo {
         // exhaust gas still turns it at a fraction of its speed under load.
         // (the shaft speed is the spool the engine model reports and what is left of it as it runs down: an engine without a turbo
         // reports none, and there is nothing here to whistle. A floor of "coasting" speed made every naturally aspirated engine whistle.)
-        let target = if c.combusting { c.spool.clamp(0.0, 1.0) } else { 0.0 };
+        let target = if c.combusting {
+            c.spool.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let t_shaft = if target > self.ns { 0.10 } else { 1.6 };
         self.ns += (target - self.ns) * (1.0 - (-dt / t_shaft).exp());
         self.on += ((c.combusting as u8 as f32) - self.on) * (1.0 - (-dt / 0.05).exp());
         self.thr += (c.throttle - self.thr) * (1.0 - (-dt / 0.08).exp());
         self.thr_slow += (self.thr - self.thr_slow) * (1.0 - (-dt / 0.4).exp());
         // the charge pipe: with a valve it empties at once on a lift, without one it is trapped and bleeds off slowly
-        let leak = if c.blow_off == BlowOff::None { 1.1 } else { 0.5 };
+        let leak = if c.blow_off == BlowOff::None {
+            1.1
+        } else {
+            0.5
+        };
         self.hold = (self.hold * (-dt / leak).exp()).max(c.boost);
 
         // how hard the compressor works: wide open and on boost
-        let air = (0.25 + 0.75 * self.thr_slow.min(1.0)) * (0.3 + 0.7 * (c.boost / 1.2).clamp(0.0, 1.0));
+        let air =
+            (0.25 + 0.75 * self.thr_slow.min(1.0)) * (0.3 + 0.7 * (c.boost / 1.2).clamp(0.0, 1.0));
         let sp = self.ns;
         let mut out = 0.0;
         let mut kick = 0.0;
 
         // ---- a lift with boost on: the blow-off valve opens, or the compressor surges
-        if c.throttle < 0.4 && self.armed && self.thr_slow > 0.55 && self.hold > 0.3 && c.spool > 0.2 && !c.diesel {
+        if c.throttle < 0.4
+            && self.armed
+            && self.thr_slow > 0.55
+            && self.hold > 0.3
+            && c.spool > 0.2
+            && !c.diesel
+        {
             self.armed = false;
             match c.blow_off {
                 BlowOff::Recirculating => {
@@ -195,7 +210,9 @@ impl Turbo {
             let flutter = (1.0 + 0.3 * self.am.step(self.rng2.next())).max(0.25);
             self.phase1 = (self.phase1 + f1 * dt).fract();
             self.phase2 = (self.phase2 + f1 * 0.617 * dt).fract();
-            let tone = (self.phase1 * tau).sin() + 0.4 * (self.phase2 * tau).sin() + 0.2 * (self.phase1 * 2.0 * tau).sin();
+            let tone = (self.phase1 * tau).sin()
+                + 0.4 * (self.phase2 * tau).sin()
+                + 0.2 * (self.phase1 * 2.0 * tau).sin();
             let pulse = 1.0 + 0.22 * (c.fire_phase * tau).sin();
             out += tone * flutter * pulse * flutter_am * 0.18 * sp.powf(1.5) * air * self.on;
             // the air the wheel moves: a rush from 1.2 to 6 kHz, and the turbine's rumble under it
@@ -251,7 +268,8 @@ impl Turbo {
                 let env = (std::f32::consts::PI * x).sin().powi(2);
                 let f = self.pulse_f0 * (1.0 + 1.5 * (std::f32::consts::PI * x).sin());
                 self.pulse_phase = (self.pulse_phase + f * dt).fract();
-                let tone = (self.pulse_phase * tau).sin() + 0.3 * (self.pulse_phase * 2.0 * tau).sin();
+                let tone =
+                    (self.pulse_phase * tau).sin() + 0.3 * (self.pulse_phase * 2.0 * tau).sin();
                 self.pulse_hp += (n - self.pulse_hp) * (1.0 - (-tau * 600.0 * dt).exp());
                 let x2 = n - self.pulse_hp;
                 self.pulse_lp += (x2 - self.pulse_lp) * (1.0 - (-tau * 4000.0 * dt).exp());
@@ -272,11 +290,22 @@ mod tests {
     use super::*;
 
     fn ctx(spool: f32, throttle: f32, boost: f32, blow_off: BlowOff) -> TurboCtx {
-        TurboCtx { spool, throttle, boost, rpm_frac: 0.5, fire_phase: 0.0, combusting: true, diesel: false, blow_off }
+        TurboCtx {
+            spool,
+            throttle,
+            boost,
+            rpm_frac: 0.5,
+            fire_phase: 0.0,
+            combusting: true,
+            diesel: false,
+            blow_off,
+        }
     }
 
     fn run(t: &mut Turbo, c: TurboCtx, secs: f32) -> Vec<f32> {
-        (0..(secs * 44_100.0) as usize).map(|_| t.step(&c)).collect()
+        (0..(secs * 44_100.0) as usize)
+            .map(|_| t.step(&c))
+            .collect()
     }
 
     fn rms(x: &[f32]) -> f32 {
@@ -297,7 +326,10 @@ mod tests {
         let late = t.shaft();
         println!("shaft: {early:.2} after 0.15 s, {full:.2} spooled, {half_s:.2} 0.5 s after the lift, {late:.2} 3.5 s after");
         assert!(early > 0.5 * full, "spool-up too slow");
-        assert!(half_s > 0.65 * full, "the shaft must coast through the first half second of a lift");
+        assert!(
+            half_s > 0.65 * full,
+            "the shaft must coast through the first half second of a lift"
+        );
         assert!(late < 0.35 * full, "and run down eventually");
     }
 
@@ -307,9 +339,16 @@ mod tests {
         let on = run(&mut t, ctx(1.0, 1.0, 1.2, BlowOff::Recirculating), 2.0);
         let mut off = Turbo::new(44_100.0);
         let idle = run(&mut off, ctx(0.0, 0.0, 0.0, BlowOff::Recirculating), 2.0);
-        println!("rms on boost {:.4}, off {:.5}", rms(&on[44_100..]), rms(&idle[44_100..]));
+        println!(
+            "rms on boost {:.4}, off {:.5}",
+            rms(&on[44_100..]),
+            rms(&idle[44_100..])
+        );
         assert!(rms(&on[44_100..]) > 10.0 * rms(&idle[44_100..]));
-        assert!(Turbo::whistle_hz(1.0) > Turbo::whistle_hz(0.5) && Turbo::whistle_hz(0.5) > Turbo::whistle_hz(0.1));
+        assert!(
+            Turbo::whistle_hz(1.0) > Turbo::whistle_hz(0.5)
+                && Turbo::whistle_hz(0.5) > Turbo::whistle_hz(0.1)
+        );
     }
 
     #[test]
@@ -317,9 +356,16 @@ mod tests {
         // spool 0 and boost 0 at every throttle and speed: silence (a floor of coasting shaft speed once made every NA engine whistle)
         let mut t = Turbo::new(44_100.0);
         for (thr, rpm) in [(0.0, 0.15), (0.5, 0.4), (1.0, 0.9)] {
-            let c = TurboCtx { rpm_frac: rpm, ..ctx(0.0, thr, 0.0, BlowOff::Recirculating) };
+            let c = TurboCtx {
+                rpm_frac: rpm,
+                ..ctx(0.0, thr, 0.0, BlowOff::Recirculating)
+            };
             let x: Vec<f32> = (0..88_200).map(|_| t.step(&c)).collect();
-            assert!(rms(&x[44_100..]) < 1.0e-4, "throttle {thr}: a naturally aspirated engine whistles ({:.5})", rms(&x[44_100..]));
+            assert!(
+                rms(&x[44_100..]) < 1.0e-4,
+                "throttle {thr}: a naturally aspirated engine whistles ({:.5})",
+                rms(&x[44_100..])
+            );
         }
     }
 
@@ -330,9 +376,18 @@ mod tests {
             run(&mut t, ctx(1.0, 1.0, 1.0, bo), 1.5);
             run(&mut t, ctx(0.8, 0.0, 0.8, bo), 1.5)
         };
-        let (vent, div, none) = (burst(BlowOff::Vented), burst(BlowOff::Recirculating), burst(BlowOff::None));
+        let (vent, div, none) = (
+            burst(BlowOff::Vented),
+            burst(BlowOff::Recirculating),
+            burst(BlowOff::None),
+        );
         let peak = |x: &[f32]| x.iter().fold(0.0f32, |a, b| a.max(b.abs()));
-        println!("peaks after the lift: vent {:.3}, diverter {:.3}, none {:.3}", peak(&vent), peak(&div), peak(&none));
+        println!(
+            "peaks after the lift: vent {:.3}, diverter {:.3}, none {:.3}",
+            peak(&vent),
+            peak(&div),
+            peak(&none)
+        );
         assert!(peak(&vent) > 1.8 * peak(&div));
         // the flutter: the envelope of the 1.5 s after a lift has several separate bursts
         let env: Vec<f32> = none.chunks(441).map(|c| rms(c)).collect();
@@ -350,6 +405,12 @@ mod tests {
         assert!(bursts >= 4, "only {bursts} flutter bursts");
         let div_env: Vec<f32> = div.chunks(441).map(|c| rms(c)).collect();
         let hd = div_env.iter().cloned().fold(0.0f32, f32::max);
-        assert!(div_env.iter().skip(40).all(|&e| e < 0.3 * hd.max(1e-9) || e < 0.01), "a diverter valve must not flutter");
+        assert!(
+            div_env
+                .iter()
+                .skip(40)
+                .all(|&e| e < 0.3 * hd.max(1e-9) || e < 0.01),
+            "a diverter valve must not flutter"
+        );
     }
 }

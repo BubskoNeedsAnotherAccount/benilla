@@ -11,16 +11,55 @@
 //! `rho = rho0 s^n`, `p = p0 s^(n+2)`, so a leg is a handful of multiplications - the whole network
 //! costs little more than its cells.
 
-use super::grid::{End, Grid};
 use super::gas::{powi_fast, Gas};
+use super::grid::{End, Grid};
 use super::reservoir::{orifice_flow_d, Reservoir};
 
 pub const MAX_LEGS: usize = 8;
 
 /// 1/n for the isentropic exponent n (4..=11).
-const INV_NP1: [f32; 12] = [0.0, 0.5, 1.0 / 3.0, 0.25, 0.2, 1.0 / 6.0, 1.0 / 7.0, 0.125, 1.0 / 9.0, 0.1, 1.0 / 11.0, 1.0 / 12.0];
-const INV_NM1: [f32; 12] = [0.0, 0.0, 1.0, 0.5, 1.0 / 3.0, 0.25, 0.2, 1.0 / 6.0, 1.0 / 7.0, 0.125, 1.0 / 9.0, 0.1];
-const INV_N: [f32; 12] = [0.0, 1.0, 0.5, 1.0 / 3.0, 0.25, 0.2, 1.0 / 6.0, 1.0 / 7.0, 0.125, 1.0 / 9.0, 0.1, 1.0 / 11.0];
+const INV_NP1: [f32; 12] = [
+    0.0,
+    0.5,
+    1.0 / 3.0,
+    0.25,
+    0.2,
+    1.0 / 6.0,
+    1.0 / 7.0,
+    0.125,
+    1.0 / 9.0,
+    0.1,
+    1.0 / 11.0,
+    1.0 / 12.0,
+];
+const INV_NM1: [f32; 12] = [
+    0.0,
+    0.0,
+    1.0,
+    0.5,
+    1.0 / 3.0,
+    0.25,
+    0.2,
+    1.0 / 6.0,
+    1.0 / 7.0,
+    0.125,
+    1.0 / 9.0,
+    0.1,
+];
+const INV_N: [f32; 12] = [
+    0.0,
+    1.0,
+    0.5,
+    1.0 / 3.0,
+    0.25,
+    0.2,
+    1.0 / 6.0,
+    1.0 / 7.0,
+    0.125,
+    1.0 / 9.0,
+    0.1,
+    1.0 / 11.0,
+];
 
 /// A duct end attached to a node.
 #[derive(Clone, Debug)]
@@ -42,7 +81,16 @@ pub struct PipeLeg {
 
 impl PipeLeg {
     pub fn new(duct: usize, end: End) -> Self {
-        PipeLeg { duct, end, k_in: 0.0, k_out: 0.0, inert: 0.0, u: 0.0, mdot: 0.0, p_face: 0.0 }
+        PipeLeg {
+            duct,
+            end,
+            k_in: 0.0,
+            k_out: 0.0,
+            inert: 0.0,
+            u: 0.0,
+            mdot: 0.0,
+            p_face: 0.0,
+        }
     }
     pub fn with_loss(mut self, k_in: f32, k_out: f32) -> Self {
         self.k_in = k_in;
@@ -68,7 +116,11 @@ pub struct ValveLeg {
 
 impl ValveLeg {
     pub fn new(res: usize) -> Self {
-        ValveLeg { res, area: 0.0, mdot: 0.0 }
+        ValveLeg {
+            res,
+            area: 0.0,
+            mdot: 0.0,
+        }
     }
 }
 
@@ -93,7 +145,15 @@ pub struct SlugLeg {
 
 impl SlugLeg {
     pub fn new(res: usize, area: f32, l_eff: f32) -> Self {
-        SlugLeg { res, area, l_eff, r: 0.0, k: 1.0, u: 0.0, mdot: 0.0 }
+        SlugLeg {
+            res,
+            area,
+            l_eff,
+            r: 0.0,
+            k: 1.0,
+            u: 0.0,
+            mdot: 0.0,
+        }
     }
     pub fn with_resistance(mut self, r: f32) -> Self {
         self.r = r;
@@ -138,7 +198,17 @@ pub struct OpenEnd {
 impl OpenEnd {
     pub fn radiating(area: f32) -> Self {
         let a = (area / std::f32::consts::PI).sqrt();
-        OpenEnd { mode: OpenMode::Radiating, delta: 0.6133 * a, k_in: 0.5, u_slug: 0.0, q: 0.0, q_prev: 0.0, u_face: 0.0, p_face: 0.0, area }
+        OpenEnd {
+            mode: OpenMode::Radiating,
+            delta: 0.6133 * a,
+            k_in: 0.5,
+            u_slug: 0.0,
+            q: 0.0,
+            q_prev: 0.0,
+            u_face: 0.0,
+            p_face: 0.0,
+            area,
+        }
     }
     pub fn anechoic(area: f32) -> Self {
         let mut o = OpenEnd::radiating(area);
@@ -175,7 +245,14 @@ pub struct Env {
 impl Env {
     pub fn new(p_amb: f32, t_amb: f32) -> Env {
         let gas = Gas::AIR;
-        Env { p_amb, t_amb, rho_amb: p_amb / (gas.r * t_amb), c_amb: gas.sound_speed(t_amb), gas, tol: 1.0 }
+        Env {
+            p_amb,
+            t_amb,
+            rho_amb: p_amb / (gas.r * t_amb),
+            c_amb: gas.sound_speed(t_amb),
+            gas,
+            tol: 1.0,
+        }
     }
 }
 
@@ -256,7 +333,26 @@ impl LegW {
         let ni = (n as usize).min(11);
         let u_hi = 0.97 * (nf * c0 + u0) * INV_NP1[ni];
         let u_lo = -0.97 * (nf * c0 + u0) * INV_NM1[ni];
-        LegW { rho0, u0, p0, c0, a: d.end_area(leg.duct, leg.end), n, kin: leg.k_in, kout: leg.k_out, u: leg.u.clamp(u_lo, u_hi), u_lo, u_hi, iner_dt: rho0 * leg.inert / dt, u_prev: leg.u, inv_nc: inv_c0 * INV_N[ni], inv_c0, dmax: 0.0, inv_a: d.end_inv_area(leg.duct, leg.end), slug: false }
+        LegW {
+            rho0,
+            u0,
+            p0,
+            c0,
+            a: d.end_area(leg.duct, leg.end),
+            n,
+            kin: leg.k_in,
+            kout: leg.k_out,
+            u: leg.u.clamp(u_lo, u_hi),
+            u_lo,
+            u_hi,
+            iner_dt: rho0 * leg.inert / dt,
+            u_prev: leg.u,
+            inv_nc: inv_c0 * INV_N[ni],
+            inv_c0,
+            dmax: 0.0,
+            inv_a: d.end_inv_area(leg.duct, leg.end),
+            slug: false,
+        }
     }
 
     fn neck(sl: &SlugLeg, rho_neck: f32, p_chamber: f32, dt: f32) -> LegW {
@@ -290,9 +386,20 @@ impl LegW {
             // P0 = p_chamber + (M/dt)(u_branch - u_old) + R u_branch + 1/2 K rho |u_branch| u_branch
             let ub = -u;
             let au = u.abs();
-            let pt = self.p0 + self.c0 * (ub - self.u0) + self.kout * ub + 0.5 * self.kin * self.rho0 * au * ub;
+            let pt = self.p0
+                + self.c0 * (ub - self.u0)
+                + self.kout * ub
+                + 0.5 * self.kin * self.rho0 * au * ub;
             let dpt = -(self.c0 + self.kout + self.kin * self.rho0 * au);
-            return Eval { q: self.rho0 * u, dq: self.rho0, pt, dpt, rho: self.rho0, p: pt, dp: dpt };
+            return Eval {
+                q: self.rho0 * u,
+                dq: self.rho0,
+                pt,
+                dpt,
+                rho: self.rho0,
+                p: pt,
+                dp: dpt,
+            };
         }
         let nf = self.n as f32;
         let s = (1.0 - (u - self.u0) * self.inv_nc).clamp(0.2, 2.0);
@@ -300,7 +407,11 @@ impl LegW {
         let sn = powi_fast(s, self.n);
         let rho = self.rho0 * sn;
         let p = self.p0 * sn * s * s;
-        let sig = if u >= 0.0 { 1.0 - self.kin } else { -(1.0 + self.kout) };
+        let sig = if u >= 0.0 {
+            1.0 - self.kin
+        } else {
+            -(1.0 + self.kout)
+        };
         let au = u.abs();
         let drho = -rho * self.inv_c0 * inv_s;
         let dp = -(nf + 2.0) * p * self.inv_nc * inv_s;
@@ -318,7 +429,20 @@ impl LegW {
 
 impl Node {
     pub fn junction(name: &str) -> Node {
-        Node { name: name.to_string(), legs: Vec::new(), valves: Vec::new(), slugs: Vec::new(), terminal: Terminal::Junction, extract: 0.0, p0: 0.0, fallbacks: 0, iters: 0, solves: 0, cycles: 0, last_fail: String::new() }
+        Node {
+            name: name.to_string(),
+            legs: Vec::new(),
+            valves: Vec::new(),
+            slugs: Vec::new(),
+            terminal: Terminal::Junction,
+            extract: 0.0,
+            p0: 0.0,
+            fallbacks: 0,
+            iters: 0,
+            solves: 0,
+            cycles: 0,
+            last_fail: String::new(),
+        }
     }
 
     pub fn closed(name: &str, leg: PipeLeg) -> Node {
@@ -344,7 +468,11 @@ impl Node {
     }
 
     pub fn with_leg(mut self, leg: PipeLeg) -> Node {
-        assert!(self.legs.len() < MAX_LEGS, "node {} has too many legs", self.name);
+        assert!(
+            self.legs.len() < MAX_LEGS,
+            "node {} has too many legs",
+            self.name
+        );
         self.legs.push(leg);
         self
     }
@@ -419,12 +547,18 @@ impl Node {
             r.dm += m * dt;
             r.dh += ef * dt;
         }
-        let (fx, ux) = if leg.end == End::Right { (flux, u) } else { ([-flux[0], flux[1], -flux[2]], -u) };
+        let (fx, ux) = if leg.end == End::Right {
+            (flux, u)
+        } else {
+            ([-flux[0], flux[1], -flux[2]], -u)
+        };
         grid.set_end(leg.duct, leg.end, fx, e.rho, ux, e.p);
     }
 
     fn solve_open(&mut self, grid: &mut Grid, dt: f32, env: &Env) {
-        let Terminal::Open(oe) = &mut self.terminal else { return };
+        let Terminal::Open(oe) = &mut self.terminal else {
+            return;
+        };
         let leg = &mut self.legs[0];
         let mut lw = LegW::new(grid, leg, dt);
         lw.iner_dt = 0.0;
@@ -440,13 +574,21 @@ impl Node {
             }
             OpenMode::Anechoic => (f32::INFINITY, env.rho_amb * env.c_amb),
         };
-        let cinv = if m_in.is_finite() { dt / m_in + 1.0 / z_r } else { 1.0 / z_r };
+        let cinv = if m_in.is_finite() {
+            dt / m_in + 1.0 / z_r
+        } else {
+            1.0 / z_r
+        };
         let kin = oe.k_in;
         let mut u = leg.u.clamp(lw.u_lo, lw.u_hi);
         for _ in 0..8 {
             let e = lw.eval(u);
             let inflow = u < 0.0;
-            let loss = if inflow { 0.5 * e.rho * (1.0 + kin) * u * u } else { 0.0 };
+            let loss = if inflow {
+                0.5 * e.rho * (1.0 + kin) * u * u
+            } else {
+                0.0
+            };
             let r = e.p - env.p_amb - (u - oe.u_slug) / cinv + loss;
             let dloss = if inflow { e.rho * (1.0 + kin) * u } else { 0.0 };
             let dr = e.dp - 1.0 / cinv + dloss;
@@ -461,7 +603,12 @@ impl Node {
         // advance the slug with the pressure that drove it
         let drive = {
             let inflow = u < 0.0;
-            e.p - env.p_amb + if inflow { 0.5 * e.rho * (1.0 + kin) * u * u } else { 0.0 }
+            e.p - env.p_amb
+                + if inflow {
+                    0.5 * e.rho * (1.0 + kin) * u * u
+                } else {
+                    0.0
+                }
         };
         if m_in.is_finite() {
             oe.u_slug += dt * drive / m_in;
@@ -478,7 +625,11 @@ impl Node {
         oe.p_face = e.p;
         leg.mdot = m;
         leg.p_face = e.p;
-        let (fx, ux) = if leg.end == End::Right { (flux, u) } else { ([-flux[0], flux[1], -flux[2]], -u) };
+        let (fx, ux) = if leg.end == End::Right {
+            (flux, u)
+        } else {
+            ([-flux[0], flux[1], -flux[2]], -u)
+        };
         grid.set_end(leg.duct, leg.end, fx, e.rho, ux, e.p);
     }
 
@@ -503,7 +654,11 @@ impl Node {
         let mut p0 = if self.p0 > 1.0e4 { self.p0 } else { mean_p };
 
         // valve legs: gas for each reservoir, with an upstream temperature estimate on the pipe side
-        let t_pipe = if np > 0 { grid.end_state(self.legs[0].duct, self.legs[0].end).4 } else { env.t_amb };
+        let t_pipe = if np > 0 {
+            grid.end_state(self.legs[0].duct, self.legs[0].end).4
+        } else {
+            env.t_amb
+        };
         let gas_pipe = if np > 0 { grid.gas } else { env.gas };
         // flow from the reservoir into the node and its derivative with respect to the node pressure
         let valve_eval = |res: &[Reservoir], v: &ValveLeg, p0: f32| -> (f32, f32) {
@@ -520,7 +675,8 @@ impl Node {
                 (-m, -d_up)
             }
         };
-        let valve_flow = |res: &[Reservoir], v: &ValveLeg, p0: f32| -> f32 { valve_eval(res, v, p0).0 };
+        let valve_flow =
+            |res: &[Reservoir], v: &ValveLeg, p0: f32| -> f32 { valve_eval(res, v, p0).0 };
 
         let mut ev = [Eval::default(); MAX_LEGS];
         let mut converged = false;
@@ -554,7 +710,9 @@ impl Node {
                 worst = worst.max(f.abs());
                 ev[k] = e;
             }
-            if g.abs() < (5.0e-4 * scale + 4.0e-6) * env.tol && worst < (0.3 + 2.0e-6 * p0) * env.tol {
+            if g.abs() < (5.0e-4 * scale + 4.0e-6) * env.tol
+                && worst < (0.3 + 2.0e-6 * p0) * env.tol
+            {
                 converged = true;
                 break;
             }
@@ -562,18 +720,34 @@ impl Node {
             p0 = (p0 + dp0).max(5.0e3);
             for k in 0..nl {
                 let du = (dp0 - fk[k]) / dpk[k];
-                lw[k].u = (lw[k].u + du.clamp(-lw[k].dmax, lw[k].dmax)).clamp(lw[k].u_lo, lw[k].u_hi);
+                lw[k].u =
+                    (lw[k].u + du.clamp(-lw[k].dmax, lw[k].dmax)).clamp(lw[k].u_lo, lw[k].u_hi);
             }
         }
         if !converged {
             self.fallbacks += 1;
             if self.fallbacks == 1 {
-                self.last_fail = format!("p0 {:.0} legs {:?} valves {:?} slugs {}", p0, (0..nl).map(|k| (lw[k].u, ev[k].pt - p0, lw[k].a * ev[k].q)).collect::<Vec<_>>(), self.valves.iter().map(|v| (v.area, res[v.res].p(), res[v.res].t())).collect::<Vec<_>>(), ns);
+                self.last_fail = format!(
+                    "p0 {:.0} legs {:?} valves {:?} slugs {}",
+                    p0,
+                    (0..nl)
+                        .map(|k| (lw[k].u, ev[k].pt - p0, lw[k].a * ev[k].q))
+                        .collect::<Vec<_>>(),
+                    self.valves
+                        .iter()
+                        .map(|v| (v.area, res[v.res].p(), res[v.res].t()))
+                        .collect::<Vec<_>>(),
+                    ns
+                );
             }
             // robust fallback: bisection on P0 with each leg solved for its own velocity
             let (mut lo, mut hi) = (0.25 * mean_p, 4.0 * mean_p);
             let flow_at = |lw: &mut [LegW; MAX_LEGS], p: f32| -> f32 {
-                let mut g = self.valves.iter().map(|v| valve_flow(res, v, p)).sum::<f32>();
+                let mut g = self
+                    .valves
+                    .iter()
+                    .map(|v| valve_flow(res, v, p))
+                    .sum::<f32>();
                 for k in 0..nl {
                     let mut u = lw[k].u;
                     for _ in 0..14 {
@@ -655,14 +829,22 @@ impl Node {
             let m = lw[k].a * e.q;
             let u = lw[k].u;
             let gas = grid.gas;
-            let ef = if m > 0.0 { m * (gas.h(e.p / (e.rho * gas.r)) + 0.5 * u * u) } else { m * h_mix };
+            let ef = if m > 0.0 {
+                m * (gas.h(e.p / (e.rho * gas.r)) + 0.5 * u * u)
+            } else {
+                m * h_mix
+            };
             let inv_a = lw[k].inv_a;
             let flux = [m * inv_a, m * inv_a * u + e.p, ef * inv_a];
             let leg = &mut self.legs[k];
             leg.u = u;
             leg.mdot = m;
             leg.p_face = e.p;
-            let (fx, ux) = if leg.end == End::Right { (flux, u) } else { ([-flux[0], flux[1], -flux[2]], -u) };
+            let (fx, ux) = if leg.end == End::Right {
+                (flux, u)
+            } else {
+                ([-flux[0], flux[1], -flux[2]], -u)
+            };
             grid.set_end(leg.duct, leg.end, fx, e.rho, ux, e.p);
         }
         // ---- necks and reservoirs

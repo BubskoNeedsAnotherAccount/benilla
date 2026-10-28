@@ -3,7 +3,8 @@
 //! publishes the residency the loading screen reads.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use benilla_assets::coords::{bevy_to_wow, placement_rotation, wow_to_bevy};
 use benilla_assets::{AdtTile, M2Model, WdtIndex, WmoModel};

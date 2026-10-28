@@ -22,7 +22,16 @@ pub struct Reservoir {
 impl Reservoir {
     pub fn new(gas: Gas, volume: f32, p: f32, t: f32) -> Self {
         let mass = p * volume / (gas.r * t);
-        Reservoir { gas, volume, mass, energy: mass * gas.e(t), dm: 0.0, dh: 0.0, infinite: false, min_mass: 1.0e-9 }
+        Reservoir {
+            gas,
+            volume,
+            mass,
+            energy: mass * gas.e(t),
+            dm: 0.0,
+            dh: 0.0,
+            infinite: false,
+            min_mass: 1.0e-9,
+        }
     }
 
     pub fn atmosphere(gas: Gas, p: f32, t: f32) -> Self {
@@ -33,7 +42,8 @@ impl Reservoir {
 
     #[inline]
     pub fn t(&self) -> f32 {
-        self.gas.t_from_e((self.energy / self.mass.max(self.min_mass)).max(5.0e4))
+        self.gas
+            .t_from_e((self.energy / self.mass.max(self.min_mass)).max(5.0e4))
     }
 
     #[inline]
@@ -79,10 +89,14 @@ impl Reservoir {
 fn orifice_shape(gamma: f64) -> impl Fn(f64) -> f64 {
     move |x: f64| {
         let rc = (2.0 / (gamma + 1.0)).powf(gamma / (gamma - 1.0));
-        let psi_max = gamma.sqrt() * (2.0 / (gamma + 1.0)).powf((gamma + 1.0) / (2.0 * (gamma - 1.0)));
+        let psi_max =
+            gamma.sqrt() * (2.0 / (gamma + 1.0)).powf((gamma + 1.0) / (2.0 * (gamma - 1.0)));
         let x = x.max(1.0e-6);
         let r = 1.0 - x * (1.0 - rc);
-        let psi = (2.0 * gamma / (gamma - 1.0) * (r.powf(2.0 / gamma) - r.powf((gamma + 1.0) / gamma))).max(0.0).sqrt();
+        let psi = (2.0 * gamma / (gamma - 1.0)
+            * (r.powf(2.0 / gamma) - r.powf((gamma + 1.0) / gamma)))
+        .max(0.0)
+        .sqrt();
         psi / psi_max
     }
 }
@@ -162,7 +176,10 @@ mod tests {
         assert!(m_low < m_crit * 0.7);
         // textbook: choked mass flux of air = 0.0404 p0 / sqrt(T0) (SI) per m^2
         let textbook = 0.0404 * 2.0e5 / 300.0f32.sqrt() * a;
-        assert!((m_deep / textbook - 1.0).abs() < 0.03, "{m_deep} vs {textbook}");
+        assert!(
+            (m_deep / textbook - 1.0).abs() < 0.03,
+            "{m_deep} vs {textbook}"
+        );
         assert_eq!(orifice_flow(&g, a, 1.0e5, 300.0, 1.5e5), 0.0);
     }
 
@@ -179,7 +196,9 @@ mod tests {
         };
         for &pr in &[0.99f64, 0.95, 0.9, 0.8, 0.7, 0.6, 0.55, 0.5, 0.3] {
             let m = orifice_flow(&g, 1.0e-3, 3.0e5, t_up, (3.0e5 * pr) as f32) as f64;
-            let want = 1.0e-3 * 3.0e5 / (g.r as f64 * t_up as f64).sqrt() * exact(pr) * (0.99f64.min(1.0)).max(0.0);
+            let want = 1.0e-3 * 3.0e5 / (g.r as f64 * t_up as f64).sqrt()
+                * exact(pr)
+                * (0.99f64.min(1.0)).max(0.0);
             let smooth = {
                 let d = 1.0 - pr;
                 d / (d * d + 9.0e-6).sqrt()
@@ -192,14 +211,30 @@ mod tests {
     #[test]
     fn orifice_derivatives_match_finite_differences() {
         let g = Gas::EXHAUST;
-        for &(p_up, p_dn) in &[(3.0e5f32, 2.9e5f32), (3.0e5, 2.0e5), (3.0e5, 1.5e5), (3.0e5, 0.5e5), (1.2e5, 1.19e5)] {
+        for &(p_up, p_dn) in &[
+            (3.0e5f32, 2.9e5f32),
+            (3.0e5, 2.0e5),
+            (3.0e5, 1.5e5),
+            (3.0e5, 0.5e5),
+            (1.2e5, 1.19e5),
+        ] {
             let (m, du, dd) = orifice_flow_d(&g, 1.0e-3, p_up, 900.0, p_dn);
             let e = 20.0;
-            let fu = (orifice_flow(&g, 1.0e-3, p_up + e, 900.0, p_dn) - orifice_flow(&g, 1.0e-3, p_up - e, 900.0, p_dn)) / (2.0 * e);
-            let fd = (orifice_flow(&g, 1.0e-3, p_up, 900.0, p_dn + e) - orifice_flow(&g, 1.0e-3, p_up, 900.0, p_dn - e)) / (2.0 * e);
+            let fu = (orifice_flow(&g, 1.0e-3, p_up + e, 900.0, p_dn)
+                - orifice_flow(&g, 1.0e-3, p_up - e, 900.0, p_dn))
+                / (2.0 * e);
+            let fd = (orifice_flow(&g, 1.0e-3, p_up, 900.0, p_dn + e)
+                - orifice_flow(&g, 1.0e-3, p_up, 900.0, p_dn - e))
+                / (2.0 * e);
             assert!(m > 0.0);
-            assert!((du - fu).abs() <= 0.06 * fu.abs().max(du.abs()) + 2e-9, "d/dp_up at {p_up}->{p_dn}: {du} vs {fu}");
-            assert!((dd - fd).abs() <= 0.06 * fd.abs().max(dd.abs()) + 2e-9, "d/dp_dn at {p_up}->{p_dn}: {dd} vs {fd}");
+            assert!(
+                (du - fu).abs() <= 0.06 * fu.abs().max(du.abs()) + 2e-9,
+                "d/dp_up at {p_up}->{p_dn}: {du} vs {fu}"
+            );
+            assert!(
+                (dd - fd).abs() <= 0.06 * fd.abs().max(dd.abs()) + 2e-9,
+                "d/dp_dn at {p_up}->{p_dn}: {dd} vs {fd}"
+            );
         }
     }
 
@@ -216,6 +251,11 @@ mod tests {
         assert!((r.volume - 1.0e-3 * 0.9977f32.powi(1000)).abs() < 1e-6);
         let ratio = 1.0e-3 / r.volume;
         let t_ideal = 300.0 * ratio.powf(0.4);
-        assert!((r.t() / t_ideal - 1.0).abs() < 0.12, "{} vs {}", r.t(), t_ideal);
+        assert!(
+            (r.t() / t_ideal - 1.0).abs() < 0.12,
+            "{} vs {}",
+            r.t(),
+            t_ideal
+        );
     }
 }

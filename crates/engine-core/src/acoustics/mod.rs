@@ -11,11 +11,11 @@
 pub mod analysis;
 pub mod cylinder_gas;
 pub mod exhaust;
+pub mod gas;
 pub mod gas_exchange;
+pub mod grid;
 pub mod intake;
 pub mod linear;
-pub mod grid;
-pub mod gas;
 pub mod material;
 pub mod network;
 pub mod node;
@@ -24,13 +24,13 @@ pub mod reservoir;
 #[cfg(test)]
 mod validation;
 
-pub use grid::{DuctSpec, End, Grid};
+pub use cylinder_gas::{valve_train, CylGeom, Valve, ValveTrain};
+pub use exhaust::{Body, ExhaustInputs, ExhaustSystem, SystemReport, Tail};
 pub use gas::Gas;
+pub use gas_exchange::{firing_offsets, GasPath, MouthSample};
+pub use grid::{DuctSpec, End, Grid};
+pub use intake::{IntakeInputs, IntakeSystem};
 pub use material::{PipeMaterial, Wall};
 pub use network::Network;
 pub use node::{Env, Node, OpenEnd, OpenMode, PipeLeg, SlugLeg, Terminal, ValveLeg};
-pub use cylinder_gas::{valve_train, CylGeom, Valve, ValveTrain};
-pub use intake::{IntakeInputs, IntakeSystem};
-pub use gas_exchange::{firing_offsets, GasPath, MouthSample};
-pub use exhaust::{Body, ExhaustInputs, ExhaustSystem, SystemReport, Tail};
 pub use reservoir::{orifice_flow, Reservoir};

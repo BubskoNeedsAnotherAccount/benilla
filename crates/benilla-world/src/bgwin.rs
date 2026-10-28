@@ -37,6 +37,14 @@ const BG_ENV_PREFIXES: &[&str] = &[
     "WOW_WORLDVIEW_",
 ];
 
+/// The environment, as `(name, value)`. A browser has none, and `std::env::vars_os` panics there.
+fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    #[cfg(target_arch = "wasm32")]
+    return Vec::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    std::env::vars_os().collect()
+}
+
 /// Whether this is an instrumented background run: `WOW_BG=0` forces no (to watch a probe live),
 /// any other `WOW_BG` forces yes, and otherwise any [`BG_ENV_PREFIXES`] env counts.
 pub fn background_run() -> bool {
@@ -45,7 +53,7 @@ pub fn background_run() -> bool {
         Ok(_) => return true,
         Err(_) => {}
     }
-    std::env::vars_os().any(|(name, _)| {
+    env_vars().into_iter().any(|(name, _)| {
         name.to_str()
             .is_some_and(|name| BG_ENV_PREFIXES.iter().any(|p| name.starts_with(p)))
     })
@@ -78,7 +86,7 @@ pub fn no_pixel_run() -> bool {
         return false;
     }
     let mut saw_one = false;
-    for (name, _) in std::env::vars_os() {
+    for (name, _) in env_vars() {
         let Some(name) = name.to_str() else { continue };
         if !BG_ENV_PREFIXES.iter().any(|p| name.starts_with(p)) {
             continue;

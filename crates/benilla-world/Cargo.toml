@@ -17,6 +17,7 @@ default = ["dev"]
 dev = ["benilla-formats/dev", "benilla-assets/dev", "bevy/debug"]
 
 [dependencies]
+web-time = "1"
 avian3d = "0.6"
 benilla-assets = { path = "../benilla-assets", default-features = false }
 benilla-formats = { path = "../benilla-formats", default-features = false }

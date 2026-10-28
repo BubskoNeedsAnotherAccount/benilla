@@ -13,7 +13,12 @@ pub struct CatalyticConverter {
 
 impl Default for CatalyticConverter {
     fn default() -> Self {
-        Self { temperature_k: DEFAULT_AIR_TEMP_K, clog_fraction: 0.0, damage_fraction: 0.0, deleted: false }
+        Self {
+            temperature_k: DEFAULT_AIR_TEMP_K,
+            clog_fraction: 0.0,
+            damage_fraction: 0.0,
+            deleted: false,
+        }
     }
 }
 
@@ -29,7 +34,8 @@ impl CatalyticConverter {
 
     pub fn register_backfire(&mut self) {
         if !self.deleted && self.temperature_k >= CATALYST_DAMAGE_HEAT_K {
-            self.damage_fraction = (self.damage_fraction + CATALYST_BACKFIRE_DAMAGE).clamp(0.0, 1.0);
+            self.damage_fraction =
+                (self.damage_fraction + CATALYST_BACKFIRE_DAMAGE).clamp(0.0, 1.0);
         }
     }
 
@@ -53,7 +59,13 @@ pub struct OxygenSensor {
 
 impl OxygenSensor {
     pub fn new(stoich_afr: f64) -> Self {
-        Self { connected: true, stuck: false, stuck_afr: stoich_afr, bias_afr: 0.0, reported_afr: stoich_afr }
+        Self {
+            connected: true,
+            stuck: false,
+            stuck_afr: stoich_afr,
+            bias_afr: 0.0,
+            reported_afr: stoich_afr,
+        }
     }
 
     pub fn is_healthy(&self) -> bool {
@@ -61,7 +73,11 @@ impl OxygenSensor {
     }
 
     pub fn update(&mut self, dt: f64, actual_afr: f64) {
-        let target = if self.stuck { self.stuck_afr } else { actual_afr + self.bias_afr };
+        let target = if self.stuck {
+            self.stuck_afr
+        } else {
+            actual_afr + self.bias_afr
+        };
         let alpha = 1.0 - (-dt / O2_TAU_S).exp();
         self.reported_afr += (target - self.reported_afr) * alpha;
     }

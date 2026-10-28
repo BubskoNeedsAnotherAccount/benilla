@@ -90,8 +90,16 @@ impl Starter {
             tooth_phase: 0.0,
             tooth_next: 1.0,
             whine_phase: 0.0,
-            mesh: [Res::new(1250.0, 0.20, fs), Res::new(2700.0, 0.26, fs), Res::new(4600.0, 0.30, fs)],
-            armature: [Res::new(310.0, 0.16, fs), Res::new(760.0, 0.14, fs), Res::new(1500.0, 0.18, fs)],
+            mesh: [
+                Res::new(1250.0, 0.20, fs),
+                Res::new(2700.0, 0.26, fs),
+                Res::new(4600.0, 0.30, fs),
+            ],
+            armature: [
+                Res::new(310.0, 0.16, fs),
+                Res::new(760.0, 0.14, fs),
+                Res::new(1500.0, 0.18, fs),
+            ],
             arm_phase: 0.0,
             arm_hit: 1.0,
             clack: [Res::new(170.0, 0.09, fs), Res::new(1500.0, 0.12, fs)],
@@ -134,7 +142,9 @@ impl Starter {
         }
         self.was_on = c.on;
         // the pinion hits the ring gear: a wide, short snap, the plunger's thunk and a ring of the housing
-        let mut out = 0.02 * self.clack[0].step(kick) + 0.028 * self.clack[1].step(kick) + self.snap * n3 * 0.07;
+        let mut out = 0.02 * self.clack[0].step(kick)
+            + 0.028 * self.clack[1].step(kick)
+            + self.snap * n3 * 0.07;
         self.snap *= (-dt / 0.0035).exp();
 
         // ---- armature speed: locked to the crank through the gears while the pinion is in (an overrunning
@@ -165,7 +175,9 @@ impl Starter {
                 arm = self.arm_hit;
             }
         }
-        let body = self.armature[0].step(arm) * 0.016 + self.armature[1].step(arm) * 0.023 + self.armature[2].step(arm) * 0.011;
+        let body = self.armature[0].step(arm) * 0.016
+            + self.armature[1].step(arm) * 0.023
+            + self.armature[2].step(arm) * 0.011;
         out += body * effort * effort * speed.sqrt() * engaged.max(0.3);
 
         // ---- ring gear: a tooth impact every time a tooth passes the pinion. Every tooth is a little different
@@ -182,7 +194,9 @@ impl Starter {
                 hit = 0.10 * strength * effort * engaged;
             }
         }
-        out += self.mesh[0].step(hit) * 0.28 + self.mesh[1].step(hit) * 0.5 + self.mesh[2].step(hit) * 0.3;
+        out += self.mesh[0].step(hit) * 0.28
+            + self.mesh[1].step(hit) * 0.5
+            + self.mesh[2].step(hit) * 0.3;
 
         // ---- the teeth grinding together as the pinion is thrown in
         if self.grind > 0.001 {
@@ -233,7 +247,11 @@ mod tests {
         (0..n)
             .map(|i| {
                 let t = i as f32 / fs;
-                s.step(&StarterCtx { on: t > 0.05, rpm: rpm(t), strain: 0.3 })
+                s.step(&StarterCtx {
+                    on: t > 0.05,
+                    rpm: rpm(t),
+                    strain: 0.3,
+                })
             })
             .collect()
     }
@@ -252,14 +270,26 @@ mod tests {
         let fs = 44_100.0;
         let mut s = Starter::new(fs, 2.0);
         let n = (4.0 * fs) as usize;
-        let x: Vec<f32> = (0..n).map(|i| s.step(&StarterCtx { on: i > 2000, rpm, strain })).collect();
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                s.step(&StarterCtx {
+                    on: i > 2000,
+                    rpm,
+                    strain,
+                })
+            })
+            .collect();
         let psd = spectrum(&x[44_100..], 16384);
         let nfft = (psd.len() - 1) * 2;
         let df = 44_100.0 / nfft as f64;
         let mut out = Vec::new();
         let mut lo = 50.0f64;
         while lo < 12_000.0 {
-            let ms: f64 = 2.0 / nfft as f64 * (1..psd.len()).filter(|k| (*k as f64 * df) >= lo && (*k as f64 * df) < lo * 2.0).map(|k| psd[k]).sum::<f64>();
+            let ms: f64 = 2.0 / nfft as f64
+                * (1..psd.len())
+                    .filter(|k| (*k as f64 * df) >= lo && (*k as f64 * df) < lo * 2.0)
+                    .map(|k| psd[k])
+                    .sum::<f64>();
             out.push((lo, 10.0 * (ms.max(1e-30) / (20e-6f64).powi(2)).log10()));
             lo *= 2.0;
         }
@@ -274,13 +304,34 @@ mod tests {
         for (rpm, strain) in [(230.0, 0.5), (140.0, 0.9), (350.0, 0.2)] {
             let l = octave_levels(rpm, strain);
             let at = |f: f64| l.iter().find(|(lo, _)| (*lo - f).abs() < 1.0).unwrap().1;
-            let top = [100.0, 200.0, 400.0, 800.0, 1600.0].iter().map(|&f| at(f)).fold(f64::MIN, f64::max);
-            println!("starter {rpm} rpm strain {strain}: {}", l.iter().map(|(f, v)| format!("{f:.0}:{:.1}", v - top)).collect::<Vec<_>>().join(" "));
+            let top = [100.0, 200.0, 400.0, 800.0, 1600.0]
+                .iter()
+                .map(|&f| at(f))
+                .fold(f64::MIN, f64::max);
+            println!(
+                "starter {rpm} rpm strain {strain}: {}",
+                l.iter()
+                    .map(|(f, v)| format!("{f:.0}:{:.1}", v - top))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
             for f in [100.0, 200.0, 400.0, 800.0] {
-                assert!(top - at(f) < 5.0, "{rpm} rpm: the {f} Hz octave is {:.1} dB under the loudest", top - at(f));
+                assert!(
+                    top - at(f) < 5.0,
+                    "{rpm} rpm: the {f} Hz octave is {:.1} dB under the loudest",
+                    top - at(f)
+                );
             }
-            assert!(top - at(3200.0) > 6.0, "{rpm} rpm: 3.2-6.4 kHz octave only {:.1} dB under: hiss", top - at(3200.0));
-            assert!(top - at(6400.0) > 14.0, "{rpm} rpm: 6.4-12.8 kHz octave only {:.1} dB under: hiss", top - at(6400.0));
+            assert!(
+                top - at(3200.0) > 6.0,
+                "{rpm} rpm: 3.2-6.4 kHz octave only {:.1} dB under: hiss",
+                top - at(3200.0)
+            );
+            assert!(
+                top - at(6400.0) > 14.0,
+                "{rpm} rpm: 6.4-12.8 kHz octave only {:.1} dB under: hiss",
+                top - at(6400.0)
+            );
         }
     }
 
@@ -293,7 +344,11 @@ mod tests {
             let n = 4410;
             let mut acc = 0.0;
             for _ in 0..n {
-                let v = s.step(&StarterCtx { on: true, rpm: 230.0, strain });
+                let v = s.step(&StarterCtx {
+                    on: true,
+                    rpm: 230.0,
+                    strain,
+                });
                 acc += v * v;
             }
             (acc / n as f32).sqrt()
@@ -318,12 +373,21 @@ mod tests {
         let strongest = pk.first().map(|p| p.1).unwrap_or(0.0);
         let near = pk.iter().filter(|p| p.1 > strongest * 1.0e-2).count();
         println!("starter: flatness 300 Hz - 4 kHz {flat:.1} dB, {near} lines within 20 dB of the strongest");
-        assert!(flat > -22.0, "starter reads as a tone (flatness {flat:.1} dB)");
-        assert!(near >= 6, "only {near} spectral lines: that is a whistle, not a gear train");
+        assert!(
+            flat > -22.0,
+            "starter reads as a tone (flatness {flat:.1} dB)"
+        );
+        assert!(
+            near >= 6,
+            "only {near} spectral lines: that is a whistle, not a gear train"
+        );
         // and it has real energy in the kHz range
         let hi: f64 = psd[93..700].iter().sum();
         let lo: f64 = psd[10..93].iter().sum();
-        assert!(hi > 0.05 * lo, "starter is all rumble: hi {hi:.2e} lo {lo:.2e}");
+        assert!(
+            hi > 0.05 * lo,
+            "starter is all rumble: hi {hi:.2e} lo {lo:.2e}"
+        );
     }
 
     #[test]
@@ -337,13 +401,18 @@ mod tests {
                 let t = i as f32 / fs;
                 let rpm = 230.0 * (1.0 + 0.10 * (std::f32::consts::TAU * 7.0 * t).sin());
                 ph = (ph + (380.0 + 2.2 * rpm) / fs).fract();
-                ((ph * std::f32::consts::TAU).sin() + 0.4 * (ph * 2.0 * std::f32::consts::TAU).sin()) * 0.01
+                ((ph * std::f32::consts::TAU).sin()
+                    + 0.4 * (ph * 2.0 * std::f32::consts::TAU).sin())
+                    * 0.01
             })
             .collect();
         let psd = spectrum(&x[22_050..], 16384);
         let flat = flatness_db(&psd, 112, 1490);
         println!("sine starter: flatness {flat:.1} dB");
-        assert!(flat < -30.0, "the yardstick cannot tell a sine from a starter ({flat:.1} dB)");
+        assert!(
+            flat < -30.0,
+            "the yardstick cannot tell a sine from a starter ({flat:.1} dB)"
+        );
     }
 
     #[test]
@@ -354,7 +423,11 @@ mod tests {
             let n = (secs * fs) as usize;
             let mut acc = 0.0f32;
             for _ in 0..n {
-                let v = s.step(&StarterCtx { on, rpm, strain: 0.2 });
+                let v = s.step(&StarterCtx {
+                    on,
+                    rpm,
+                    strain: 0.2,
+                });
                 acc += v * v;
             }
             (acc / n as f32).sqrt()

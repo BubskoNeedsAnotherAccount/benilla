@@ -21,9 +21,21 @@ pub struct Gas {
 
 impl Gas {
     /// Dry air (cv 718 J/kgK at 300 K, 923 at 1500 K).
-    pub const AIR: Gas = Gas { r: 287.05, a: 666.8, b: 0.0854, pr: 0.71, two_over_r: 2.0 / 287.05 };
+    pub const AIR: Gas = Gas {
+        r: 287.05,
+        a: 666.8,
+        b: 0.0854,
+        pr: 0.71,
+        two_over_r: 2.0 / 287.05,
+    };
     /// Burned stoichiometric gasoline products (13 % CO2, 13 % H2O, 74 % N2 by mole).
-    pub const EXHAUST: Gas = Gas { r: 288.7, a: 696.5, b: 0.1375, pr: 0.75, two_over_r: 2.0 / 288.7 };
+    pub const EXHAUST: Gas = Gas {
+        r: 288.7,
+        a: 696.5,
+        b: 0.1375,
+        pr: 0.75,
+        two_over_r: 2.0 / 288.7,
+    };
 
     /// Specific internal energy, J/kg.
     #[inline]
@@ -137,7 +149,11 @@ mod tests {
     fn exhaust_gas_is_slower_and_lower_gamma_when_hot() {
         let g = Gas::EXHAUST;
         // ~640 m/s at 1100 K, ~330 m/s near ambient; gamma drops with temperature
-        assert!((g.sound_speed(1100.0) - 640.0).abs() < 12.0, "{}", g.sound_speed(1100.0));
+        assert!(
+            (g.sound_speed(1100.0) - 640.0).abs() < 12.0,
+            "{}",
+            g.sound_speed(1100.0)
+        );
         assert!(g.gamma(1100.0) < g.gamma(400.0) - 0.05);
         assert!(g.sound_speed(1100.0) > g.sound_speed(500.0));
     }

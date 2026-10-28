@@ -83,7 +83,10 @@ pub struct Delay {
 
 impl Delay {
     pub fn new(max_samples: usize) -> Delay {
-        Delay { buf: vec![0.0; max_samples.max(4)], w: 0 }
+        Delay {
+            buf: vec![0.0; max_samples.max(4)],
+            w: 0,
+        }
     }
     /// Pushes this sample's value and returns the one pushed `d` samples ago.
     #[inline]
@@ -117,7 +120,18 @@ pub struct Shaper {
 impl Shaper {
     pub fn new(seed: u32, fs: f32, f_lo: f32, f_knee: f32, f_hi: f32) -> Shaper {
         let a = |f: f32| 1.0 - (-std::f32::consts::TAU * f / fs).exp();
-        Shaper { rng: seed | 1, hp: [0.0; 2], lp1: 0.0, lp2: 0.0, lp3: 0.0, a_hp: a(f_lo), a_lp1: a(f_knee), a_lp2: a(f_hi), a_lp3: a(f_hi * 1.4), gain: 1.0 }
+        Shaper {
+            rng: seed | 1,
+            hp: [0.0; 2],
+            lp1: 0.0,
+            lp2: 0.0,
+            lp3: 0.0,
+            a_hp: a(f_lo),
+            a_lp1: a(f_knee),
+            a_lp2: a(f_hi),
+            a_lp3: a(f_hi * 1.4),
+            gain: 1.0,
+        }
     }
 
     /// Takes over the generator and filter state of `other` (same seed and shape, possibly other cut-offs): both
@@ -245,7 +259,10 @@ impl FlowLayer {
     /// turbocharger sits in it.
     pub fn new(fs: f32, tuning: &Tuning, path_m: f32, gas_c: f32, turbine: bool) -> FlowLayer {
         // a turbine wheel in the path is a good absorber of everything above the pulses: about 6 dB more
-        let (loss_x, loss_i) = (exhaust_loss_db(tuning) + if turbine { 6.0 } else { 0.0 }, intake_loss_db(tuning));
+        let (loss_x, loss_i) = (
+            exhaust_loss_db(tuning) + if turbine { 6.0 } else { 0.0 },
+            intake_loss_db(tuning),
+        );
         // what is left after a lot of insertion loss is darker: the knee of the jet spectrum slides down
         let knee = |loss: f32| (1_500.0 - 14.0 * loss).clamp(700.0, 1_500.0);
         let mut shp_x = Shaper::new(0x6D2B_79F5, fs, 700.0, knee(loss_x), 4_500.0);
@@ -302,10 +319,20 @@ impl FlowLayer {
         // steady pull in a high gear keeps them there: the hiss would stand out of the note it sits on. Past
         // 2500 rpm the share they take falls by 6 dB (exhaust) and 3 dB (intake) toward 5500.
         let hi = super::mechanical::smoothstep(2_500.0, 5_500.0, rpm);
-        let wx = self.env_x.step(self.w.0 * JET_GAIN * self.scale * (1.0 - 0.75 * hi), self.delay_x);
-        let wi = self.env_i.step(self.w.1 * JET_GAIN * self.scale * (1.0 - 0.5 * hi), self.delay_i);
+        let wx = self.env_x.step(
+            self.w.0 * JET_GAIN * self.scale * (1.0 - 0.75 * hi),
+            self.delay_x,
+        );
+        let wi = self.env_i.step(
+            self.w.1 * JET_GAIN * self.scale * (1.0 - 0.5 * hi),
+            self.delay_i,
+        );
         let open = throttle_open.clamp(0.0, 1.0);
-        (self.shp_x.step(pressure_at(wx, r) * self.att_x), self.shp_i.step(pressure_at(wi, ri) * self.att_i * open * open))
+        (
+            self.shp_x.step(pressure_at(wx, r) * self.att_x),
+            self.shp_i
+                .step(pressure_at(wi, ri) * self.att_i * open * open),
+        )
     }
 }
 
@@ -339,7 +366,9 @@ mod tests {
         let var = y[8192..].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / (n - 8192) as f64;
         assert!((var - 1.0).abs() < 0.1, "variance {var}");
         // envelope statistics of Gaussian noise: kurtosis 3
-        let k = y[8192..].iter().map(|v| (*v as f64).powi(4)).sum::<f64>() / (n - 8192) as f64 / var.powi(2);
+        let k = y[8192..].iter().map(|v| (*v as f64).powi(4)).sum::<f64>()
+            / (n - 8192) as f64
+            / var.powi(2);
         assert!((k - 3.0).abs() < 0.4, "kurtosis {k}");
         // more of it above 1 kHz than at 200 Hz is not allowed: it is a high-passed, falling spectrum
         let band = |f0: f32| -> f64 {
@@ -363,14 +392,20 @@ mod tests {
         for i in 0..2000 {
             out.push(e.step(if i == 100 { 1.0 } else { 0.0 }, 300));
         }
-        assert!(out[..399].iter().all(|v| *v == 0.0), "nothing before the path delay");
+        assert!(
+            out[..399].iter().all(|v| *v == 0.0),
+            "nothing before the path delay"
+        );
         assert!(out[420] > 0.0 && out[420] < 0.01);
     }
 
     /// V8 at an operating point, listener pressure of all sources (as the sound lab sums them), 2 s after a settle.
     fn render_v8(rpm: f32, throttle: f32, tuning: &Tuning) -> Vec<f32> {
         use crate::acoustics::analysis::*;
-        let _ = (spectrum as fn(&[f32], usize) -> Vec<f64>, band_power as fn(&[f64], f64, f64, f64) -> f64);
+        let _ = (
+            spectrum as fn(&[f32], usize) -> Vec<f64>,
+            band_power as fn(&[f64], f64, f64, f64) -> f64,
+        );
         let cfg = crate::config::engine_by_id("v8").unwrap();
         let wot = throttle > 0.9;
         let inp = crate::sound::SoundInput {
@@ -390,7 +425,12 @@ mod tests {
             serial: 1,
             ..Default::default()
         };
-        let mut snd = crate::sound::EngineSound::new(&cfg, tuning, &crate::sound::default_banks(&cfg), crate::sound::Quality::BALANCED);
+        let mut snd = crate::sound::EngineSound::new(
+            &cfg,
+            tuning,
+            &crate::sound::default_banks(&cfg),
+            crate::sound::Quality::BALANCED,
+        );
         snd.preheat(inp.egt_k * 0.9);
         snd.set_input(&inp);
         snd.soak(1.0, 60.0);
@@ -410,7 +450,10 @@ mod tests {
         let mut hi = Lowpass4::new(9_000.0, 44_100.0);
         let mut lo = Lowpass4::new(3_000.0, 44_100.0);
         let band: Vec<f32> = x.iter().map(|v| hi.step(*v) - lo.step(*v)).collect();
-        let w: Vec<f32> = band[4096..].chunks(44).map(|c| (c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32).sqrt()).collect();
+        let w: Vec<f32> = band[4096..]
+            .chunks(44)
+            .map(|c| (c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32).sqrt())
+            .collect();
         w.iter().cloned().fold(0.0f32, f32::max) / (w.iter().sum::<f32>() / w.len() as f32)
     }
 
@@ -422,39 +465,84 @@ mod tests {
         let idle = render_v8(850.0, 0.12, &Tuning::default());
         let wot = render_v8(3500.0, 1.0, &Tuning::default());
         let (c_idle, c_wot) = (hf_crest(&idle), hf_crest(&wot));
-        println!("3-9 kHz 1 ms crest: idle {c_idle:.2}, WOT {c_wot:.2} (noise ~1.3, solver spikes 10+)");
+        println!(
+            "3-9 kHz 1 ms crest: idle {c_idle:.2}, WOT {c_wot:.2} (noise ~1.3, solver spikes 10+)"
+        );
         // the grid spike train (crest 10-30 at the steepened fronts) is gone: what is up there is noise (the per-tier correction lifts the 2-3 kHz edge of the band a little at idle)
-        assert!(c_idle < 3.5 && c_wot < 3.5, "the top end is spiky: crest {c_idle} / {c_wot}");
+        assert!(
+            c_idle < 3.5 && c_wot < 3.5,
+            "the top end is spiky: crest {c_idle} / {c_wot}"
+        );
         let p_idle = spectrum(&idle, 8192);
         let p_wot = spectrum(&wot, 8192);
         let band = |p: &[f64], lo: f64, hi: f64| 10.0 * band_power(p, 44_100.0, lo, hi).log10();
-        let (hf_i, hf_w) = (band(&p_idle, 2_000.0, 5_000.0), band(&p_wot, 2_000.0, 5_000.0));
+        let (hf_i, hf_w) = (
+            band(&p_idle, 2_000.0, 5_000.0),
+            band(&p_wot, 2_000.0, 5_000.0),
+        );
         let (lf_i, lf_w) = (band(&p_idle, 150.0, 700.0), band(&p_wot, 150.0, 700.0));
-        println!("2-5 kHz re 150-700 Hz: idle {:.1} dB, WOT {:.1} dB; 2-5 kHz WOT - idle {:.1} dB", hf_i - lf_i, hf_w - lf_w, hf_w - hf_i);
+        println!(
+            "2-5 kHz re 150-700 Hz: idle {:.1} dB, WOT {:.1} dB; 2-5 kHz WOT - idle {:.1} dB",
+            hf_i - lf_i,
+            hf_w - lf_w,
+            hf_w - hf_i
+        );
         // recordings of a V8 at idle and revving: the 2-5 kHz band sits 25 to 30 dB under the 150-700 Hz band at idle
         // and 15 to 28 under it with the throttle open
-        assert!((-37.0..-20.0).contains(&(hf_i - lf_i)), "idle top end {} dB re the body", hf_i - lf_i);
-        assert!((-34.0..-12.0).contains(&(hf_w - lf_w)), "WOT top end {} dB re the body", hf_w - lf_w);
-        assert!(hf_w > hf_i + 12.0, "the top end must grow with load and rpm: {} -> {}", hf_i, hf_w);
+        assert!(
+            (-37.0..-20.0).contains(&(hf_i - lf_i)),
+            "idle top end {} dB re the body",
+            hf_i - lf_i
+        );
+        assert!(
+            (-34.0..-12.0).contains(&(hf_w - lf_w)),
+            "WOT top end {} dB re the body",
+            hf_w - lf_w
+        );
+        assert!(
+            hf_w > hf_i + 12.0,
+            "the top end must grow with load and rpm: {} -> {}",
+            hf_i,
+            hf_w
+        );
     }
 
     #[test]
     fn deleting_cat_and_muffler_brightens_the_top_end() {
         use crate::acoustics::analysis::*;
-        let open = Tuning { cat: Cat::Delete, muffler: Muffler::Delete, ..Tuning::default() };
+        let open = Tuning {
+            cat: Cat::Delete,
+            muffler: Muffler::Delete,
+            ..Tuning::default()
+        };
         let stock = render_v8(3500.0, 1.0, &Tuning::default());
         let free = render_v8(3500.0, 1.0, &open);
-        let hf = |x: &[f32]| 10.0 * band_power(&spectrum(x, 8192), 44_100.0, 2_000.0, 8_000.0).log10();
-        println!("2-8 kHz at 3500 rpm WOT: stock {:.1} dB, cat and muffler deleted {:.1} dB", hf(&stock), hf(&free));
-        assert!(hf(&free) > hf(&stock) + 15.0, "no rasp from a straight pipe");
+        let hf =
+            |x: &[f32]| 10.0 * band_power(&spectrum(x, 8192), 44_100.0, 2_000.0, 8_000.0).log10();
+        println!(
+            "2-8 kHz at 3500 rpm WOT: stock {:.1} dB, cat and muffler deleted {:.1} dB",
+            hf(&stock),
+            hf(&free)
+        );
+        assert!(
+            hf(&free) > hf(&stock) + 15.0,
+            "no rasp from a straight pipe"
+        );
     }
 
     #[test]
     fn fitted_parts_set_the_loss() {
         let stock = Tuning::default();
-        let open = Tuning { cat: Cat::Delete, muffler: Muffler::Delete, ..Tuning::default() };
+        let open = Tuning {
+            cat: Cat::Delete,
+            muffler: Muffler::Delete,
+            ..Tuning::default()
+        };
         assert!(exhaust_loss_db(&stock) > exhaust_loss_db(&open) + 30.0);
-        let stack = Tuning { air_filter: AirFilter::OpenStack, ..Tuning::default() };
+        let stack = Tuning {
+            air_filter: AirFilter::OpenStack,
+            ..Tuning::default()
+        };
         assert!(intake_loss_db(&stock) > intake_loss_db(&stack) + 15.0);
     }
 }

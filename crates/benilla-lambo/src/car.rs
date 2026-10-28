@@ -208,10 +208,25 @@ struct Input {
 impl Input {
     fn read(keys: &ButtonInput<KeyCode>) -> Self {
         let pressed = |keys_slice: &[KeyCode]| keys_slice.iter().any(|k| keys.pressed(*k));
-        let throttle = if pressed(&[KeyCode::KeyW, KeyCode::ArrowUp]) { 1.0 } else { 0.0 };
-        let brake = if pressed(&[KeyCode::KeyS, KeyCode::ArrowDown]) { 1.0 } else { 0.0 };
-        let steer = (if pressed(&[KeyCode::KeyD, KeyCode::ArrowRight]) { 1.0 } else { 0.0 })
-            - (if pressed(&[KeyCode::KeyA, KeyCode::ArrowLeft]) { 1.0 } else { 0.0 });
+        let throttle = if pressed(&[KeyCode::KeyW, KeyCode::ArrowUp]) {
+            1.0
+        } else {
+            0.0
+        };
+        let brake = if pressed(&[KeyCode::KeyS, KeyCode::ArrowDown]) {
+            1.0
+        } else {
+            0.0
+        };
+        let steer = (if pressed(&[KeyCode::KeyD, KeyCode::ArrowRight]) {
+            1.0
+        } else {
+            0.0
+        }) - (if pressed(&[KeyCode::KeyA, KeyCode::ArrowLeft]) {
+            1.0
+        } else {
+            0.0
+        });
         Self {
             throttle,
             brake,

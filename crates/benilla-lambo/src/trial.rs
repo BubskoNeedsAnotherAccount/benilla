@@ -141,6 +141,16 @@ impl TimeTrialManager {
 
 /// Discovers and loads time trials from JSON files or environment variable.
 pub fn load_time_trials() -> Vec<TimeTrial> {
+    // A browser has no disk to look on: the shipped trials are compiled in.
+    #[cfg(target_arch = "wasm32")]
+    if let Ok(defs) =
+        serde_json::from_str::<Vec<TimeTrialDef>>(include_str!("../assets/time_trials.json"))
+    {
+        let trials: Vec<TimeTrial> = defs.into_iter().map(Into::into).collect();
+        if !trials.is_empty() {
+            return trials;
+        }
+    }
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
     let mut candidate_paths = Vec::new();
@@ -703,9 +713,11 @@ pub fn render_trial_ui(
                                     );
                                     ui.add_space(2.0);
                                     ui.label(
-                                        egui::RichText::new("⚡ Pure Skill: Nitro is disabled during Time Trials")
-                                            .color(egui::Color32::from_rgb(220, 180, 100))
-                                            .size(12.0),
+                                        egui::RichText::new(
+                                            "⚡ Pure Skill: Nitro is disabled during Time Trials",
+                                        )
+                                        .color(egui::Color32::from_rgb(220, 180, 100))
+                                        .size(12.0),
                                     );
                                 }
                                 TrialState::Racing { elapsed } => {
@@ -1161,36 +1173,36 @@ pub fn render_trial_ui(
 
                         // Nitro indicator section
                         let in_trial = manager.current_trial_idx.is_some();
-                        let (nitro_label, nitro_color, nitro_fill_color, nitro_ratio) =
-                            if in_trial {
-                                (
-                                    "🚫 NITRO DISABLED (TIME TRIAL)".to_string(),
-                                    egui::Color32::from_rgb(200, 80, 80),
-                                    egui::Color32::from_rgb(90, 30, 30),
-                                    0.0_f32,
-                                )
-                            } else if is_boosting {
-                                (
-                                    "⚡ NITRO BOOST ACTIVE!".to_string(),
-                                    egui::Color32::from_rgb(0, 255, 255),
-                                    egui::Color32::from_rgb(0, 240, 255),
-                                    (nitro_timer / 1.0).clamp(0.0, 1.0),
-                                )
-                            } else if is_nitro_ready {
-                                (
-                                    "⚡ NITRO READY [SHIFT]".to_string(),
-                                    egui::Color32::from_rgb(60, 255, 140),
-                                    egui::Color32::from_rgb(40, 230, 130),
-                                    1.0_f32,
-                                )
-                            } else {
-                                (
-                                    format!("⚡ NITRO CHARGING ({:.1}s)", nitro_cd),
-                                    egui::Color32::from_rgb(150, 190, 230),
-                                    egui::Color32::from_rgb(30, 130, 230),
-                                    ((10.0 - nitro_cd) / 10.0).clamp(0.0, 1.0),
-                                )
-                            };
+                        let (nitro_label, nitro_color, nitro_fill_color, nitro_ratio) = if in_trial
+                        {
+                            (
+                                "🚫 NITRO DISABLED (TIME TRIAL)".to_string(),
+                                egui::Color32::from_rgb(200, 80, 80),
+                                egui::Color32::from_rgb(90, 30, 30),
+                                0.0_f32,
+                            )
+                        } else if is_boosting {
+                            (
+                                "⚡ NITRO BOOST ACTIVE!".to_string(),
+                                egui::Color32::from_rgb(0, 255, 255),
+                                egui::Color32::from_rgb(0, 240, 255),
+                                (nitro_timer / 1.0).clamp(0.0, 1.0),
+                            )
+                        } else if is_nitro_ready {
+                            (
+                                "⚡ NITRO READY [SHIFT]".to_string(),
+                                egui::Color32::from_rgb(60, 255, 140),
+                                egui::Color32::from_rgb(40, 230, 130),
+                                1.0_f32,
+                            )
+                        } else {
+                            (
+                                format!("⚡ NITRO CHARGING ({:.1}s)", nitro_cd),
+                                egui::Color32::from_rgb(150, 190, 230),
+                                egui::Color32::from_rgb(30, 130, 230),
+                                ((10.0 - nitro_cd) / 10.0).clamp(0.0, 1.0),
+                            )
+                        };
 
                         ui.label(
                             egui::RichText::new(nitro_label)

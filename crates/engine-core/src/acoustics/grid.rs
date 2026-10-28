@@ -55,7 +55,6 @@ macro_rules! call {
     }};
 }
 
-
 pub const SIGMA_SB: f32 = 5.670_37e-8;
 const RHO_MIN: f32 = 0.02;
 const P_MIN: f32 = 2_000.0;
@@ -303,7 +302,13 @@ impl Grid {
         // Two cells at least, except in a duct shorter than about one and a half target cells: halving a short
         // duct would make its cells the smallest in the network, and the CFL limit of those few cells sets the
         // sub-stepping (and so the cost) of every other duct and junction.
-        let n = ((spec.length / spec.dx_target).round() as usize).max(if spec.length < 1.6 * spec.dx_target { 1 } else { 2 });
+        let n = ((spec.length / spec.dx_target).round() as usize).max(
+            if spec.length < 1.6 * spec.dx_target {
+                1
+            } else {
+                2
+            },
+        );
         let dx = spec.length / n as f32;
         let area = |x: f32| {
             let d = spec.d_in + (spec.d_out - spec.d_in) * (x / spec.length);
@@ -319,7 +324,9 @@ impl Grid {
             let a_lo = area(i as f32 * dx);
             let a_hi = area((i + 1) as f32 * dx);
             let a_c = area((i as f32 + 0.5) * dx);
-            let dh = spec.hyd_dia.unwrap_or_else(|| spec.d_in + (spec.d_out - spec.d_in) * ((i as f32 + 0.5) * dx / spec.length));
+            let dh = spec.hyd_dia.unwrap_or_else(|| {
+                spec.d_in + (spec.d_out - spec.d_in) * ((i as f32 + 0.5) * dx / spec.length)
+            });
             let rr = (spec.wall.roughness_m / dh).clamp(1e-7, 0.05);
             let f = 1.0 / (2.0 * (rr / 3.7).log10()).powi(2);
             self.rho.push(rho0);
@@ -345,10 +352,25 @@ impl Grid {
             self.outer.push(spec.wall.outer_ratio);
             self.bay_k.push(if spec.engine_bay { 0.3 } else { 1.0 });
             self.bay_dt.push(if spec.engine_bay { 60.0 } else { 0.0 });
-            for v in [&mut self.hv, &mut self.k_ac, &mut self.k_lam, &mut self.c_tur, &mut self.u_avg] {
+            for v in [
+                &mut self.hv,
+                &mut self.k_ac,
+                &mut self.k_lam,
+                &mut self.c_tur,
+                &mut self.u_avg,
+            ] {
                 v.push(0.0);
             }
-            for v in [&mut self.rl, &mut self.ul, &mut self.pl, &mut self.el, &mut self.rr, &mut self.ur, &mut self.pr, &mut self.er] {
+            for v in [
+                &mut self.rl,
+                &mut self.ul,
+                &mut self.pl,
+                &mut self.el,
+                &mut self.rr,
+                &mut self.ur,
+                &mut self.pr,
+                &mut self.er,
+            ] {
                 v.push(0.0);
             }
         }
@@ -608,7 +630,14 @@ impl Grid {
             &mut self.t[..m],
             &mut self.c[..m]
         );
-        self.max_rate = call!(self, k_rate, k_rate_avx2, &self.u[..m], &self.c[..m], &self.inv_dx[..m]);
+        self.max_rate = call!(
+            self,
+            k_rate,
+            k_rate_avx2,
+            &self.u[..m],
+            &self.c[..m],
+            &self.inv_dx[..m]
+        );
     }
 
     /// Ghost cells hold garbage after an update; copy the neighbouring real cell so they stay finite.
@@ -752,7 +781,11 @@ impl Grid {
     fn slow_update_range(&mut self, lo: usize, hi: usize, dt: f32) {
         let g = self.gas;
         let omega_ref = std::f32::consts::TAU * 250.0;
-        let alpha = if dt > 0.0 { 1.0 - (-dt / 0.01).exp() } else { 1.0 };
+        let alpha = if dt > 0.0 {
+            1.0 - (-dt / 0.01).exp()
+        } else {
+            1.0
+        };
         for k in lo..hi {
             let t = self.t[k].max(200.0);
             let rho = self.rho[k].max(RHO_MIN);
@@ -763,7 +796,11 @@ impl Grid {
             let re = rho * ua * d / mu;
             let kcond = g.conductivity(t);
             // Dittus-Boelter for turbulent flow, fully developed laminar Nu = 3.66 otherwise
-            let nu = if re > 3000.0 { 0.023 * re.powf(0.8) * g.pr.powf(0.4) } else { 3.66 };
+            let nu = if re > 3000.0 {
+                0.023 * re.powf(0.8) * g.pr.powf(0.4)
+            } else {
+                3.66
+            };
             // pulsating flow transfers ~1.5x the steady-flow heat, and chambers keep mixing even when the mean
             // flow through them is slow, so there is a floor
             let h = (1.5 * nu * kcond / d).max(25.0);
@@ -775,14 +812,17 @@ impl Grid {
             self.c_tur[k] = f_tur / (2.0 * d) * self.fscale[k];
             // Kirchhoff attenuation of plane waves (viscous + thermal boundary layers) as a damping rate
             let gam = g.gamma(t);
-            let att = (2.0 / d) / self.c[k] * (omega_ref * (mu / rho) * 0.5).sqrt() * (1.0 + (gam - 1.0) / g.pr.sqrt());
+            let att = (2.0 / d) / self.c[k]
+                * (omega_ref * (mu / rho) * 0.5).sqrt()
+                * (1.0 + (gam - 1.0) / g.pr.sqrt());
             self.k_ac[k] = self.c[k] * att * self.fscale[k].min(1.0);
             if dt > 0.0 {
                 // wall: gas-side h, outer natural / forced convection + radiation, optional wrap
                 let tw = self.tw[k];
                 let ta = self.t_amb + self.bay_dt[k];
                 let h_rad = self.eps[k] * SIGMA_SB * (tw * tw + ta * ta) * (tw + ta);
-                let u_out = 1.0 / (self.rins[k] + 1.0 / (self.h_conv * self.bay_k[k] + h_rad)) * self.outer[k];
+                let u_out = 1.0 / (self.rins[k] + 1.0 / (self.h_conv * self.bay_k[k] + h_rad))
+                    * self.outer[k];
                 let dtw = (h * (t - tw) - u_out * (tw - ta)) / self.cap[k];
                 self.tw[k] = (tw + dt * self.thermal_accel * dtw).clamp(200.0, 1700.0);
             }

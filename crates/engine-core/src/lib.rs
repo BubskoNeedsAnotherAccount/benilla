@@ -13,16 +13,17 @@ pub mod rng;
 pub mod sound;
 pub mod tuning;
 
-pub use config::{
-    bank_tilts_deg, brakes, engine_by_id, engines, fuels, layout_of, transmissions, BrakeConfig, EngineConfig, FuelConfig,
-    IgnitionType, TransmissionConfig, TurboConfig,
-};
 pub use acoustics::PipeMaterial;
+pub use config::{
+    bank_tilts_deg, brakes, engine_by_id, engines, fuels, layout_of, transmissions, BrakeConfig,
+    EngineConfig, FuelConfig, IgnitionType, TransmissionConfig, TurboConfig,
+};
 pub use cylinder::{CylinderSample, CylinderTelemetry, StrokePhase};
 pub use ecu::{CelState, EvapMonitorStatus};
 pub use engine::{CombustionEngine, EngineEvents, EngineTelemetry};
 pub use tuning::{
-    stock_turbo_count, AirFilter, BlowOff, Cat, Crossover, Header, Intercooler, Muffler, Runners, Tuning, TurboSetup, BOOST_MAX_BAR, BOOST_MIN_BAR,
+    stock_turbo_count, AirFilter, BlowOff, Cat, Crossover, Header, Intercooler, Muffler, Runners,
+    Tuning, TurboSetup, BOOST_MAX_BAR, BOOST_MIN_BAR,
 };
 
 /// Convenience: a ready-to-run engine with the default 6-speed, standard brakes and a fuel
@@ -32,7 +33,10 @@ pub fn build_default(config: EngineConfig) -> CombustionEngine {
         .into_iter()
         .find(|f| f.ignition_type == config.ignition_type)
         .expect("a fuel exists for every ignition type");
-    let tx = transmissions().into_iter().find(|t| t.id == "6speed").unwrap();
+    let tx = transmissions()
+        .into_iter()
+        .find(|t| t.id == "6speed")
+        .unwrap();
     let brake = brakes().into_iter().next().unwrap();
     CombustionEngine::new(config, &tx, &brake, fuel)
 }
@@ -49,8 +53,16 @@ pub struct DynoPoint {
 /// Runs a full wide-open-throttle sweep (idle to redline) on a fresh warm engine with `tuning`
 /// bolted on. Headless and quick (tens of milliseconds in release), so a UI can re-run it on
 /// every parts swap and overlay it on the stock curve.
-pub fn dyno_curve(config: &EngineConfig, fuel: &FuelConfig, tuning: &Tuning, step_rpm: f64) -> Vec<DynoPoint> {
-    let tx = transmissions().into_iter().find(|t| t.id == "6speed").unwrap();
+pub fn dyno_curve(
+    config: &EngineConfig,
+    fuel: &FuelConfig,
+    tuning: &Tuning,
+    step_rpm: f64,
+) -> Vec<DynoPoint> {
+    let tx = transmissions()
+        .into_iter()
+        .find(|t| t.id == "6speed")
+        .unwrap();
     let brake = brakes().into_iter().next().unwrap();
     let mut e = CombustionEngine::new(config.clone(), &tx, &brake, fuel.clone());
     e.set_tuning(tuning.clone());
@@ -60,7 +72,12 @@ pub fn dyno_curve(config: &EngineConfig, fuel: &FuelConfig, tuning: &Tuning, ste
     while rpm <= config.redline_rpm + 1.0 {
         let tq = e.dyno_point(rpm, 0.3);
         let hp = tq * rpm * std::f64::consts::PI / 30.0 / 745.7;
-        out.push(DynoPoint { rpm, torque_nm: tq, hp, boost_pa: e.telemetry().boost_pressure_pa });
+        out.push(DynoPoint {
+            rpm,
+            torque_nm: tq,
+            hp,
+            boost_pa: e.telemetry().boost_pressure_pa,
+        });
         rpm += step_rpm;
     }
     out

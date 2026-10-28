@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>benilla lambo</title>
+<style>
+  :root {
+    --bg: #0e1013; --card: #171a20; --line: #2a2f39; --text: #e8eaed; --muted: #9097a3;
+    --accent: #f4b63d; --accent-ink: #1b1303; --ok: #5ad17a; --bad: #ff7a7a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f2f3f5; --card: #fff; --line: #d8dce3; --text: #15181d; --muted: #5b6370;
+            --accent: #b97800; --accent-ink: #fff; --ok: #1b8a3b; --bad: #c0392b; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
+  #gate { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px;
+    background: var(--bg); overflow: auto; }
+  .card { width: 100%; max-width: 560px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 28px; }
+  h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: .2px; }
+  p { margin: 0 0 14px; color: var(--muted); }
+  .drop { border: 2px dashed var(--line); border-radius: 12px; padding: 26px 16px; text-align: center;
+    cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .drop strong { display: block; font-size: 16px; margin-bottom: 4px; }
+  button { font: inherit; font-weight: 600; background: var(--accent); color: var(--accent-ink);
+    border: 0; border-radius: 8px; padding: 10px 18px; cursor: pointer; margin-top: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  ul { list-style: none; padding: 0; margin: 14px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  li { font: 12px ui-monospace, Menlo, Consolas, monospace; padding: 3px 8px; border-radius: 6px;
+    border: 1px solid var(--line); color: var(--ok); }
+  li.missing { color: var(--bad); }
+  #status { min-height: 22px; margin-top: 14px; color: var(--muted); }
+  #status.err { color: var(--bad); }
+  .keys { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  kbd { font: 12px ui-monospace, Menlo, Consolas, monospace; border: 1px solid var(--line);
+    border-radius: 4px; padding: 0 5px; }
+  .fine { font-size: 12px; margin: 16px 0 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="bevy" tabindex="0"></canvas>
+
+<div id="gate">
+  <div class="card">
+    <h1>benilla lambo</h1>
+    <p>Drive a Lamborghini through World of Warcraft 1.12.1's Eastern Kingdoms. The game data is
+       yours: pick the <code>Data</code> folder of your own install and it is read in this tab.</p>
+
+    <div class="drop" id="drop" role="button" tabindex="0">
+      <strong>Choose your WoW <code>Data</code> folder</strong>
+      or drop it here (the install folder works too)
+    </div>
+    <input id="fallback" type="file" webkitdirectory multiple hidden>
+
+    <ul id="found"></ul>
+    <div id="status" role="status"></div>
+    <button id="start" hidden>Start driving</button>
+
+    <div class="keys">
+      <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or arrows drive · <kbd>Space</kbd> brake ·
+      <kbd>Shift</kbd> nitro · <kbd>C</kbd> camera · <kbd>R</kbd> reset · <kbd>G</kbd> time trials
+    </div>
+    <p class="fine">Nothing is uploaded: the files stay on your computer and are read from this page.
+      Needs a browser with WebGPU (Chrome or Edge 113+, Safari 26+, Firefox 141+) and a few GB of free memory.</p>
+  </div>
+</div>
+
+<script type="module">
+import { installIo } from "./io-bridge.js";
+
+const $ = (id) => document.getElementById(id);
+const status = (text, err = false) => { $("status").textContent = text; $("status").className = err ? "err" : ""; };
+
+// The file bridge needs SharedArrayBuffer, which needs cross-origin isolation. A static host that
+// cannot send the headers gets them from a service worker, after one reload.
+if (!crossOriginIsolated) {
+  if ("serviceWorker" in navigator && window.isSecureContext) {
+    const reg = await navigator.serviceWorker.register("./coi-sw.js");
+    await navigator.serviceWorker.ready;
+    if (!sessionStorage.getItem("coi-reloaded")) {
+      sessionStorage.setItem("coi-reloaded", "1");
+      location.reload();
+    } else if (!crossOriginIsolated) {
+      status("This host blocked cross-origin isolation, which the file bridge needs.", true);
+    }
+    void reg;
+  } else {
+    status("This page needs HTTPS (or localhost) to read your game files.", true);
+  }
+}
+if (!navigator.gpu) status("This browser has no WebGPU, which the renderer needs.", true);
+
+// `?trace` logs why WebGPU rejects a shader, which the browser otherwise reports as "invalid".
+if (new URLSearchParams(location.search).has("trace")) {
+  Error.stackTraceLimit = 200;
+  // `window.__log` keeps this run's errors and warnings, for a script to read back.
+  window.__log = [];
+  // The time the page's own frame callbacks take, which holds whatever the browser throttles the
+  // callbacks to: `__raf.busyMs / __raf.frames` is the CPU cost of a frame.
+  window.__raf = { frames: 0, busyMs: 0, worstMs: 0 };
+  const raf = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = (cb) => raf((t) => {
+    const t0 = performance.now();
+    cb(t);
+    const dt = performance.now() - t0;
+    window.__raf.frames++;
+    window.__raf.busyMs += dt;
+    window.__raf.worstMs = Math.max(window.__raf.worstMs, dt);
+  });
+  for (const level of ["error", "warn"]) {
+    const orig = console[level].bind(console);
+    console[level] = (...args) => { window.__log.push(`${level}: ${args.join(" ").slice(0, 1500)}`); orig(...args); };
+  }
+}
+if (navigator.gpu && new URLSearchParams(location.search).has("trace")) {
+  const create = GPUDevice.prototype.createShaderModule;
+  GPUDevice.prototype.createShaderModule = function (desc) {
+    const module = create.call(this, desc);
+    module.getCompilationInfo().then((info) => {
+      const lines = (desc.code ?? "").split("\n");
+      for (const m of info.messages) if (m.type === "error") {
+        console.error(`shader ${desc.label ?? "?"}: ${m.lineNum}:${m.linePos} ${m.message} | ${(lines[m.lineNum - 1] ?? "").trim()} | diag=${lines.some((l) => l.includes("diagnostic("))} | ${lines.slice(0, 3).join(" / ").slice(0, 120)}`);
+      }
+    });
+    return module;
+  };
+}
+
+// Archive names the client mounts (`benilla-formats` VANILLA_BASE_ORDER, `patch*.MPQ`).
+const REQUIRED = ["dbc.MPQ", "terrain.MPQ", "model.MPQ", "texture.MPQ", "wmo.MPQ", "interface.MPQ", "patch.MPQ"];
+let files = [];
+
+function show(list) {
+  const have = new Set(list.map((f) => f.name.toLowerCase()));
+  $("found").replaceChildren(
+    ...list.map((f) => Object.assign(document.createElement("li"), { textContent: f.name })),
+    ...REQUIRED.filter((n) => !have.has(n.toLowerCase())).map((n) =>
+      Object.assign(document.createElement("li"), { textContent: `${n} missing`, className: "missing" })),
+  );
+}
+
+function accept(list) {
+  const mpq = list.filter((f) => /\.mpq$/i.test(f.name));
+  if (!mpq.length) {
+    files = [];
+    show([]);
+    $("start").hidden = true;
+    return status("No .MPQ archives there. Choose the folder that holds dbc.MPQ, terrain.MPQ, and the rest.", true);
+  }
+  files = mpq;
+  show(files);
+  const have = new Set(files.map((f) => f.name.toLowerCase()));
+  const missing = REQUIRED.filter((n) => !have.has(n.toLowerCase()));
+  const gb = files.reduce((s, f) => s + f.size, 0) / 2 ** 30;
+  if (missing.length) {
+    $("start").hidden = true;
+    return status(`Found ${files.length} archives (${gb.toFixed(1)} GB) but not ${missing.join(", ")}.`, true);
+  }
+  status(`Found ${files.length} archives (${gb.toFixed(1)} GB).`);
+  $("start").hidden = false;
+}
+
+// Files at the top of a directory handle, or of its Data folder.
+async function fromHandle(dir) {
+  let found = await collect(dir);
+  if (!found.some((f) => /\.mpq$/i.test(f.name))) {
+    for await (const [name, h] of dir.entries()) {
+      if (h.kind === "directory" && name.toLowerCase() === "data") found = await collect(h);
+    }
+  }
+  return found;
+}
+async function collect(dir) {
+  const out = [];
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind === "file" && /\.mpq$/i.test(name)) {
+      const blob = await h.getFile();
+      out.push({ name, size: blob.size, blob });
+    }
+  }
+  return out;
+}
+
+async function pick() {
+  if (window.showDirectoryPicker) {
+    try {
+      accept(await fromHandle(await showDirectoryPicker({ id: "wow-data", mode: "read" })));
+    } catch (e) {
+      if (e.name !== "AbortError") status(String(e.message || e), true);
+    }
+  } else {
+    $("fallback").click();
+  }
+}
+$("drop").addEventListener("click", pick);
+$("drop").addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && pick());
+$("fallback").addEventListener("change", (e) => {
+  // `webkitdirectory` lists every file below the folder: keep the archives directly in `Data`
+  // (or in the chosen folder itself).
+  const all = [...e.target.files].filter((f) => /\.mpq$/i.test(f.name));
+  const depth = (f) => f.webkitRelativePath.split("/").length;
+  const data = all.filter((f) => /(^|\/)data\/[^/]+$/i.test(f.webkitRelativePath));
+  const top = all.filter((f) => depth(f) === 2);
+  accept((data.length ? data : top).map((f) => ({ name: f.name, size: f.size, blob: f })));
+});
+for (const ev of ["dragenter", "dragover"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("over"); });
+for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, () => $("drop").classList.remove("over"));
+$("drop").addEventListener("drop", async (e) => {
+  e.preventDefault();
+  const item = [...e.dataTransfer.items].find((i) => i.kind === "file");
+  const handle = item && item.getAsFileSystemHandle ? await item.getAsFileSystemHandle() : null;
+  if (handle && handle.kind === "directory") accept(await fromHandle(handle));
+  else status("Drop the folder itself, or click to choose it.", true);
+});
+
+// A development server (`node web/serve.mjs --data <Data>`) can serve the archives itself.
+if (new URLSearchParams(location.search).has("devdata")) {
+  const list = await (await fetch("/__data/manifest.json")).json();
+  accept(list.map((f) => ({ name: f.name, size: f.size, url: `/__data/${encodeURIComponent(f.name)}` })));
+}
+
+async function fetchAssets() {
+  const wanted = ["car.glb", "sounds/skid_loop.wav", "sounds/nitro.wav"];
+  const assets = new Map();
+  await Promise.all(wanted.map(async (path) => {
+    const res = await fetch(`./assets/${path}`);
+    if (res.ok) assets.set(path, new Uint8Array(await res.arrayBuffer()));
+  }));
+  return assets;
+}
+
+let started = false;
+async function start() {
+  if (started || !files.length) return;
+  started = true;
+  $("start").disabled = true;
+  try {
+    status("Opening your files…");
+    await installIo(files, await fetchAssets());
+    status("Loading the engine…");
+    const { default: init } = await import("./benilla-lambo.js");
+    $("gate").hidden = true;
+    $("bevy").focus();
+    try {
+      await init();
+    } catch (e) {
+      // winit unwinds the start call on the web by design; anything else is a real failure.
+      if (!/control flow/i.test(String(e && e.message || e))) throw e;
+    }
+  } catch (e) {
+    console.error(e);
+    $("gate").hidden = false;
+    status(`Could not start: ${e && e.message || e}`, true);
+    started = false;
+    $("start").disabled = false;
+  }
+}
+$("start").addEventListener("click", start);
+if (new URLSearchParams(location.search).has("devdata")) start();
+</script>
+</body>
+</html>

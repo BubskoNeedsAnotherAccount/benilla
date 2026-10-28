@@ -179,7 +179,12 @@ pub struct CombustionEngine {
 }
 
 impl CombustionEngine {
-    pub fn new(config: EngineConfig, transmission: &TransmissionConfig, brake: &BrakeConfig, fuel: FuelConfig) -> Self {
+    pub fn new(
+        config: EngineConfig,
+        transmission: &TransmissionConfig,
+        brake: &BrakeConfig,
+        fuel: FuelConfig,
+    ) -> Self {
         let tank_l = config.fuel_tank_capacity_l.unwrap_or(DEFAULT_FUEL_TANK_L);
         let mut cylinders = Vec::with_capacity(config.cylinder_count);
         let mut cumulative = 0.0;
@@ -290,14 +295,17 @@ impl CombustionEngine {
     }
     /// 0 = empty, 1 = full tank.
     pub fn set_fuel_level(&mut self, fraction: f64) {
-        self.fuel_remaining_kg = fraction.clamp(0.0, 1.0) * self.fuel_tank_capacity_l * self.fuel.density_kg_per_l;
+        self.fuel_remaining_kg =
+            fraction.clamp(0.0, 1.0) * self.fuel_tank_capacity_l * self.fuel.density_kg_per_l;
     }
     pub fn refuel(&mut self) {
         self.fuel_remaining_kg = self.fuel_tank_capacity_l * self.fuel.density_kg_per_l;
     }
     pub fn set_fuel(&mut self, fuel: FuelConfig) {
-        let fraction = self.fuel_remaining_kg / (self.fuel_tank_capacity_l * self.fuel.density_kg_per_l);
-        self.fuel_remaining_kg = fraction.clamp(0.0, 1.0) * self.fuel_tank_capacity_l * fuel.density_kg_per_l;
+        let fraction =
+            self.fuel_remaining_kg / (self.fuel_tank_capacity_l * self.fuel.density_kg_per_l);
+        self.fuel_remaining_kg =
+            fraction.clamp(0.0, 1.0) * self.fuel_tank_capacity_l * fuel.density_kg_per_l;
         self.fuel = fuel;
     }
     pub fn set_transmission(&mut self, t: &TransmissionConfig) {
@@ -395,8 +403,14 @@ impl CombustionEngine {
     }
 
     // ---- ignition / exhaust fault injection (by cylinder index in physical order) ----
-    pub fn cylinder_ignition_mut(&mut self, label: u32) -> Option<&mut crate::ignition::IgnitionChannel> {
-        self.cylinders.iter_mut().find(|c| c.label == label).map(|c| &mut c.ignition)
+    pub fn cylinder_ignition_mut(
+        &mut self,
+        label: u32,
+    ) -> Option<&mut crate::ignition::IgnitionChannel> {
+        self.cylinders
+            .iter_mut()
+            .find(|c| c.label == label)
+            .map(|c| &mut c.ignition)
     }
     pub fn set_catalyst_clog(&mut self, fraction: f64) {
         self.exhaust.catalyst.clog_fraction = fraction.clamp(0.0, 1.0);
@@ -419,7 +433,12 @@ impl CombustionEngine {
         // A restricted exhaust (clogged cat, crushed muffler) costs breathing at high rpm; a free
         // flowing one gains a little. Scales with rpm^2 like the flow itself.
         let r = (rpm / c.redline_rpm).clamp(0.0, 1.2);
-        let exhaust = (1.0 - EXHAUST_VE_LOSS * (self.exhaust.backpressure_multiplier().clamp(0.25, 6.0) - 1.0) * r * r).clamp(0.7, 1.05);
+        let exhaust = (1.0
+            - EXHAUST_VE_LOSS
+                * (self.exhaust.backpressure_multiplier().clamp(0.25, 6.0) - 1.0)
+                * r
+                * r)
+            .clamp(0.7, 1.05);
         // clamp the stock part first so the V12's saturated curve is unchanged, then apply mods
         curve.clamp(VE_CLAMP_MIN, VE_CLAMP_MAX) * t.ve_multiplier(c, rpm) * exhaust
     }
@@ -431,7 +450,13 @@ impl CombustionEngine {
         MIN_CLOSED_THROTTLE_MAP_PA.max(IDLE_MANIFOLD_PA - (rpm - IDLE_RPM) * 60.0)
     }
 
-    fn manifold_pressure_for(&self, throttle: f64, rpm: f64, atmospheric_pa: f64, boost_pa: f64) -> f64 {
+    fn manifold_pressure_for(
+        &self,
+        throttle: f64,
+        rpm: f64,
+        atmospheric_pa: f64,
+        boost_pa: f64,
+    ) -> f64 {
         let ve = self.volumetric_efficiency_at(rpm);
         let wot = atmospheric_pa * ve.clamp(VE_CLAMP_MIN, VE_CLAMP_MAX * 1.2) + boost_pa;
         let closed = self.closed_throttle_manifold_pressure_at(rpm);
@@ -440,7 +465,9 @@ impl CombustionEngine {
 
     fn friction_temp_multiplier_at(&self, coolant_k: f64) -> f64 {
         if coolant_k < OPERATING_COOLANT_K {
-            let cold = ((OPERATING_COOLANT_K - coolant_k) / (OPERATING_COOLANT_K - COLD_FRICTION_REF_K)).clamp(0.0, 1.0);
+            let cold = ((OPERATING_COOLANT_K - coolant_k)
+                / (OPERATING_COOLANT_K - COLD_FRICTION_REF_K))
+                .clamp(0.0, 1.0);
             return 1.0 + (COLD_FRICTION_MULT_MAX - 1.0) * cold;
         }
         if coolant_k > OVERHEAT_SEVERE_K {
@@ -451,11 +478,14 @@ impl CombustionEngine {
     }
 
     fn cooling_effectiveness_w_per_k(&self, speed_mps: f64, rpm: f64) -> f64 {
-        COOLING_BASE_W_PER_K * (1.0 + rpm / COOLING_RPM_REF) * (1.0 + speed_mps / COOLING_SPEED_REF_MPS)
+        COOLING_BASE_W_PER_K
+            * (1.0 + rpm / COOLING_RPM_REF)
+            * (1.0 + speed_mps / COOLING_SPEED_REF_MPS)
     }
 
     fn idle_throttle_floor_at(&self, rpm: f64) -> f64 {
-        (self.config.idle_throttle_floor + (IDLE_RPM - rpm) * IDLE_GOVERNOR_GAIN).clamp(0.0, IDLE_GOVERNOR_MAX_THROTTLE)
+        (self.config.idle_throttle_floor + (IDLE_RPM - rpm) * IDLE_GOVERNOR_GAIN)
+            .clamp(0.0, IDLE_GOVERNOR_MAX_THROTTLE)
     }
 
     fn friction_torque_at(&self, w: f64) -> f64 {
@@ -464,8 +494,11 @@ impl CombustionEngine {
     }
 
     fn starter_torque_at(&self, rpm: f64) -> f64 {
-        let compression_floor = STARTER_MIN_NM_PER_L * self.config.displacement_l() * self.config.compression_ratio / 10.5;
-        self.config.starter_torque_nm.max(compression_floor) * (1.0 - rpm / STARTER_MAX_RPM).max(0.0)
+        let compression_floor =
+            STARTER_MIN_NM_PER_L * self.config.displacement_l() * self.config.compression_ratio
+                / 10.5;
+        self.config.starter_torque_nm.max(compression_floor)
+            * (1.0 - rpm / STARTER_MAX_RPM).max(0.0)
     }
 
     /// Boost the stock hardware could make right now (the part of boost that does not add EGT).
@@ -494,9 +527,13 @@ impl CombustionEngine {
         };
         let dt = raw_dt.min(MAX_SUBSTEPS_PER_FRAME * sub_dt);
 
-        let rate = self.config.throttle_response_rate.unwrap_or(THROTTLE_ACTUATOR_RATE);
+        let rate = self
+            .config
+            .throttle_response_rate
+            .unwrap_or(THROTTLE_ACTUATOR_RATE);
         let throttle_before = self.throttle_actual;
-        self.throttle_actual += (self.throttle_target - self.throttle_actual).clamp(-rate * dt, rate * dt);
+        self.throttle_actual +=
+            (self.throttle_target - self.throttle_actual).clamp(-rate * dt, rate * dt);
         // A moving throttle makes the crank speed rise or fall on its own; a real ECU suspends its
         // misfire monitor through that transient and a short settling period after it.
         if (self.throttle_actual - throttle_before).abs() > 1.0e-6 {
@@ -514,10 +551,13 @@ impl CombustionEngine {
         // Turbo
         let mut boost_pa = 0.0;
         if let Some(turbo) = self.turbo_setup {
-            let target = (rpm_at_start / turbo.full_spool_rpm).clamp(0.0, 1.0) * self.throttle_actual;
+            let target =
+                (rpm_at_start / turbo.full_spool_rpm).clamp(0.0, 1.0) * self.throttle_actual;
             let alpha = 1.0 - (-dt / turbo.spool_tau_s).exp();
             self.turbo_spool_fraction += (target - self.turbo_spool_fraction) * alpha;
-            boost_pa = turbo.max_boost_pa * self.turbo_spool_fraction * Tuning::flow_droop(&turbo, rpm_at_start);
+            boost_pa = turbo.max_boost_pa
+                * self.turbo_spool_fraction
+                * Tuning::flow_droop(&turbo, rpm_at_start);
         }
         self.last_boost_pa = boost_pa;
         // Charge temperature: compressor heat the intercooler leaves behind, plus the inlet tract.
@@ -529,7 +569,8 @@ impl CombustionEngine {
         if self.config.ignition_type == IgnitionType::Spark {
             if let Some(threshold) = self.config.knock_threshold {
                 let representative = self.manifold_pressure_for(
-                    self.throttle_actual.max(self.idle_throttle_floor_at(rpm_at_start)),
+                    self.throttle_actual
+                        .max(self.idle_throttle_floor_at(rpm_at_start)),
                     rpm_at_start,
                     atmospheric_pa,
                     boost_pa,
@@ -538,15 +579,17 @@ impl CombustionEngine {
                     * (self.coolant_temp_k / OPERATING_COOLANT_K).powi(KNOCK_TEMP_EXPONENT)
                     * (charge_temp_k / self.air_temperature_k).powi(2);
                 let effective_threshold = threshold * self.fuel.knock_resistance;
-                knock_intensity = ((risk - effective_threshold) / KNOCK_SENSITIVITY).clamp(0.0, 1.0);
+                knock_intensity =
+                    ((risk - effective_threshold) / KNOCK_SENSITIVITY).clamp(0.0, 1.0);
             }
         }
         self.last_knock_intensity = knock_intensity;
 
         // Cooling
         let friction_temp_mult = self.friction_temp_multiplier_at(self.coolant_temp_k);
-        let heat_in_w = self.last_indicated_torque_nm.max(0.0) * self.angular_velocity * COOLANT_HEAT_FRACTION
-            + if self.running { IDLE_HEAT_FLOOR_W } else { 0.0 };
+        let heat_in_w =
+            self.last_indicated_torque_nm.max(0.0) * self.angular_velocity * COOLANT_HEAT_FRACTION
+                + if self.running { IDLE_HEAT_FLOOR_W } else { 0.0 };
         let heat_out_w = self.cooling_effectiveness_w_per_k(self.vehicle_speed_mps, rpm_at_start)
             * (self.coolant_temp_k - self.air_temperature_k);
         self.coolant_temp_k += (heat_in_w - heat_out_w) / self.config.thermal_mass_j_per_k * dt;
@@ -554,9 +597,18 @@ impl CombustionEngine {
         // EGT (flavor)
         let is_compression = self.config.ignition_type == IgnitionType::Compression;
         self.last_egt_k = self.air_temperature_k
-            + if is_compression { EGT_BASE_DIESEL } else { EGT_BASE_SPARK }
-            + if is_compression { EGT_LOAD_DIESEL } else { EGT_LOAD_SPARK } * self.throttle_actual
-            + EGT_PER_EXTRA_BOOST_BAR * ((boost_pa - self.stock_boost_pa(boost_pa)) / 1.0e5).max(0.0);
+            + if is_compression {
+                EGT_BASE_DIESEL
+            } else {
+                EGT_BASE_SPARK
+            }
+            + if is_compression {
+                EGT_LOAD_DIESEL
+            } else {
+                EGT_LOAD_SPARK
+            } * self.throttle_actual
+            + EGT_PER_EXTRA_BOOST_BAR
+                * ((boost_pa - self.stock_boost_pa(boost_pa)) / 1.0e5).max(0.0);
 
         self.exhaust.update(dt, self.last_egt_k, self.last_afr);
 
@@ -577,31 +629,55 @@ impl CombustionEngine {
 
         // O2 circuit/activity and fuel-trim monitors (spark engines only)
         if !is_compression {
-            self.ecu.update_sensors(dt, closed_loop, self.exhaust.o2.connected, self.exhaust.o2.reported_afr, self.fuel_trim_afr);
+            self.ecu.update_sensors(
+                dt,
+                closed_loop,
+                self.exhaust.o2.connected,
+                self.exhaust.o2.reported_afr,
+                self.fuel_trim_afr,
+            );
         }
 
         // EVAP purge normally runs on the ECU's own schedule; its leak-check test can override it.
-        let normal_purge = if closed_loop { EVAP_PURGE_COMMANDED_FRACTION } else { 0.0 };
+        let normal_purge = if closed_loop {
+            EVAP_PURGE_COMMANDED_FRACTION
+        } else {
+            0.0
+        };
         let fuel_level_fraction = self.fuel_level_fraction();
         let evap_ready = closed_loop
             && fuel_level_fraction >= ECU_EVAP_TEST_MIN_FUEL_LEVEL_FRACTION
             && fuel_level_fraction <= ECU_EVAP_TEST_MAX_FUEL_LEVEL_FRACTION;
         let evap_cmd = if !is_compression {
-            self.ecu.update_evap_monitor(dt, evap_ready, self.evap.tank_pressure_pa(), normal_purge)
+            self.ecu
+                .update_evap_monitor(dt, evap_ready, self.evap.tank_pressure_pa(), normal_purge)
         } else {
-            EvapMonitorCommand { vent_closed_commanded: false, purge_commanded_fraction: 0.0 }
+            EvapMonitorCommand {
+                vent_closed_commanded: false,
+                purge_commanded_fraction: 0.0,
+            }
         };
         self.last_purge_commanded_fraction = evap_cmd.purge_commanded_fraction;
         let evap_afr_adjustment = if !is_compression {
-            self.evap.purge_afr_adjustment(evap_cmd.purge_commanded_fraction)
-                + if self.running { self.evap.leak_afr_adjustment() } else { 0.0 }
+            self.evap
+                .purge_afr_adjustment(evap_cmd.purge_commanded_fraction)
+                + if self.running {
+                    self.evap.leak_afr_adjustment()
+                } else {
+                    0.0
+                }
         } else {
             0.0
         };
         self.last_evap_afr_adjustment = evap_afr_adjustment;
         if !is_compression {
             let manifold_vacuum = self.last_manifold_pressure_pa - atmospheric_pa;
-            self.evap.update_tank_pressure(dt, manifold_vacuum, evap_cmd.vent_closed_commanded, evap_cmd.purge_commanded_fraction);
+            self.evap.update_tank_pressure(
+                dt,
+                manifold_vacuum,
+                evap_cmd.vent_closed_commanded,
+                evap_cmd.purge_commanded_fraction,
+            );
         }
 
         let backpressure_mult = self.exhaust.backpressure_multiplier();
@@ -638,7 +714,10 @@ impl CombustionEngine {
                 self.crank_time_s += sub_dt;
                 // light-off: the first firings come with a cold-start enrichment and a throttle-plate
                 // opening that flare the engine well above idle before the idle control gets it back
-                if self.ignition_holdoff_s > 0.0 && before < self.ignition_holdoff_s && self.crank_time_s >= self.ignition_holdoff_s {
+                if self.ignition_holdoff_s > 0.0
+                    && before < self.ignition_holdoff_s
+                    && self.crank_time_s >= self.ignition_holdoff_s
+                {
                     self.start_flare = 1.0;
                 }
             }
@@ -650,7 +729,10 @@ impl CombustionEngine {
             }
             let ignition_enabled = self.running && !self.rev_limiting && !self.is_cranking_unlit();
             let effective_throttle = if self.running {
-                self.throttle_actual.max((self.idle_throttle_floor_at(rpm) + START_FLARE_THROTTLE * self.start_flare).min(0.9))
+                self.throttle_actual.max(
+                    (self.idle_throttle_floor_at(rpm) + START_FLARE_THROTTLE * self.start_flare)
+                        .min(0.9),
+                )
             } else {
                 0.0
             };
@@ -658,10 +740,13 @@ impl CombustionEngine {
             let (mut afr, manifold_pa);
             if is_compression {
                 manifold_pa = atmospheric_pa + boost_pa;
-                let idle_authority = (1.0 - self.throttle_actual / IDLE_GOVERNOR_MAX_THROTTLE).clamp(0.0, 1.0);
-                let governor_lean = ((rpm - IDLE_RPM) * DIESEL_GOVERNOR_LEAN_GAIN).max(0.0) * idle_authority;
-                let high_speed_lean = (rpm - (self.config.redline_rpm - DIESEL_RATED_SPEED_MARGIN_RPM)).max(0.0)
-                    * DIESEL_HIGH_SPEED_LEAN_GAIN;
+                let idle_authority =
+                    (1.0 - self.throttle_actual / IDLE_GOVERNOR_MAX_THROTTLE).clamp(0.0, 1.0);
+                let governor_lean =
+                    ((rpm - IDLE_RPM) * DIESEL_GOVERNOR_LEAN_GAIN).max(0.0) * idle_authority;
+                let high_speed_lean =
+                    (rpm - (self.config.redline_rpm - DIESEL_RATED_SPEED_MARGIN_RPM)).max(0.0)
+                        * DIESEL_HIGH_SPEED_LEAN_GAIN;
                 afr = (DIESEL_IDLE_AFR - (DIESEL_IDLE_AFR - DIESEL_MIN_AFR) * effective_throttle
                     + governor_lean
                     + high_speed_lean)
@@ -669,18 +754,21 @@ impl CombustionEngine {
             } else {
                 let enrichment = effective_throttle * effective_throttle;
                 let knock_lean = knock_intensity * KNOCK_RETARD_MAX_AFR_LEAN;
-                afr = (self.fuel.stoichiometric_afr - (self.fuel.stoichiometric_afr - self.fuel.wot_afr) * enrichment
+                afr = (self.fuel.stoichiometric_afr
+                    - (self.fuel.stoichiometric_afr - self.fuel.wot_afr) * enrichment
                     + knock_lean
                     + evap_afr_adjustment
                     + self.fuel_trim_afr)
                     .clamp(SPARK_AFR_SAFETY_MIN, SPARK_AFR_SAFETY_MAX);
-                manifold_pa = self.manifold_pressure_for(effective_throttle, rpm, atmospheric_pa, boost_pa);
+                manifold_pa =
+                    self.manifold_pressure_for(effective_throttle, rpm, atmospheric_pa, boost_pa);
             }
             if self.fuel_remaining_kg <= 0.0 {
                 afr = FUEL_STARVED_AFR;
             }
 
-            let new_angle = self.unwrapped_crank_angle_deg + self.angular_velocity * sub_dt * DEG_PER_RAD;
+            let new_angle =
+                self.unwrapped_crank_angle_deg + self.angular_velocity * sub_dt * DEG_PER_RAD;
 
             let inputs = CylinderInputs {
                 unwrapped_crank_angle_deg: new_angle,
@@ -711,11 +799,17 @@ impl CombustionEngine {
             }
 
             let friction = self.friction_torque_at(self.angular_velocity) * friction_temp_mult;
-            let starter = if self.cranking && rpm < STARTER_DISENGAGE_RPM { self.starter_torque_at(rpm) } else { 0.0 };
+            let starter = if self.cranking && rpm < STARTER_DISENGAGE_RPM {
+                self.starter_torque_at(rpm)
+            } else {
+                0.0
+            };
 
             // Automatic clutch at idle under brake (stand-in for a driver covering the clutch).
             if self.brake_declutched
-                && (self.brake_input <= 0.0 || rpm > IDLE_RPM + BRAKE_DECLUTCH_REENGAGE_HYSTERESIS_RPM || !in_gear)
+                && (self.brake_input <= 0.0
+                    || rpm > IDLE_RPM + BRAKE_DECLUTCH_REENGAGE_HYSTERESIS_RPM
+                    || !in_gear)
             {
                 if in_gear && !self.is_shifting {
                     self.shift_from = self.angular_velocity;
@@ -725,43 +819,62 @@ impl CombustionEngine {
                     self.is_shifting = true;
                 }
                 self.brake_declutched = false;
-            } else if !self.brake_declutched && in_gear && !self.is_shifting && self.brake_input > 0.0 && rpm <= IDLE_RPM {
+            } else if !self.brake_declutched
+                && in_gear
+                && !self.is_shifting
+                && self.brake_input > 0.0
+                && rpm <= IDLE_RPM
+            {
                 self.brake_declutched = true;
             }
 
             let rigidly_coupled = in_gear && !self.is_shifting && !self.brake_declutched;
             let brake_force_n = self.brake_max_force_n * self.brake_input;
             let speed = self.vehicle_speed_mps;
-            let road_load = |v: f64| ROAD_LOAD_A_N + ROAD_LOAD_B_NS_PER_M * v + ROAD_LOAD_C_NS2_PER_M2 * v * v;
+            let road_load =
+                |v: f64| ROAD_LOAD_A_N + ROAD_LOAD_B_NS_PER_M * v + ROAD_LOAD_C_NS2_PER_M2 * v * v;
 
             let mut effective_inertia = self.config.rotating_inertia_kg_m2
-                + if rigidly_coupled { 0.0 } else { FREE_REV_EXTRA_INERTIA_PER_L * self.config.displacement_l() };
+                + if rigidly_coupled {
+                    0.0
+                } else {
+                    FREE_REV_EXTRA_INERTIA_PER_L * self.config.displacement_l()
+                };
             let mut gear_load_torque = 0.0;
             if rigidly_coupled {
-                self.vehicle_speed_mps = (self.angular_velocity / total_gear_ratio).abs() * WHEEL_RADIUS_M;
+                self.vehicle_speed_mps =
+                    (self.angular_velocity / total_gear_ratio).abs() * WHEEL_RADIUS_M;
                 let rl = road_load(self.vehicle_speed_mps);
                 gear_load_torque = (rl + brake_force_n) * WHEEL_RADIUS_M / total_gear_ratio.abs();
-                effective_inertia += self.vehicle_mass_kg * WHEEL_RADIUS_M.powi(2) / total_gear_ratio.powi(2);
+                effective_inertia +=
+                    self.vehicle_mass_kg * WHEEL_RADIUS_M.powi(2) / total_gear_ratio.powi(2);
             } else {
                 let rl = road_load(speed);
-                self.vehicle_speed_mps =
-                    (self.vehicle_speed_mps - (rl + brake_force_n) / self.vehicle_mass_kg * sub_dt).max(0.0);
+                self.vehicle_speed_mps = (self.vehicle_speed_mps
+                    - (rl + brake_force_n) / self.vehicle_mass_kg * sub_dt)
+                    .max(0.0);
             }
 
-            let mut net = indicated - friction + starter - self.external_load_torque_nm - gear_load_torque;
+            let mut net =
+                indicated - friction + starter - self.external_load_torque_nm - gear_load_torque;
             if self.rev_limiting && rpm >= rev_cut {
                 net = net.min(0.0);
             }
             if !self.is_shifting && self.pinned_angular_velocity.is_none() {
-                self.angular_velocity = (self.angular_velocity + net / effective_inertia * sub_dt).max(0.0);
+                self.angular_velocity =
+                    (self.angular_velocity + net / effective_inertia * sub_dt).max(0.0);
             }
             self.unwrapped_crank_angle_deg = new_angle;
 
             // Misfire monitor reads only crank speed; gated off while cranking, on the rev limiter
             // (a commanded cut, not a fault), mid-shift (kinematic speed blend) and through throttle transients.
-            let misfire_sampling =
-                self.running && !self.cranking && !self.rev_limiting && !self.is_shifting && self.misfire_holdoff_s <= 0.0;
-            self.ecu.update(misfire_sampling, self.angular_velocity, sub_dt);
+            let misfire_sampling = self.running
+                && !self.cranking
+                && !self.rev_limiting
+                && !self.is_shifting
+                && self.misfire_holdoff_s <= 0.0;
+            self.ecu
+                .update(misfire_sampling, self.angular_velocity, sub_dt);
 
             self.last_indicated_torque_nm = indicated;
             self.last_friction_torque_nm = friction;
@@ -874,7 +987,8 @@ impl CombustionEngine {
         let brake_torque = self.last_indicated_torque_nm - self.last_friction_torque_nm;
         let watts = brake_torque * self.angular_velocity;
         let display_watts = self.smoothed_brake_torque_nm * self.angular_velocity;
-        let cylinders: Vec<CylinderTelemetry> = self.cylinders.iter().map(|c| c.telemetry()).collect();
+        let cylinders: Vec<CylinderTelemetry> =
+            self.cylinders.iter().map(|c| c.telemetry()).collect();
         let fraction = self.fuel_level_fraction();
         EngineTelemetry {
             rpm,
@@ -897,7 +1011,9 @@ impl CombustionEngine {
             is_misfiring: self.running && cylinders.iter().any(|c| !c.spark_fired),
             cylinders,
             air_temperature_k: self.air_temperature_k,
-            atmospheric_pressure_pa: AIR_DENSITY_REFERENCE * GAS_CONSTANT_AIR * self.air_temperature_k,
+            atmospheric_pressure_pa: AIR_DENSITY_REFERENCE
+                * GAS_CONSTANT_AIR
+                * self.air_temperature_k,
             vehicle_mass_kg: self.vehicle_mass_kg,
             gear_label: self.gear_label.clone(),
             gear_ratio: self.gear_ratio,
@@ -929,7 +1045,10 @@ impl CombustionEngine {
                 fuel_trim_afr: self.fuel_trim_afr,
             },
             evap: EvapTelemetry {
-                purge_valve_open_fraction: self.evap.purge_valve.effective_open_fraction(self.last_purge_commanded_fraction),
+                purge_valve_open_fraction: self
+                    .evap
+                    .purge_valve
+                    .effective_open_fraction(self.last_purge_commanded_fraction),
                 canister_saturation: self.evap.canister_saturation,
                 leak_fraction: self.evap.leak_fraction(),
                 afr_adjustment: self.last_evap_afr_adjustment,

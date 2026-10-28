@@ -51,8 +51,16 @@ impl Biquad {
         let (s, c) = w.sin_cos();
         let alpha = s / (2.0 * q);
         let a0 = 1.0 + alpha;
-        let b = if highpass { [(1.0 + c) * 0.5 / a0, -(1.0 + c) / a0, (1.0 + c) * 0.5 / a0] } else { [(1.0 - c) * 0.5 / a0, (1.0 - c) / a0, (1.0 - c) * 0.5 / a0] };
-        Biquad { b, a: [-2.0 * c / a0, (1.0 - alpha) / a0], z: [0.0; 2] }
+        let b = if highpass {
+            [(1.0 + c) * 0.5 / a0, -(1.0 + c) / a0, (1.0 + c) * 0.5 / a0]
+        } else {
+            [(1.0 - c) * 0.5 / a0, (1.0 - c) / a0, (1.0 - c) * 0.5 / a0]
+        };
+        Biquad {
+            b,
+            a: [-2.0 * c / a0, (1.0 - alpha) / a0],
+            z: [0.0; 2],
+        }
     }
 
     #[inline]
@@ -92,8 +100,14 @@ impl LowEnd {
         let mut s = LowEnd {
             fs,
             low_hp: Biquad::new(30.0, Q4[0], fs, true),
-            low_lp: [Biquad::new(150.0, Q4[0], fs, false), Biquad::new(150.0, Q4[1], fs, false)],
-            body_hp: [Biquad::new(260.0, Q4[0], fs, true), Biquad::new(260.0, Q4[1], fs, true)],
+            low_lp: [
+                Biquad::new(150.0, Q4[0], fs, false),
+                Biquad::new(150.0, Q4[1], fs, false),
+            ],
+            body_hp: [
+                Biquad::new(260.0, Q4[0], fs, true),
+                Biquad::new(260.0, Q4[1], fs, true),
+            ],
             body_lp: Biquad::new(1500.0, Q4[0], fs, false),
             p_low: 0.0,
             p_body: 0.0,
@@ -101,8 +115,16 @@ impl LowEnd {
             amp: 0.0,
             boost_db: 0.0,
             phase: [0.0; ORDERS.len()],
-            am: ORDERS.iter().enumerate().map(|(i, _)| Wander::new(3.0 + 0.9 * i as f32, fs)).collect(),
-            pm: ORDERS.iter().enumerate().map(|(i, _)| Wander::new(4.0 + 1.1 * i as f32, fs)).collect(),
+            am: ORDERS
+                .iter()
+                .enumerate()
+                .map(|(i, _)| Wander::new(3.0 + 0.9 * i as f32, fs))
+                .collect(),
+            pm: ORDERS
+                .iter()
+                .enumerate()
+                .map(|(i, _)| Wander::new(4.0 + 1.1 * i as f32, fs))
+                .collect(),
             rng: 0xC0FF_EE11,
         };
         // fixed, unrelated phases: the partials of a real engine are not in step with each other
@@ -134,11 +156,12 @@ impl LowEnd {
     }
 
     fn floor_ratio_boosted(rpm: f32, boost_db: f32) -> f32 {
-        let db = boost_db * (0.4 + 0.6 * smoothstep(900.0, 2_000.0, rpm)) + if rpm < 2_000.0 {
-            FLOOR_DB[0] + (FLOOR_DB[1] - FLOOR_DB[0]) * smoothstep(900.0, 2_000.0, rpm)
-        } else {
-            FLOOR_DB[1] + (FLOOR_DB[2] - FLOOR_DB[1]) * smoothstep(2_000.0, 3_000.0, rpm)
-        };
+        let db = boost_db * (0.4 + 0.6 * smoothstep(900.0, 2_000.0, rpm))
+            + if rpm < 2_000.0 {
+                FLOOR_DB[0] + (FLOOR_DB[1] - FLOOR_DB[0]) * smoothstep(900.0, 2_000.0, rpm)
+            } else {
+                FLOOR_DB[1] + (FLOOR_DB[2] - FLOOR_DB[1]) * smoothstep(2_000.0, 3_000.0, rpm)
+            };
         10f32.powf(db / 10.0)
     }
 
@@ -168,9 +191,14 @@ impl LowEnd {
         }
 
         // what is missing, rms, followed slowly (a rumble that pumps with every gust of the signal is not one)
-        let missing = (Self::floor_ratio_boosted(rpm, self.boost_db) * self.p_body - self.p_low).max(0.0);
+        let missing =
+            (Self::floor_ratio_boosted(rpm, self.boost_db) * self.p_body - self.p_low).max(0.0);
         let want = missing.sqrt() * active;
-        let k = if want > self.amp { 1.0 / (0.3 * self.fs) } else { 1.0 / (0.6 * self.fs) };
+        let k = if want > self.amp {
+            1.0 / (0.3 * self.fs)
+        } else {
+            1.0 / (0.6 * self.fs)
+        };
         self.amp += (want - self.amp) * k;
         if self.amp < 1.0e-9 {
             return 0.0;
@@ -182,7 +210,8 @@ impl LowEnd {
         let (mut sum, mut pow) = (0.0f32, 0.0f32);
         for (i, &o) in ORDERS.iter().enumerate() {
             let f = o * crank_hz;
-            let w = smoothstep(BAND.0, BAND.1, f) * (1.0 - smoothstep(BAND.2, BAND.3, f)) / o.sqrt();
+            let w =
+                smoothstep(BAND.0, BAND.1, f) * (1.0 - smoothstep(BAND.2, BAND.3, f)) / o.sqrt();
             // the wander generators must keep running whether or not the partial is audible
             let (na, np) = (self.noise(), self.noise());
             let a = (1.0 + 0.45 * self.am[i].step(na)).max(0.15);
@@ -217,7 +246,8 @@ mod tests {
         for i in 0..n {
             crank = (crank + rpm * 6.0 / fs).rem_euclid(720.0);
             let t = i as f32 / fs;
-            let p = low_amp * (std::f32::consts::TAU * 120.0 * t).sin() + body_amp * (std::f32::consts::TAU * 500.0 * t).sin();
+            let p = low_amp * (std::f32::consts::TAU * 120.0 * t).sin()
+                + body_amp * (std::f32::consts::TAU * 500.0 * t).sin();
             let f = l.step(p, crank, rpm, 1.0);
             if i > n / 2 {
                 e_fill += (f as f64).powi(2);
@@ -226,7 +256,11 @@ mod tests {
             }
         }
         let m = (n - n / 2 - 1) as f64;
-        ((e_fill / m).sqrt() as f32, (e_in / m).sqrt() as f32, (e_all / m).sqrt() as f32)
+        (
+            (e_fill / m).sqrt() as f32,
+            (e_in / m).sqrt() as f32,
+            (e_all / m).sqrt() as f32,
+        )
     }
 
     #[test]
@@ -242,7 +276,10 @@ mod tests {
         let (fill, input, _) = run(4_000.0, 0.0, 1.0, 6.0);
         let ratio_db = 20.0 * (fill / input).log10();
         println!("fill {fill:.3}, input {input:.3}, ratio {ratio_db:.1} dB");
-        assert!((ratio_db + 9.0).abs() < 2.0, "the rumble sits at {ratio_db} dB of the body");
+        assert!(
+            (ratio_db + 9.0).abs() < 2.0,
+            "the rumble sits at {ratio_db} dB of the body"
+        );
     }
 
     #[test]

@@ -134,7 +134,8 @@ impl Ecu {
         self.accumulated_weighted_speed += angular_velocity * dt;
         self.accumulated_time_s += dt;
 
-        while self.accumulated_angle_deg >= self.segment_angle_deg && self.accumulated_time_s > 0.0 {
+        while self.accumulated_angle_deg >= self.segment_angle_deg && self.accumulated_time_s > 0.0
+        {
             if self.time_since_sampling_resumed_s >= ECU_MISFIRE_MONITOR_ARM_DELAY_S {
                 self.close_segment(self.accumulated_weighted_speed / self.accumulated_time_s);
             }
@@ -153,7 +154,8 @@ impl Ecu {
 
         if self.misfire_stored_fault
             && self.irregular_event_times_s.is_empty()
-            && self.elapsed_monitored_time_s - self.last_irregular_event_time_s > ECU_FAULT_CLEAR_CLEAN_RUN_S
+            && self.elapsed_monitored_time_s - self.last_irregular_event_time_s
+                > ECU_FAULT_CLEAR_CLEAN_RUN_S
         {
             self.misfire_stored_fault = false;
         }
@@ -162,11 +164,13 @@ impl Ecu {
     fn close_segment(&mut self, avg_speed: f64) {
         let mut irregular = false;
         if self.recent_healthy_speeds.len() >= ECU_BASELINE_MIN_SAMPLES {
-            let baseline = self.recent_healthy_speeds.iter().sum::<f64>() / self.recent_healthy_speeds.len() as f64;
+            let baseline = self.recent_healthy_speeds.iter().sum::<f64>()
+                / self.recent_healthy_speeds.len() as f64;
             let drop = (baseline - avg_speed) / baseline;
             if drop > ECU_MISFIRE_SPEED_DROP_THRESHOLD {
                 irregular = true;
-                self.irregular_event_times_s.push_back(self.elapsed_monitored_time_s);
+                self.irregular_event_times_s
+                    .push_back(self.elapsed_monitored_time_s);
                 self.last_irregular_event_time_s = self.elapsed_monitored_time_s;
                 if self.irregular_event_times_s.len() >= ECU_MISFIRE_STORE_COUNT {
                     self.misfire_stored_fault = true;
@@ -196,7 +200,14 @@ impl Ecu {
     }
 
     /// O2 circuit/activity and fuel trim monitors. Called once per engine update (spark only).
-    pub fn update_sensors(&mut self, dt: f64, closed_loop: bool, o2_connected: bool, o2_reported_afr: f64, fuel_trim_afr: f64) {
+    pub fn update_sensors(
+        &mut self,
+        dt: f64,
+        closed_loop: bool,
+        o2_connected: bool,
+        o2_reported_afr: f64,
+        fuel_trim_afr: f64,
+    ) {
         self.elapsed_sensor_time_s += dt;
 
         if !o2_connected {
@@ -242,7 +253,9 @@ impl Ecu {
             self.o2_inactive_accumulated_s = 0.0;
         }
 
-        if closed_loop && fuel_trim_afr.abs() >= ECU_FUEL_TRIM_FAULT_FRACTION * FUEL_TRIM_MAX_ABS_AFR {
+        if closed_loop
+            && fuel_trim_afr.abs() >= ECU_FUEL_TRIM_FAULT_FRACTION * FUEL_TRIM_MAX_ABS_AFR
+        {
             self.fuel_trim_pegged_duration_s += dt;
             if self.fuel_trim_pegged_duration_s >= ECU_FUEL_TRIM_FAULT_CONFIRM_S {
                 self.fuel_trim_fault = true;
@@ -252,19 +265,32 @@ impl Ecu {
             self.fuel_trim_pegged_duration_s = 0.0;
         }
 
-        if self.o2_fault && self.elapsed_sensor_time_s - self.last_o2_fault_event_time_s > ECU_FAULT_CLEAR_CLEAN_RUN_S {
+        if self.o2_fault
+            && self.elapsed_sensor_time_s - self.last_o2_fault_event_time_s
+                > ECU_FAULT_CLEAR_CLEAN_RUN_S
+        {
             self.o2_fault = false;
         }
         if self.fuel_trim_fault
-            && self.elapsed_sensor_time_s - self.last_fuel_trim_fault_event_time_s > ECU_FAULT_CLEAR_CLEAN_RUN_S
+            && self.elapsed_sensor_time_s - self.last_fuel_trim_fault_event_time_s
+                > ECU_FAULT_CLEAR_CLEAN_RUN_S
         {
             self.fuel_trim_fault = false;
         }
     }
 
     /// Runs/advances the EVAP leak-check test; returns what the ECU wants the valves to do.
-    pub fn update_evap_monitor(&mut self, dt: f64, ready: bool, tank_pressure_pa: f64, normal_purge: f64) -> EvapMonitorCommand {
-        let pass = EvapMonitorCommand { vent_closed_commanded: false, purge_commanded_fraction: normal_purge };
+    pub fn update_evap_monitor(
+        &mut self,
+        dt: f64,
+        ready: bool,
+        tank_pressure_pa: f64,
+        normal_purge: f64,
+    ) -> EvapMonitorCommand {
+        let pass = EvapMonitorCommand {
+            vent_closed_commanded: false,
+            purge_commanded_fraction: normal_purge,
+        };
 
         match self.evap_phase {
             EvapPhase::Cooldown => {
@@ -304,13 +330,19 @@ impl Ecu {
                 self.evap_phase = EvapPhase::Hold;
                 self.evap_phase_elapsed_s = 0.0;
                 self.evap_hold_start_pressure_pa = tank_pressure_pa;
-                return EvapMonitorCommand { vent_closed_commanded: true, purge_commanded_fraction: 0.0 };
+                return EvapMonitorCommand {
+                    vent_closed_commanded: true,
+                    purge_commanded_fraction: 0.0,
+                };
             }
             if self.evap_phase_elapsed_s >= ECU_EVAP_TEST_DRAW_DOWN_MAX_S {
                 self.conclude_evap_test(EvapMonitorStatus::LargeLeak);
                 return pass;
             }
-            return EvapMonitorCommand { vent_closed_commanded: true, purge_commanded_fraction: 1.0 };
+            return EvapMonitorCommand {
+                vent_closed_commanded: true,
+                purge_commanded_fraction: 1.0,
+            };
         }
 
         // hold
@@ -325,14 +357,20 @@ impl Ecu {
             }
             return pass;
         }
-        EvapMonitorCommand { vent_closed_commanded: true, purge_commanded_fraction: 0.0 }
+        EvapMonitorCommand {
+            vent_closed_commanded: true,
+            purge_commanded_fraction: 0.0,
+        }
     }
 
     fn conclude_evap_test(&mut self, result: EvapMonitorStatus) {
         self.evap_last_result = result;
         self.evap_phase = EvapPhase::Cooldown;
         self.evap_cooldown_remaining_s = ECU_EVAP_MONITOR_RETEST_COOLDOWN_S;
-        self.evap_fault = matches!(result, EvapMonitorStatus::SmallLeak | EvapMonitorStatus::LargeLeak);
+        self.evap_fault = matches!(
+            result,
+            EvapMonitorStatus::SmallLeak | EvapMonitorStatus::LargeLeak
+        );
     }
 
     pub fn evap_monitor_status(&self) -> EvapMonitorStatus {
@@ -359,11 +397,18 @@ impl Ecu {
 
     /// Which monitors currently hold a fault: (misfire, o2, fuel trim, evap).
     pub fn fault_flags(&self) -> (bool, bool, bool, bool) {
-        (self.misfire_stored_fault, self.o2_fault, self.fuel_trim_fault, self.evap_fault)
+        (
+            self.misfire_stored_fault,
+            self.o2_fault,
+            self.fuel_trim_fault,
+            self.evap_fault,
+        )
     }
 
     pub fn cel_state(&self) -> CelState {
-        if self.elapsed_monitored_time_s - self.last_severe_event_time_s < ECU_MISFIRE_ACTIVE_FLASH_WINDOW_S {
+        if self.elapsed_monitored_time_s - self.last_severe_event_time_s
+            < ECU_MISFIRE_ACTIVE_FLASH_WINDOW_S
+        {
             return CelState::Flashing;
         }
         if self.misfire_stored_fault || self.o2_fault || self.fuel_trim_fault || self.evap_fault {

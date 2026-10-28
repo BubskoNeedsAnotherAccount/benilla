@@ -46,7 +46,9 @@ pub fn fft(re: &mut [f64], im: &mut [f64]) {
 /// Welch-averaged power spectrum (Hann window, 50 % overlap): `nfft/2 + 1` bins, power per bin.
 pub fn spectrum(x: &[f32], nfft: usize) -> Vec<f64> {
     assert!(nfft.is_power_of_two());
-    let win: Vec<f64> = (0..nfft).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / nfft as f64).cos()).collect();
+    let win: Vec<f64> = (0..nfft)
+        .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / nfft as f64).cos())
+        .collect();
     let wsum: f64 = win.iter().map(|w| w * w).sum();
     let mut acc = vec![0.0f64; nfft / 2 + 1];
     let mut count = 0.0;
@@ -70,7 +72,13 @@ pub fn spectrum(x: &[f32], nfft: usize) -> Vec<f64> {
 
 /// Spectral peaks above `min_db_over_median` of the median level, between `f_lo` and `f_hi`,
 /// refined by parabolic interpolation. Returns `(frequency, power)` strongest first.
-pub fn peaks(psd: &[f64], fs: f64, f_lo: f64, f_hi: f64, min_db_over_median: f64) -> Vec<(f64, f64)> {
+pub fn peaks(
+    psd: &[f64],
+    fs: f64,
+    f_lo: f64,
+    f_hi: f64,
+    min_db_over_median: f64,
+) -> Vec<(f64, f64)> {
     let nfft = (psd.len() - 1) * 2;
     let df = fs / nfft as f64;
     let lo = ((f_lo / df).ceil() as usize).max(2);
@@ -85,9 +93,17 @@ pub fn peaks(psd: &[f64], fs: f64, f_lo: f64, f_hi: f64, min_db_over_median: f64
     let mut out = Vec::new();
     for k in lo..hi {
         if psd[k] > psd[k - 1] && psd[k] >= psd[k + 1] && psd[k] > thresh {
-            let (a, b, c) = (psd[k - 1].max(1e-30).ln(), psd[k].max(1e-30).ln(), psd[k + 1].max(1e-30).ln());
+            let (a, b, c) = (
+                psd[k - 1].max(1e-30).ln(),
+                psd[k].max(1e-30).ln(),
+                psd[k + 1].max(1e-30).ln(),
+            );
             let denom = a - 2.0 * b + c;
-            let off = if denom.abs() > 1e-12 { 0.5 * (a - c) / denom } else { 0.0 };
+            let off = if denom.abs() > 1e-12 {
+                0.5 * (a - c) / denom
+            } else {
+                0.0
+            };
             out.push(((k as f64 + off.clamp(-0.5, 0.5)) * df, psd[k]));
         }
     }
@@ -128,7 +144,10 @@ pub fn rms(x: &[f32]) -> f32 {
 /// A-weighting gain (linear power) at `f` Hz (IEC 61672).
 pub fn a_weight_power(f: f64) -> f64 {
     let f2 = f * f;
-    let ra = 12194.0f64.powi(2) * f2 * f2 / ((f2 + 20.6f64.powi(2)) * ((f2 + 107.7f64.powi(2)) * (f2 + 737.9f64.powi(2))).sqrt() * (f2 + 12194.0f64.powi(2)));
+    let ra = 12194.0f64.powi(2) * f2 * f2
+        / ((f2 + 20.6f64.powi(2))
+            * ((f2 + 107.7f64.powi(2)) * (f2 + 737.9f64.powi(2))).sqrt()
+            * (f2 + 12194.0f64.powi(2)));
     let a_db = 20.0 * ra.log10() + 2.0;
     10f64.powf(a_db / 10.0)
 }
@@ -139,7 +158,10 @@ pub fn a_weighted_spl(x: &[f32], fs: f64) -> f64 {
     let nfft = (psd.len() - 1) * 2;
     let df = fs / nfft as f64;
     // one-sided Welch power per bin: the mean square is 2 * sum / nfft
-    let ms: f64 = 2.0 / nfft as f64 * (1..psd.len()).map(|k| psd[k] * a_weight_power(k as f64 * df)).sum::<f64>();
+    let ms: f64 = 2.0 / nfft as f64
+        * (1..psd.len())
+            .map(|k| psd[k] * a_weight_power(k as f64 * df))
+            .sum::<f64>();
     10.0 * (ms.max(1e-30) / (20e-6f64).powi(2)).log10()
 }
 
@@ -220,7 +242,11 @@ pub fn read_wav(path: &str) -> Result<(Vec<f32>, u32), String> {
                 let s = &f[..bytes];
                 let v = match (fmt, bits) {
                     (1, 16) => i16::from_le_bytes([s[0], s[1]]) as f32 / 32768.0,
-                    (1, 24) => (((s[2] as i32) << 24 | (s[1] as i32) << 16 | (s[0] as i32) << 8) >> 8) as f32 / 8_388_608.0,
+                    (1, 24) => {
+                        (((s[2] as i32) << 24 | (s[1] as i32) << 16 | (s[0] as i32) << 8) >> 8)
+                            as f32
+                            / 8_388_608.0
+                    }
                     (3, 32) => f32::from_le_bytes([s[0], s[1], s[2], s[3]]),
                     _ => return Err(format!("unsupported WAV format {fmt}/{bits}")),
                 };
@@ -238,7 +264,11 @@ fn crc32(data: &[u8]) -> u32 {
     for (i, t) in table.iter_mut().enumerate() {
         let mut c = i as u32;
         for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
         }
         *t = c;
     }
@@ -309,7 +339,13 @@ fn colormap(v: f32) -> [u8; 3] {
 }
 
 /// Spectrogram to a PNG: time on x, frequency (0..`fmax`, linear) on y, `range_db` of dynamic range.
-pub fn spectrogram_png(path: &str, x: &[f32], fs: f32, fmax: f32, range_db: f32) -> std::io::Result<()> {
+pub fn spectrogram_png(
+    path: &str,
+    x: &[f32],
+    fs: f32,
+    fmax: f32,
+    range_db: f32,
+) -> std::io::Result<()> {
     let nfft = 2048usize;
     let hop = 512usize;
     let bins = ((fmax / fs * nfft as f32) as usize).min(nfft / 2).max(8);
@@ -317,14 +353,18 @@ pub fn spectrogram_png(path: &str, x: &[f32], fs: f32, fmax: f32, range_db: f32)
     if frames == 0 {
         return Ok(());
     }
-    let win: Vec<f64> = (0..nfft).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / nfft as f64).cos()).collect();
+    let win: Vec<f64> = (0..nfft)
+        .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / nfft as f64).cos())
+        .collect();
     let mut cols: Vec<Vec<f32>> = Vec::with_capacity(frames);
     let mut peak = 1e-12f32;
     for f in 0..frames {
         let mut re: Vec<f64> = (0..nfft).map(|i| x[f * hop + i] as f64 * win[i]).collect();
         let mut im = vec![0.0f64; nfft];
         fft(&mut re, &mut im);
-        let col: Vec<f32> = (0..bins).map(|k| ((re[k] * re[k] + im[k] * im[k]) as f32).max(1e-20)).collect();
+        let col: Vec<f32> = (0..bins)
+            .map(|k| ((re[k] * re[k] + im[k] * im[k]) as f32).max(1e-20))
+            .collect();
         peak = peak.max(col.iter().cloned().fold(0.0, f32::max));
         cols.push(col);
     }
@@ -368,7 +408,9 @@ mod tests {
     #[test]
     fn fft_finds_a_tone_and_peaks_interpolate() {
         let fs = 44_100.0f32;
-        let x: Vec<f32> = (0..16384).map(|i| (std::f32::consts::TAU * 1234.5 * i as f32 / fs).sin()).collect();
+        let x: Vec<f32> = (0..16384)
+            .map(|i| (std::f32::consts::TAU * 1234.5 * i as f32 / fs).sin())
+            .collect();
         let psd = spectrum(&x, 4096);
         let f = strongest_peak(&psd, fs as f64, 100.0, 5000.0).unwrap();
         assert!((f - 1234.5).abs() < 1.5, "{f}");
@@ -383,7 +425,9 @@ mod tests {
         assert!((db(50.0) + 30.2).abs() < 0.5, "{}", db(50.0));
         assert!((db(4000.0) - 1.0).abs() < 0.3);
         // a 1 kHz tone of 1 Pa rms reads 94 dB(A)
-        let x: Vec<f32> = (0..65536).map(|i| (std::f32::consts::TAU * 1000.0 * i as f32 / 44100.0).sin() * 2f32.sqrt()).collect();
+        let x: Vec<f32> = (0..65536)
+            .map(|i| (std::f32::consts::TAU * 1000.0 * i as f32 / 44100.0).sin() * 2f32.sqrt())
+            .collect();
         let l = a_weighted_spl(&x, 44100.0);
         assert!((l - 94.0).abs() < 0.8, "{l}");
     }
@@ -399,7 +443,14 @@ mod tests {
         assert_eq!(y.len(), x.len());
         assert!((y[777] - x[777]).abs() < 1e-3);
         let png = dir.join("engine_core_test.png");
-        spectrogram_png(png.to_str().unwrap(), &vec![0.1; 30000], 44_100.0, 4000.0, 60.0).unwrap();
+        spectrogram_png(
+            png.to_str().unwrap(),
+            &vec![0.1; 30000],
+            44_100.0,
+            4000.0,
+            60.0,
+        )
+        .unwrap();
         assert!(std::fs::metadata(&png).unwrap().len() > 100);
     }
 }

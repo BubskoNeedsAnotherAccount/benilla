@@ -64,6 +64,11 @@ impl Default for LamboConfig {
 
 /// Loads `assets/lambo_v10.json` or defaults to 6.2L V8 sport configuration.
 pub fn load_lambo_config() -> LamboConfig {
+    // A browser has no disk to look on: the shipped profile is compiled in.
+    #[cfg(target_arch = "wasm32")]
+    if let Ok(cfg) = serde_json::from_str(include_str!("../assets/lambo_v10.json")) {
+        return cfg;
+    }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let candidates = [
         manifest.join("assets").join("lambo_v10.json"),
@@ -74,7 +79,10 @@ pub fn load_lambo_config() -> LamboConfig {
     for path in &candidates {
         if let Ok(content) = std::fs::read_to_string(path) {
             if let Ok(cfg) = serde_json::from_str::<LamboConfig>(&content) {
-                eprintln!("benilla-lambo audio: loaded engine-core config from {:?}", path);
+                eprintln!(
+                    "benilla-lambo audio: loaded engine-core config from {:?}",
+                    path
+                );
                 return cfg;
             }
         }
@@ -114,7 +122,8 @@ pub struct EngineSoundHandle {
 
 impl EngineSoundHandle {
     pub fn set_rpm(&self, rpm: f32) {
-        self.rpm.store((rpm.max(100.0).round()) as u32, Ordering::Relaxed);
+        self.rpm
+            .store((rpm.max(100.0).round()) as u32, Ordering::Relaxed);
     }
 
     pub fn set_throttle(&self, throttle: f32) {
@@ -132,7 +141,8 @@ impl EngineSoundHandle {
     }
 
     pub fn set_drivetrain(&self, speed: f32, gear: usize, is_shifting: bool) {
-        self.speed.store((speed.max(0.0) * 100.0).round() as u32, Ordering::Relaxed);
+        self.speed
+            .store((speed.max(0.0) * 100.0).round() as u32, Ordering::Relaxed);
         self.gear.store(gear.clamp(1, 7) as u32, Ordering::Relaxed);
         if is_shifting {
             self.shift_pop.store(true, Ordering::Relaxed);

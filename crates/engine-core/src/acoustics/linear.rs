@@ -33,38 +33,59 @@ impl C {
     }
     pub fn recip(self) -> C {
         let d = self.re * self.re + self.im * self.im;
-        C { re: self.re / d, im: -self.im / d }
+        C {
+            re: self.re / d,
+            im: -self.im / d,
+        }
     }
     pub fn cos(self) -> C {
-        C { re: self.re.cos() * self.im.cosh(), im: -self.re.sin() * self.im.sinh() }
+        C {
+            re: self.re.cos() * self.im.cosh(),
+            im: -self.re.sin() * self.im.sinh(),
+        }
     }
     pub fn sin(self) -> C {
-        C { re: self.re.sin() * self.im.cosh(), im: self.re.cos() * self.im.sinh() }
+        C {
+            re: self.re.sin() * self.im.cosh(),
+            im: self.re.cos() * self.im.sinh(),
+        }
     }
 }
 
 impl std::ops::Add for C {
     type Output = C;
     fn add(self, o: C) -> C {
-        C { re: self.re + o.re, im: self.im + o.im }
+        C {
+            re: self.re + o.re,
+            im: self.im + o.im,
+        }
     }
 }
 impl std::ops::Sub for C {
     type Output = C;
     fn sub(self, o: C) -> C {
-        C { re: self.re - o.re, im: self.im - o.im }
+        C {
+            re: self.re - o.re,
+            im: self.im - o.im,
+        }
     }
 }
 impl std::ops::Mul for C {
     type Output = C;
     fn mul(self, o: C) -> C {
-        C { re: self.re * o.re - self.im * o.im, im: self.re * o.im + self.im * o.re }
+        C {
+            re: self.re * o.re - self.im * o.im,
+            im: self.re * o.im + self.im * o.re,
+        }
     }
 }
 impl std::ops::Mul<f64> for C {
     type Output = C;
     fn mul(self, o: f64) -> C {
-        C { re: self.re * o, im: self.im * o }
+        C {
+            re: self.re * o,
+            im: self.im * o,
+        }
     }
 }
 impl std::ops::Div for C {
@@ -76,7 +97,10 @@ impl std::ops::Div for C {
 impl std::ops::Neg for C {
     type Output = C;
     fn neg(self) -> C {
-        C { re: -self.re, im: -self.im }
+        C {
+            re: -self.re,
+            im: -self.im,
+        }
     }
 }
 impl std::ops::AddAssign for C {
@@ -89,7 +113,9 @@ impl std::ops::AddAssign for C {
 pub fn solve(mut a: Vec<Vec<C>>, mut b: Vec<C>) -> Vec<C> {
     let n = b.len();
     for col in 0..n {
-        let piv = (col..n).max_by(|&i, &j| a[i][col].abs().partial_cmp(&a[j][col].abs()).unwrap()).unwrap();
+        let piv = (col..n)
+            .max_by(|&i, &j| a[i][col].abs().partial_cmp(&a[j][col].abs()).unwrap())
+            .unwrap();
         a.swap(col, piv);
         b.swap(col, piv);
         let d = a[col][col].recip();
@@ -131,7 +157,13 @@ pub struct Linear<'a> {
 
 impl<'a> Linear<'a> {
     pub fn new(net: &'a Network, chambers: &'a [Reservoir], res_base: usize) -> Self {
-        Linear { net, chambers, res_base, temperature: None, alpha: 0.02 }
+        Linear {
+            net,
+            chambers,
+            res_base,
+            temperature: None,
+            alpha: 0.02,
+        }
     }
 
     fn gas(&self) -> Gas {
@@ -172,7 +204,10 @@ impl<'a> Linear<'a> {
         let c = gas.sound_speed(t as f32) as f64;
         let a = sl.area as f64;
         let z_neck = C::new(sl.r as f64 / a, w * rho * sl.l_eff as f64 / a);
-        let v = self.chambers.get(sl.res - self.res_base).map_or(1e-3, |r| r.volume as f64);
+        let v = self
+            .chambers
+            .get(sl.res - self.res_base)
+            .map_or(1e-3, |r| r.volume as f64);
         let z_ch = C::new(0.0, -rho * c * c / (w * v));
         (z_neck + z_ch).recip()
     }
@@ -252,7 +287,10 @@ impl<'a> Linear<'a> {
             }
             if let Terminal::Open(oe) = &node.terminal {
                 let y = match oe.mode {
-                    super::node::OpenMode::Anechoic => C::new(oe.area as f64 / (self.net.env.rho_amb as f64 * self.net.env.c_amb as f64), 0.0),
+                    super::node::OpenMode::Anechoic => C::new(
+                        oe.area as f64 / (self.net.env.rho_amb as f64 * self.net.env.c_amb as f64),
+                        0.0,
+                    ),
                     _ => self.mouth_admittance(oe.area as f64, oe.delta as f64, w),
                 };
                 a[ni][ni] += y;
@@ -278,16 +316,28 @@ impl<'a> Linear<'a> {
             .iter()
             .map(|&f| {
                 let w = std::f64::consts::TAU * f;
-                let q = self.mouth_flows(source_node, f).into_iter().fold(C::ZERO, |a, b| a + b);
+                let q = self
+                    .mouth_flows(source_node, f)
+                    .into_iter()
+                    .fold(C::ZERO, |a, b| a + b);
                 1.4 * rho / (4.0 * std::f64::consts::PI * r) * w * q.abs()
             })
             .collect()
     }
 
     /// Frequencies of the response peaks between `f_lo` and `f_hi`, strongest first.
-    pub fn resonances(&self, source_node: usize, f_lo: f64, f_hi: f64, count: usize) -> Vec<(f64, f64)> {
+    pub fn resonances(
+        &self,
+        source_node: usize,
+        f_lo: f64,
+        f_hi: f64,
+        count: usize,
+    ) -> Vec<(f64, f64)> {
         let df = 0.5;
-        let freqs: Vec<f64> = (0..).map(|i| f_lo + i as f64 * df).take_while(|&f| f <= f_hi).collect();
+        let freqs: Vec<f64> = (0..)
+            .map(|i| f_lo + i as f64 * df)
+            .take_while(|&f| f <= f_hi)
+            .collect();
         let resp = self.radiated_response(source_node, 1.0, &freqs);
         let mut pk: Vec<(f64, f64)> = (1..freqs.len() - 1)
             .filter(|&i| resp[i] > resp[i - 1] && resp[i] >= resp[i + 1])
@@ -310,14 +360,22 @@ mod tests {
         let d = net.add_duct(&DuctSpec::pipe("p", len, dia, wall, 0.02), 101_325.0, 293.0);
         net.add_node(Node::closed("closed", PipeLeg::new(d, End::Left)));
         let a = net.grid.end_area(d, End::Right);
-        net.add_node(Node::open("mouth", PipeLeg::new(d, End::Right), OpenEnd::radiating(a)));
+        net.add_node(Node::open(
+            "mouth",
+            PipeLeg::new(d, End::Right),
+            OpenEnd::radiating(a),
+        ));
         net
     }
 
     #[test]
     fn transfer_matrix_finds_the_quarter_wave_resonances_of_a_pipe() {
         let net = pipe_net(1.2, 0.05);
-        let lin = Linear { temperature: Some(293.0), alpha: 0.002, ..Linear::new(&net, &[], 0) };
+        let lin = Linear {
+            temperature: Some(293.0),
+            alpha: 0.002,
+            ..Linear::new(&net, &[], 0)
+        };
         let pk = lin.resonances(0, 30.0, 700.0, 8);
         let c = Gas::AIR.sound_speed(293.0) as f64;
         let leff = 1.2 + 0.6133 * 0.025;
@@ -328,7 +386,10 @@ mod tests {
                 found += 1;
             }
         }
-        println!("peaks {:?}", pk.iter().map(|p| p.0.round()).collect::<Vec<_>>());
+        println!(
+            "peaks {:?}",
+            pk.iter().map(|p| p.0.round()).collect::<Vec<_>>()
+        );
         assert_eq!(found, 4, "peaks {:?}", pk);
     }
 }

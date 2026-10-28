@@ -93,7 +93,9 @@ pub struct TransmissionConfig {
 }
 
 fn gears(spec: &[(&'static str, f64)]) -> Vec<GearDefinition> {
-    spec.iter().map(|&(label, ratio)| GearDefinition { label, ratio }).collect()
+    spec.iter()
+        .map(|&(label, ratio)| GearDefinition { label, ratio })
+        .collect()
 }
 
 pub fn transmissions() -> Vec<TransmissionConfig> {
@@ -102,21 +104,46 @@ pub fn transmissions() -> Vec<TransmissionConfig> {
             id: "5speed",
             display_name: "5-Speed Manual",
             final_drive_ratio: 3.73,
-            gears: gears(&[("R", -3.66), ("N", 0.0), ("1", 3.82), ("2", 2.26), ("3", 1.48), ("4", 1.0), ("5", 0.79)]),
+            gears: gears(&[
+                ("R", -3.66),
+                ("N", 0.0),
+                ("1", 3.82),
+                ("2", 2.26),
+                ("3", 1.48),
+                ("4", 1.0),
+                ("5", 0.79),
+            ]),
         },
         TransmissionConfig {
             id: "6speed",
             display_name: "6-Speed Manual",
             final_drive_ratio: 3.42,
-            gears: gears(&[("R", -3.58), ("N", 0.0), ("1", 3.36), ("2", 2.07), ("3", 1.36), ("4", 1.0), ("5", 0.85), ("6", 0.68)]),
+            gears: gears(&[
+                ("R", -3.58),
+                ("N", 0.0),
+                ("1", 3.36),
+                ("2", 2.07),
+                ("3", 1.36),
+                ("4", 1.0),
+                ("5", 0.85),
+                ("6", 0.68),
+            ]),
         },
         TransmissionConfig {
             id: "8speed",
             display_name: "8-Speed Auto",
             final_drive_ratio: 3.16,
             gears: gears(&[
-                ("R", -3.05), ("N", 0.0), ("1", 4.71), ("2", 3.14), ("3", 2.11), ("4", 1.67),
-                ("5", 1.29), ("6", 1.0), ("7", 0.84), ("8", 0.67),
+                ("R", -3.05),
+                ("N", 0.0),
+                ("1", 4.71),
+                ("2", 3.14),
+                ("3", 2.11),
+                ("4", 1.67),
+                ("5", 1.29),
+                ("6", 1.0),
+                ("7", 0.84),
+                ("8", 0.67),
             ]),
         },
         TransmissionConfig {
@@ -124,8 +151,18 @@ pub fn transmissions() -> Vec<TransmissionConfig> {
             display_name: "10-Speed Auto",
             final_drive_ratio: 2.87,
             gears: gears(&[
-                ("R", -4.71), ("N", 0.0), ("1", 4.7), ("2", 2.99), ("3", 2.15), ("4", 1.76),
-                ("5", 1.52), ("6", 1.27), ("7", 1.0), ("8", 0.85), ("9", 0.69), ("10", 0.64),
+                ("R", -4.71),
+                ("N", 0.0),
+                ("1", 4.7),
+                ("2", 2.99),
+                ("3", 2.15),
+                ("4", 1.76),
+                ("5", 1.52),
+                ("6", 1.27),
+                ("7", 1.0),
+                ("8", 0.85),
+                ("9", 0.69),
+                ("10", 0.64),
             ]),
         },
     ]
@@ -140,9 +177,21 @@ pub struct BrakeConfig {
 
 pub fn brakes() -> Vec<BrakeConfig> {
     vec![
-        BrakeConfig { id: "standard", display_name: "Standard", max_force_n: 13_000.0 },
-        BrakeConfig { id: "sport", display_name: "Sport", max_force_n: 16_000.0 },
-        BrakeConfig { id: "track", display_name: "Track", max_force_n: 20_000.0 },
+        BrakeConfig {
+            id: "standard",
+            display_name: "Standard",
+            max_force_n: 13_000.0,
+        },
+        BrakeConfig {
+            id: "sport",
+            display_name: "Sport",
+            max_force_n: 16_000.0,
+        },
+        BrakeConfig {
+            id: "track",
+            display_name: "Track",
+            max_force_n: 20_000.0,
+        },
     ]
 }
 
@@ -161,15 +210,67 @@ pub struct FuelConfig {
 pub fn fuels() -> Vec<FuelConfig> {
     use crate::constants::{DIESEL_IDLE_AFR, DIESEL_MIN_AFR};
     use IgnitionType::{Compression, Spark};
-    let f = |id, display_name, ignition_type, density_kg_per_l, lower_heating_value, stoichiometric_afr, wot_afr, knock_resistance| {
-        FuelConfig { id, display_name, ignition_type, density_kg_per_l, lower_heating_value, stoichiometric_afr, wot_afr, knock_resistance }
+    let f = |id,
+             display_name,
+             ignition_type,
+             density_kg_per_l,
+             lower_heating_value,
+             stoichiometric_afr,
+             wot_afr,
+             knock_resistance| {
+        FuelConfig {
+            id,
+            display_name,
+            ignition_type,
+            density_kg_per_l,
+            lower_heating_value,
+            stoichiometric_afr,
+            wot_afr,
+            knock_resistance,
+        }
     };
     vec![
-        f("regular87", "Regular 87", Spark, 0.745, 44_000_000.0, 14.7, 12.8, 1.0),
-        f("premium93", "Premium 93", Spark, 0.743, 44_000_000.0, 14.7, 12.8, 1.18),
+        f(
+            "regular87",
+            "Regular 87",
+            Spark,
+            0.745,
+            44_000_000.0,
+            14.7,
+            12.8,
+            1.0,
+        ),
+        f(
+            "premium93",
+            "Premium 93",
+            Spark,
+            0.743,
+            44_000_000.0,
+            14.7,
+            12.8,
+            1.18,
+        ),
         f("e85", "E85", Spark, 0.781, 29_200_000.0, 9.8, 9.2, 1.45),
-        f("race100", "Race 100", Spark, 0.752, 43_500_000.0, 14.6, 12.6, 1.65),
-        f("diesel", "Diesel", Compression, 0.832, 42_800_000.0, DIESEL_IDLE_AFR, DIESEL_MIN_AFR, 1.0),
+        f(
+            "race100",
+            "Race 100",
+            Spark,
+            0.752,
+            43_500_000.0,
+            14.6,
+            12.6,
+            1.65,
+        ),
+        f(
+            "diesel",
+            "Diesel",
+            Compression,
+            0.832,
+            42_800_000.0,
+            DIESEL_IDLE_AFR,
+            DIESEL_MIN_AFR,
+            1.0,
+        ),
     ]
 }
 

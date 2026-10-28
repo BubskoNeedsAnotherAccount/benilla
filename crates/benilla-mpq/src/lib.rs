@@ -55,9 +55,43 @@ struct BlockEntry {
     flags: u32,
 }
 
+/// An open handle on an archive's bytes: `Read + Seek`, one per read so reads need no lock.
+pub trait Handle: Read + Seek + Send {}
+impl<T: Read + Seek + Send> Handle for T {}
+
+/// Where an archive's bytes come from: a file on disk ([`Archive::open`]), or any other store of
+/// them ([`Archive::from_source`]), such as a file the browser handed over.
+pub trait Source: Send + Sync {
+    /// A new handle positioned at the start.
+    fn open(&self) -> io::Result<Box<dyn Handle>>;
+    /// The archive's size in bytes.
+    fn len(&self) -> io::Result<u64>;
+    /// Whether the archive has no bytes.
+    fn is_empty(&self) -> io::Result<bool> {
+        Ok(self.len()? == 0)
+    }
+}
+
+/// A file on disk.
+struct PathSource(PathBuf);
+
+impl Source for PathSource {
+    fn open(&self) -> io::Result<Box<dyn Handle>> {
+        Ok(Box::new(File::open(&self.0)?))
+    }
+
+    fn len(&self) -> io::Result<u64> {
+        Ok(std::fs::metadata(&self.0)?.len())
+    }
+}
+
 /// An archive's index, parsed once and immutable, shared behind an `Arc`.
 struct Index {
     path: PathBuf,
+    /// Where the archive's bytes come from: each read opens its own handle on it.
+    source: Arc<dyn Source>,
+    /// The archive's size, read once at open.
+    file_len: u64,
     /// Byte offset of the MPQ header in the file: 0 in 1.12 data, but found, not assumed.
     archive_offset: u64,
     /// The uncompressed sector size, `512 << block_size`.
@@ -125,10 +159,18 @@ impl Archive {
     /// Open an archive: find the header, then read and decrypt the hash and block tables.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
-        let file_len = file.metadata()?.len();
+        Self::from_source(path.clone(), Arc::new(PathSource(path)))
+    }
 
-        let archive_offset = find_header(&mut file, file_len)?;
+    /// Open an archive over any [`Source`] of its bytes. `name` is only what [`Archive::path`]
+    /// reports: a browser build mounts archives from picked files, which have no path.
+    pub fn from_source(name: impl Into<PathBuf>, source: Arc<dyn Source>) -> Result<Self> {
+        let path = name.into();
+        let mut file = source.open()?;
+        let file_len = source.len()?;
+        let file: &mut dyn Handle = &mut *file;
+
+        let archive_offset = find_header(file, file_len)?;
 
         // The 32-byte V1 header: later versions only extend it, and every 1.12 table offset fits
         // a `u32`, so the V2 hi-block table is never needed.
@@ -152,13 +194,13 @@ impl Archive {
         let block_table_size = hdr.u32_at(28).ok_or(Error::NotMpq)? as usize;
 
         let hash_table = read_hash_table(
-            &mut file,
+            file,
             archive_offset + hash_table_pos,
             hash_table_size,
             file_len,
         )?;
         let block_table = read_block_table(
-            &mut file,
+            file,
             archive_offset + block_table_pos,
             block_table_size,
             file_len,
@@ -167,6 +209,8 @@ impl Archive {
         Ok(Archive {
             index: Arc::new(Index {
                 path,
+                source,
+                file_len,
                 archive_offset,
                 sector_size,
                 hash_table,
@@ -225,14 +269,13 @@ impl Archive {
             return Err(Error::Unsupported(format!("single-unit file {name}")));
         }
 
-        let file = File::open(&idx.path)?;
+        let file = idx.source.open()?;
         let file_pos = idx.archive_offset + block.file_pos as u64;
         let file_size = block.file_size as usize;
         let compressed = block.flags & (FLAG_COMPRESS | FLAG_IMPLODE) != 0;
         let implode_only = block.flags & FLAG_IMPLODE != 0 && block.flags & FLAG_COMPRESS == 0;
 
-        let file_len = file.metadata()?.len();
-        let avail = avail_from(file_len, file_pos);
+        let avail = avail_from(idx.file_len, file_pos);
 
         let mut open = ArchiveFile {
             file,
@@ -288,7 +331,7 @@ impl Archive {
 /// A file opened in an archive ([`Archive::open_file`]): `Read + Seek` over its uncompressed
 /// bytes, holding the one decompressed sector under the read position.
 pub struct ArchiveFile {
-    file: File,
+    file: Box<dyn Handle>,
     name: String,
     /// The file's first byte in the archive file.
     base: u64,
@@ -476,7 +519,7 @@ impl Index {
 
 /// The `MPQ\x1A` header's offset: the first 512-aligned match, or where a `MPQ\x1B` user-data
 /// header points.
-fn find_header(file: &mut File, file_len: u64) -> Result<u64> {
+fn find_header(file: &mut dyn Handle, file_len: u64) -> Result<u64> {
     let mut off = 0u64;
     while off + 4 <= file_len {
         file.seek(SeekFrom::Start(off))?;
@@ -501,7 +544,7 @@ fn find_header(file: &mut File, file_len: u64) -> Result<u64> {
 }
 
 fn read_hash_table(
-    file: &mut File,
+    file: &mut dyn Handle,
     pos: u64,
     count: usize,
     file_len: u64,
@@ -533,7 +576,7 @@ fn read_hash_table(
 }
 
 fn read_block_table(
-    file: &mut File,
+    file: &mut dyn Handle,
     pos: u64,
     count: usize,
     file_len: u64,
