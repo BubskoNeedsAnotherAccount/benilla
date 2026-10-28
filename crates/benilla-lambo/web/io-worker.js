@@ -20,22 +20,8 @@ onmessage = (e) => {
   serve();
 };
 
-// TEMPORARY: read counters, logged every 5 s to this worker's console.
-const stat = { reads: 0, cold: 0, ms: 0, worst: 0, bytes: 0, at: performance.now() };
-
 async function readInto(idx, at, len) {
-  const t0 = performance.now();
-  const done = files[idx].blob ? readBlob(idx, at, len) : await readRange(idx, at, len);
-  const dt = performance.now() - t0;
-  stat.reads++;
-  stat.ms += dt;
-  stat.bytes += done;
-  stat.worst = Math.max(stat.worst, dt);
-  if (t0 - stat.at > 5000) {
-    console.log(`io: ${stat.reads} reads, ${stat.cold} cold chunks, ${stat.ms.toFixed(0)} ms serving, worst ${stat.worst.toFixed(0)} ms, ${(stat.bytes / 1048576).toFixed(1)} MiB`);
-    Object.assign(stat, { reads: 0, cold: 0, ms: 0, worst: 0, bytes: 0, at: t0 });
-  }
-  return done;
+  return files[idx].blob ? readBlob(idx, at, len) : readRange(idx, at, len);
 }
 
 // A picked file: from the cache if every chunk the read touches is there, else one exact
@@ -64,7 +50,6 @@ function readBlob(idx, at, len) {
       done += piece.length;
     }
   } else {
-    stat.cold++;
     const buf = reader.readAsArrayBuffer(blob.slice(at, end));
     data.set(new Uint8Array(buf));
     done = buf.byteLength;
@@ -81,7 +66,6 @@ async function readRange(idx, at, len) {
   while (done < len) {
     const pos = at + done;
     const n = Math.floor(pos / CHUNK);
-    if (!cache.has(`${idx}#${n}`)) stat.cold++;
     const c = await chunk(idx, n);
     const o = pos - n * CHUNK;
     if (o >= c.length) break;
