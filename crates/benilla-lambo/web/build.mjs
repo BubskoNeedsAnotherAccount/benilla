@@ -32,11 +32,13 @@ const wasm = join(repo, "target/wasm32-unknown-unknown", mode === "dev" ? "debug
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 // The name section is half the release wasm (137 to 71 MiB), and only a debugger reads it.
-const strip = mode === "dev" ? [] : ["--remove-name-section", "--remove-producers-section"];
+// `--names` keeps it, so a DevTools performance recording shows function names.
+const names = process.argv.includes("--names");
+const strip = mode === "dev" || names ? [] : ["--remove-name-section", "--remove-producers-section"];
 run("wasm-bindgen", ["--target", "web", "--no-typescript", ...strip, "--out-dir", dist, "--out-name", "benilla-lambo", wasm]);
 
 const bg = join(dist, "benilla-lambo_bg.wasm");
-if (mode !== "dev" && spawnSync("wasm-opt", ["--version"], { shell: true }).status === 0) {
+if (mode !== "dev" && !names && spawnSync("wasm-opt", ["--version"], { shell: true }).status === 0) {
   run("wasm-opt", ["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-simd", "-o", bg, bg]);
 }
 

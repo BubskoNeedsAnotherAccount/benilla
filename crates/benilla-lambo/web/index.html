@@ -60,6 +60,7 @@
 
     <ul id="found"></ul>
     <div id="status" role="status"></div>
+    <label class="fine"><input id="sound" type="checkbox"> Engine sound (costs frame rate: the synth shares the game's thread)</label><br>
     <button id="start" hidden>Start driving</button>
 
     <div class="keys">
@@ -95,6 +96,21 @@ if (!crossOriginIsolated) {
   }
 }
 if (!navigator.gpu) status("This browser has no WebGPU, which the renderer needs.", true);
+
+// Sound is opt-in: the browser runs the audio mixer, and with it the engine synth (a pipe-flow
+// solver, a third of a core natively), on the main thread, where it takes most of a frame. Off keeps
+// the audio context suspended. The box sets `soundOn` before the game starts.
+let soundOn = new URLSearchParams(location.search).has("sound");
+$("sound").checked = soundOn;
+$("sound").onchange = () => { soundOn = $("sound").checked; };
+{
+  const resume = AudioContext.prototype.resume;
+  const suspend = AudioContext.prototype.suspend;
+  AudioContext.prototype.resume = function () { return soundOn ? resume.call(this) : Promise.resolve(); };
+  window.AudioContext = class extends AudioContext {
+    constructor(...a) { super(...a); if (!soundOn) suspend.call(this); }
+  };
+}
 
 // `?trace` logs why WebGPU rejects a shader, which the browser otherwise reports as "invalid".
 if (new URLSearchParams(location.search).has("trace")) {
