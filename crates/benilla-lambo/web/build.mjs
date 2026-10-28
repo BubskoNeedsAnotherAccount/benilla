@@ -36,7 +36,7 @@ const strip = mode === "dev" ? [] : ["--remove-name-section", "--remove-producer
 run("wasm-bindgen", ["--target", "web", "--no-typescript", ...strip, "--out-dir", dist, "--out-name", "benilla-lambo", wasm]);
 
 const bg = join(dist, "benilla-lambo_bg.wasm");
-if (mode !== "dev" && !names && spawnSync("wasm-opt", ["--version"], { shell: true }).status === 0) {
+if (mode !== "dev" && spawnSync("wasm-opt", ["--version"], { shell: true }).status === 0) {
   run("wasm-opt", ["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-simd", "-o", bg, bg]);
 }
 
@@ -45,7 +45,7 @@ run("cargo", ["build", "-p", "benilla-lambo-synth", "--target", "wasm32-unknown-
 const synthWasm = join(repo, "target/wasm32-unknown-unknown", mode === "dev" ? "debug" : mode, "benilla_lambo_synth.wasm");
 run("wasm-bindgen", ["--target", "web", "--no-typescript", ...strip, "--out-dir", join(dist, "synth"), "--out-name", "benilla_lambo_synth", synthWasm]);
 const synthBg = join(dist, "synth/benilla_lambo_synth_bg.wasm");
-if (mode !== "dev" && !names && spawnSync("wasm-opt", ["--version"], { shell: true }).status === 0) {
+if (mode !== "dev" && spawnSync("wasm-opt", ["--version"], { shell: true }).status === 0) {
   run("wasm-opt", ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "-o", synthBg, synthBg]);
 }
 

@@ -29,15 +29,46 @@ function readInto(file, at, len) {
     data.set(new Uint8Array(buf));
     return buf.byteLength;
   }
-  // A development server's file, by HTTP range (`serve.mjs --data`).
+  // A development server's file (`serve.mjs --data`), through the chunk cache.
+  let done = 0;
+  while (done < len) {
+    const pos = at + done;
+    const n = Math.floor(pos / CHUNK);
+    const c = chunk(file, n);
+    const o = pos - n * CHUNK;
+    if (o >= c.length) break;
+    const take = Math.min(len - done, c.length - o);
+    data.set(c.subarray(o, o + take), done);
+    done += take;
+    if (c.length < CHUNK) break;
+  }
+  return done;
+}
+
+// The engine's reads are small and many; a request each is slow, and slower still with the
+// DevTools Network panel recording. Fetch aligned 1 MiB chunks by HTTP range and keep the recent.
+const CHUNK = 1 << 20;
+const KEEP = 64;
+const cache = new Map();
+
+function chunk(file, n) {
+  const key = `${file.url}#${n}`;
+  const hit = cache.get(key);
+  if (hit) {
+    cache.delete(key);
+    cache.set(key, hit);
+    return hit;
+  }
   const xhr = new XMLHttpRequest();
   xhr.open("GET", file.url, false);
-  xhr.setRequestHeader("Range", `bytes=${at}-${at + len - 1}`);
+  xhr.setRequestHeader("Range", `bytes=${n * CHUNK}-${(n + 1) * CHUNK - 1}`);
   xhr.responseType = "arraybuffer";
   xhr.send();
-  if (xhr.status !== 206) return xhr.status === 416 ? 0 : -1;
-  data.set(new Uint8Array(xhr.response));
-  return xhr.response.byteLength;
+  if (xhr.status !== 206 && xhr.status !== 416) throw new Error(`range read failed: ${xhr.status}`);
+  const bytes = xhr.status === 206 ? new Uint8Array(xhr.response) : new Uint8Array(0);
+  cache.set(key, bytes);
+  if (cache.size > KEEP) cache.delete(cache.keys().next().value);
+  return bytes;
 }
 
 function serve() {
