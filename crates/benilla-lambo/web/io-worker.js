@@ -20,11 +20,68 @@ onmessage = (e) => {
   serve();
 };
 
+// TEMPORARY: read counters, logged every 5 s to this worker's console.
+const stat = { reads: 0, cold: 0, ms: 0, worst: 0, bytes: 0, at: performance.now() };
+
 async function readInto(idx, at, len) {
+  const t0 = performance.now();
+  const done = files[idx].blob ? readBlob(idx, at, len) : await readRange(idx, at, len);
+  const dt = performance.now() - t0;
+  stat.reads++;
+  stat.ms += dt;
+  stat.bytes += done;
+  stat.worst = Math.max(stat.worst, dt);
+  if (t0 - stat.at > 5000) {
+    console.log(`io: ${stat.reads} reads, ${stat.cold} cold chunks, ${stat.ms.toFixed(0)} ms serving, worst ${stat.worst.toFixed(0)} ms, ${(stat.bytes / 1048576).toFixed(1)} MiB`);
+    Object.assign(stat, { reads: 0, cold: 0, ms: 0, worst: 0, bytes: 0, at: t0 });
+  }
+  return done;
+}
+
+// A picked file: from the cache if every chunk the read touches is there, else one exact
+// synchronous read, the cheapest a miss can be. Only a read that continues the previous one on
+// this file starts reading ahead, so scattered reads do not pull chunks nobody uses.
+const reader = new FileReaderSync();
+const sequel = [];
+
+function readBlob(idx, at, len) {
+  const blob = files[idx].blob;
+  const end = Math.min(at + len, blob.size);
+  if (at >= end) return 0;
+  const first = Math.floor(at / CHUNK);
+  const last = Math.floor((end - 1) / CHUNK);
+  let warm = true;
+  for (let n = first; warm && n <= last; n++) warm = cache.has(`${idx}#${n}`);
+  let done = 0;
+  if (warm) {
+    for (let n = first; n <= last; n++) {
+      const c = cache.get(`${idx}#${n}`);
+      cache.delete(`${idx}#${n}`);
+      cache.set(`${idx}#${n}`, c);
+      const o = Math.max(at, n * CHUNK) - n * CHUNK;
+      const piece = c.subarray(o, Math.min(end - n * CHUNK, c.length));
+      data.set(piece, done);
+      done += piece.length;
+    }
+  } else {
+    stat.cold++;
+    const buf = reader.readAsArrayBuffer(blob.slice(at, end));
+    data.set(new Uint8Array(buf));
+    done = buf.byteLength;
+  }
+  if (at === sequel[idx]) for (let n = last + 1; n <= last + AHEAD; n++) chunk(idx, n).catch(() => {});
+  sequel[idx] = end;
+  return done;
+}
+
+// A development server's file (`serve.mjs --data`): an HTTP range per chunk, from the cache when
+// there, reading ahead.
+async function readRange(idx, at, len) {
   let done = 0;
   while (done < len) {
     const pos = at + done;
     const n = Math.floor(pos / CHUNK);
+    if (!cache.has(`${idx}#${n}`)) stat.cold++;
     const c = await chunk(idx, n);
     const o = pos - n * CHUNK;
     if (o >= c.length) break;
@@ -33,16 +90,11 @@ async function readInto(idx, at, len) {
     done += take;
     if (c.length < CHUNK) break;
   }
-  // Reads run forward through an archive more often than not: fetch the next chunks now, while
-  // the engine works on this one.
   const last = Math.floor((at + Math.max(len, 1) - 1) / CHUNK);
   for (let n = last + 1; n <= last + AHEAD; n++) chunk(idx, n).catch(() => {});
   return done;
 }
 
-// The engine's reads are small and many, and each blocks the game until answered. Read aligned
-// 1 MiB chunks, keep the recent, and read ahead. A picked file is a Blob read off disk; a
-// development server's file (`serve.mjs --data`) is an HTTP range.
 const CHUNK = 1 << 20;
 const KEEP = 128;
 const AHEAD = 3;
