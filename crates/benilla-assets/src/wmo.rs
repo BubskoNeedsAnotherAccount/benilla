@@ -368,6 +368,7 @@ impl AssetLoader for WmoModelLoader {
         crate::frame_budget::turn().await;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
+        crate::frame_budget::turn().await;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
         let root = parse_wmo_root(&bytes).map_err(to_io)?;
 
@@ -423,6 +424,7 @@ impl AssetLoader for WmoModelLoader {
             let Ok(gbytes) = ctx.read_asset_bytes(group_url).await else {
                 continue; // a missing or unreadable group is skipped
             };
+            crate::frame_budget::turn().await;
             if let (Some(h), Some(nav)) =
                 (wmo_group_header(&gbytes), group_nav.get_mut(gi as usize))
             {
