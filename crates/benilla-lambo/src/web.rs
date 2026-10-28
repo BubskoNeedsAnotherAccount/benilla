@@ -194,3 +194,67 @@ pub fn mount_picked_files() {
         .collect();
     benilla_formats::virtual_data::mount(archives);
 }
+
+/// Whether this is a worker, not the page. A threaded build runs `main` in every instance of the
+/// module, and only the page's is the game.
+pub fn on_worker() -> bool {
+    #[wasm_bindgen(inline_js = "export function on_worker() { return typeof document === 'undefined'; }")]
+    extern "C" {
+        fn on_worker() -> bool;
+    }
+    on_worker()
+}
+
+/// Start the thread pool, if this build has threads and the page allows them (`web/build.mjs`).
+pub fn start_threads() {
+    #[cfg(target_feature = "atomics")]
+    pool::start();
+}
+
+/// The jobs [`benilla_assets::offload`] hands off, run by workers sharing this module's memory.
+#[cfg(target_feature = "atomics")]
+mod pool {
+    use std::collections::VecDeque;
+    use std::sync::{Condvar, Mutex};
+
+    use benilla_assets::offload::{set_runner, Job};
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        /// Start the page's workers on this module and memory (`web/thread-bridge.js`); how many.
+        #[wasm_bindgen(js_namespace = ["globalThis", "__benillaThreads"], js_name = spawn)]
+        fn spawn(module: JsValue, memory: JsValue) -> u32;
+    }
+
+    static QUEUE: Mutex<VecDeque<Job>> = Mutex::new(VecDeque::new());
+    static READY: Condvar = Condvar::new();
+
+    fn submit(job: Job) {
+        QUEUE.lock().unwrap_or_else(|p| p.into_inner()).push_back(job);
+        READY.notify_one();
+    }
+
+    pub fn start() {
+        if spawn(wasm_bindgen::module(), wasm_bindgen::memory()) > 0 {
+            set_runner(submit);
+        }
+    }
+
+    /// A worker's whole life: take a job, run it, wait for the next.
+    #[wasm_bindgen]
+    pub fn thread_entry() {
+        loop {
+            let job = {
+                let mut queue = QUEUE.lock().unwrap_or_else(|p| p.into_inner());
+                loop {
+                    if let Some(job) = queue.pop_front() {
+                        break job;
+                    }
+                    queue = READY.wait(queue).unwrap_or_else(|p| p.into_inner());
+                }
+            };
+            job();
+        }
+    }
+}

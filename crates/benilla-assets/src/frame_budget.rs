@@ -51,6 +51,10 @@ mod gate {
         }
     }
 
+    pub fn park(waker: &Waker) {
+        GATE.lock().unwrap_or_else(|p| p.into_inner()).parked.push(waker.clone());
+    }
+
     pub fn new_frame() {
         let parked = {
             let mut gate = GATE.lock().unwrap_or_else(|p| p.into_inner());
@@ -67,6 +71,12 @@ mod gate {
 pub async fn turn() {
     #[cfg(target_arch = "wasm32")]
     gate::Turn.await;
+}
+
+/// Wake `waker` at the next frame, for a task that must look again then.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn park(waker: &std::task::Waker) {
+    gate::park(waker);
 }
 
 /// Open the next frame's budget and wake the tasks that waited. Runs once per frame.

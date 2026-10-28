@@ -26,8 +26,27 @@ function run(cmd, args, opts = {}) {
 
 // No `dev` feature: it points the install resolver at the source tree, which a browser lacks.
 const profileArgs = mode === "dev" ? [] : ["--profile", mode];
-run("cargo", ["build", "-p", "benilla-lambo", "--target", "wasm32-unknown-unknown", "--no-default-features", ...profileArgs]);
-const wasm = join(repo, "target/wasm32-unknown-unknown", mode === "dev" ? "debug" : mode, "benilla-lambo.wasm");
+
+// Threads need atomics in every crate, hence a nightly toolchain that rebuilds `std` (`-Zbuild-std`)
+// into a target directory of its own. Shared memory needs a declared maximum: 4 GiB, the most a
+// wasm32 memory holds. Without a nightly, or with `--no-threads`, the page runs on one thread and
+// the engine spreads its work across frames instead (`benilla-assets`, `offload`).
+const nightly = spawnSync("rustup", ["run", "nightly", "rustc", "--version"], { shell: true }).status === 0;
+const threads = nightly && !process.argv.includes("--no-threads");
+console.log(threads ? "threaded build (nightly)" : "single-thread build (no nightly toolchain, or --no-threads)");
+const flags = [
+  "-C target-feature=+atomics,+bulk-memory,+mutable-globals",
+  "-C link-arg=--max-memory=4294967296",
+].join(" ");
+const game = join(repo, threads ? "target/web-threads" : "target");
+if (threads) process.env.CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = flags;
+run("cargo", [
+  ...(threads ? ["+nightly"] : []),
+  "build", "-p", "benilla-lambo", "--target", "wasm32-unknown-unknown", "--no-default-features", ...profileArgs,
+  ...(threads ? ["-Zbuild-std=std,panic_abort", "--target-dir", game] : []),
+]);
+delete process.env.CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS;
+const wasm = join(game, "wasm32-unknown-unknown", mode === "dev" ? "debug" : mode, "benilla-lambo.wasm");
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
@@ -37,7 +56,7 @@ run("wasm-bindgen", ["--target", "web", "--no-typescript", ...strip, "--out-dir"
 
 const bg = join(dist, "benilla-lambo_bg.wasm");
 if (mode !== "dev" && spawnSync("wasm-opt", ["--version"], { shell: true }).status === 0) {
-  run("wasm-opt", ["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-simd", "-o", bg, bg]);
+  run("wasm-opt", ["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-simd", ...(threads ? ["--enable-threads", "--enable-mutable-globals"] : []), "-o", bg, bg]);
 }
 
 // The engine-sound worker's own wasm: the synth alone, a few hundred KiB.
@@ -49,7 +68,7 @@ if (mode !== "dev" && spawnSync("wasm-opt", ["--version"], { shell: true }).stat
   run("wasm-opt", ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "-o", synthBg, synthBg]);
 }
 
-for (const f of ["index.html", "io-bridge.js", "io-worker.js", "synth-bridge.js", "synth-worker.js", "coi-sw.js", "_headers"]) {
+for (const f of ["index.html", "io-bridge.js", "io-worker.js", "synth-bridge.js", "synth-worker.js", "thread-bridge.js", "thread-worker.js", "coi-sw.js", "_headers"]) {
   cpSync(join(here, f), join(dist, f));
 }
 const assets = join(repo, "crates/benilla-lambo/assets");

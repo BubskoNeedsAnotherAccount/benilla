@@ -335,11 +335,11 @@ pub(super) fn impassable_wall_data(
 }
 
 /// Builds a static trimesh [`Collider`] on the async compute pool, for [`finish_colliders`]. A
-/// browser runs the build on the main thread, so it waits its frame's turn first.
+/// browser runs the build on a pool thread where the page has one, else on the main thread after
+/// waiting its frame's turn ([`benilla_assets::offload`]).
 pub fn build_collider_task(verts: Vec<Vec3>, tris: Vec<[u32; 3]>) -> Task<Collider> {
     AsyncComputeTaskPool::get().spawn(async move {
-        benilla_assets::frame_budget::turn().await;
-        Collider::trimesh(verts, tris)
+        benilla_assets::offload::run(move || Collider::trimesh(verts, tris)).await
     })
 }
 

@@ -75,6 +75,7 @@
 <script type="module">
 import { installIo } from "./io-bridge.js";
 import { installSynth } from "./synth-bridge.js";
+import { installThreads } from "./thread-bridge.js";
 
 const $ = (id) => document.getElementById(id);
 const status = (text, err = false) => { $("status").textContent = text; $("status").className = err ? "err" : ""; };
@@ -261,6 +262,7 @@ async function start() {
     status("Opening your files…");
     await installIo(files, await fetchAssets());
     await installSynth(soundOn);
+    installThreads();
     status("Loading the engine…");
     const { default: init } = await import("./benilla-lambo.js");
     $("gate").hidden = true;

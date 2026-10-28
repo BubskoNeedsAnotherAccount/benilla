@@ -36,7 +36,13 @@ fn main() -> AppExit {
     }
     // The page has handed over the player's `Data` files before it starts the engine.
     #[cfg(target_arch = "wasm32")]
+    if web::on_worker() {
+        return AppExit::Success;
+    }
+    #[cfg(target_arch = "wasm32")]
     web::mount_picked_files();
+    #[cfg(target_arch = "wasm32")]
+    web::start_threads();
 
     let mut app = App::new();
     app.insert_resource(BuildId {
