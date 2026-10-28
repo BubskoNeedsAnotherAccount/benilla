@@ -417,6 +417,8 @@ impl AssetLoader for WmoModelLoader {
         let mut group_footprints: Vec<Option<FootprintTris>> =
             (0..root.group_count()).map(|_| None).collect();
         for gi in 0..root.group_count() {
+            // A city building has many groups, each a read, an inflate and a parse: one turn each.
+            crate::frame_budget::turn().await;
             let group_url = format!("mpq://{stem}_{gi:03}.wmo");
             let Ok(gbytes) = ctx.read_asset_bytes(group_url).await else {
                 continue; // a missing or unreadable group is skipped
