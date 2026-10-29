@@ -226,13 +226,44 @@ impl AssetLoader for M2ModelLoader {
         crate::frame_budget::turn().await;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        // The read and the parse are two turns.
-        crate::frame_budget::turn().await;
-        let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
 
         // Skins fill at the spawn site, so no skin directory or list is passed.
-        let subs = parse_m2_render_submeshes(&bytes, "", &[]).map_err(to_io)?;
-        let bounds = parse_m2_bounds(&bytes).ok();
+        // The decodes are the CPU half of the load: off the main thread where the page has a pool,
+        // else after this frame's turn ([`crate::offload`]).
+        let bytes = std::sync::Arc::new(bytes);
+        let job_bytes = bytes.clone();
+        let (
+            subs,
+            bounds,
+            collision,
+            light_defs,
+            skeleton_raw,
+            emitter_defs,
+            ribbon_defs,
+            attachment_defs,
+            marker_defs,
+            sequences,
+        ) = crate::offload::run(move || {
+            let bytes = &job_bytes[..];
+            (
+                parse_m2_render_submeshes(bytes, "", &[]).map_err(|e| format!("{e:#}")),
+                parse_m2_bounds(bytes).ok(),
+                // An empty hull is no hull: the model does not collide.
+                parse_m2_collision_hull(bytes)
+                    .ok()
+                    .filter(|c| !c.is_empty()),
+                // The spawn site keeps the casting point lights (`M2Light::casts`).
+                parse_m2_lights(bytes),
+                parse_m2_skeleton(bytes).unwrap_or_default(),
+                parse_m2_particle_emitters(bytes).unwrap_or_default(),
+                benilla_formats::parse_m2_ribbon_emitters(bytes).unwrap_or_default(),
+                parse_m2_attachments(bytes).unwrap_or_default(),
+                benilla_formats::parse_m2_event_markers(bytes).unwrap_or_default(),
+                parse_m2_animations(bytes),
+            )
+        })
+        .await;
+        let subs = subs.map_err(std::io::Error::other)?;
         // One owner bound for every effect: the reference draws them all after the batches.
         let owner_reach = benilla_formats::m2_owner_reach(&subs);
         // The water-plane sphere: the header box's midpoint and the header sphere's radius.
@@ -246,11 +277,6 @@ impl AssetLoader for M2ModelLoader {
                 b.sphere_radius,
             )
         });
-        // An empty hull is no hull: the model does not collide.
-        let collision = parse_m2_collision_hull(&bytes)
-            .ok()
-            .filter(|c| !c.is_empty());
-
         // The textures open as the model did (`0x71da64` pushes the model's own flag).
         let source = match ctx.path().source() {
             bevy::asset::io::AssetSourceId::Name(name) if &**name == crate::MPQ_LOOSE_SOURCE => {
@@ -311,13 +337,7 @@ impl AssetLoader for M2ModelLoader {
                 geometry: std::sync::Arc::new(sub),
             });
         }
-        // The spawn site keeps the casting point lights (`M2Light::casts`).
-        let light_defs = parse_m2_lights(&bytes);
-
-        let skeleton_raw = parse_m2_skeleton(&bytes).unwrap_or_default();
-
-        let mut emitters: Vec<ModelEmitter> = parse_m2_particle_emitters(&bytes)
-            .unwrap_or_default()
+        let mut emitters: Vec<ModelEmitter> = emitter_defs
             .into_iter()
             .map(|def| {
                 let texture = def.texture.as_deref().map(|t| {
@@ -360,8 +380,7 @@ impl AssetLoader for M2ModelLoader {
             })
             .collect();
 
-        let ribbons: Vec<ModelRibbon> = benilla_formats::parse_m2_ribbon_emitters(&bytes)
-            .unwrap_or_default()
+        let ribbons: Vec<ModelRibbon> = ribbon_defs
             .into_iter()
             .map(|def| {
                 let texture = def.texture.as_deref().map(|t| {
@@ -401,17 +420,10 @@ impl AssetLoader for M2ModelLoader {
         );
 
         // Attachments, markers and clip events all take the pivots the joints were built from.
-        let attachments = build_attachments(
-            &parse_m2_attachments(&bytes).unwrap_or_default(),
-            &skeleton_pivots(&skeleton_raw),
-        );
-        let markers = crate::model::build_markers(
-            &benilla_formats::parse_m2_event_markers(&bytes).unwrap_or_default(),
-            &skeleton_pivots(&skeleton_raw),
-        );
+        let attachments = build_attachments(&attachment_defs, &skeleton_pivots(&skeleton_raw));
+        let markers = crate::model::build_markers(&marker_defs, &skeleton_pivots(&skeleton_raw));
         let pivots = skeleton_pivots(&skeleton_raw);
 
-        let sequences = parse_m2_animations(&bytes);
         let first_seq_span = sequences.first().map(|a| a.duration).filter(|d| *d > 0.0);
         let sequence_infos: Vec<M2SequenceInfo> = sequences
             .iter()

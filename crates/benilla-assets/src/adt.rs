@@ -143,10 +143,12 @@ impl AssetLoader for AdtLoader {
         crate::frame_budget::turn().await;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        // The read and the mesh build are two turns.
-        crate::frame_budget::turn().await;
-        let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
-        let tile = adt_to_tile_mesh(&bytes).map_err(to_io)?;
+        // The mesh build is off the main thread where the page has a pool, else it waits its
+        // frame's turn ([`crate::offload`]).
+        let tile =
+            crate::offload::run(move || adt_to_tile_mesh(&bytes).map_err(|e| format!("{e:#}")))
+                .await
+                .map_err(std::io::Error::other)?;
 
         // Layer array: a solid-green fallback at index 0, then each unique layer texture, packed
         // once the whole tile is read.

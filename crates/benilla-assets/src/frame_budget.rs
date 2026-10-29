@@ -52,7 +52,10 @@ mod gate {
     }
 
     pub fn park(waker: &Waker) {
-        GATE.lock().unwrap_or_else(|p| p.into_inner()).parked.push(waker.clone());
+        GATE.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .parked
+            .push(waker.clone());
     }
 
     pub fn new_frame() {
