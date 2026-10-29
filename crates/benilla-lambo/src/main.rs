@@ -142,6 +142,7 @@ fn main() -> AppExit {
             car::animate_wheels,
             trial::update_trial_progress,
             trial::update_marker_positions,
+            trial::update_checkpoint_markers,
             trial::animate_markers,
         )
             .chain()

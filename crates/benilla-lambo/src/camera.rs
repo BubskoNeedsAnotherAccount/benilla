@@ -167,8 +167,14 @@ pub fn speedometer(
         }
 
         if let Some(trial) = m.current_trial() {
-            let finish_bevy = wow_to_bevy(trial.end);
-            let dist = Vec2::new(car.pos.x - finish_bevy.x, car.pos.z - finish_bevy.z).length();
+            let target_bevy = wow_to_bevy(m.target_gate().unwrap_or(trial.end));
+            let dist = Vec2::new(car.pos.x - target_bevy.x, car.pos.z - target_bevy.z).length();
+            let race = m.race_label();
+            let race = if race.is_empty() {
+                race
+            } else {
+                format!(" {race} |")
+            };
 
             match m.state {
                 crate::trial::TrialState::WaitingToStart => {
@@ -179,7 +185,7 @@ pub fn speedometer(
                 }
                 crate::trial::TrialState::Racing { elapsed } => {
                     window.title = format!(
-                        "benilla lambo — [{}] TIME: {elapsed:.2}s | Finish: {dist:.0}yd — {kmh:.0} km/h{nitro_str} — ESC menu, R restart",
+                        "benilla lambo — [{}]{race} TIME: {elapsed:.2}s | Next: {dist:.0}yd — {kmh:.0} km/h{nitro_str} — ESC menu, R restart",
                         trial.name
                     );
                 }

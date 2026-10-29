@@ -21,16 +21,118 @@ use crate::car::Car;
 
 use crate::car::{CROSSROADS_WOW, GOLDSHIRE_WOW, LAKESHIRE_WOW};
 
-/// A single time trial race course definition.
+/// Horizontal radius, in yards, of a checkpoint or finish gate unless a course says otherwise.
+pub const DEFAULT_GATE_RADIUS: f32 = 16.0;
+/// A gate is passed within this many yards above or below its coordinate.
+const GATE_HEIGHT: f32 = 45.0;
+
+fn default_gate_radius() -> f32 {
+    DEFAULT_GATE_RADIUS
+}
+
+fn one_lap() -> u32 {
+    1
+}
+
+/// A single course definition: a point-to-point time trial, or a race with checkpoints and laps.
+///
+/// In `time_trials.json` a course is an object:
+///
+/// ```json
+/// {
+///   "name": "Lakeshire Circuit",
+///   "map_id": 0,
+///   "start": [-9429.1, -2231.4, 68.65],
+///   "rotation": 270,
+///   "checkpoints": [[-9500, -2100, 65], {"x": -9600, "y": -2200, "z": 60}],
+///   "loop": true,
+///   "laps": 3,
+///   "checkpoint_radius": 20
+/// }
+/// ```
+///
+/// - `checkpoints` are passed in order, every lap. Omit them for a plain time trial.
+/// - `loop: true` (or leaving out `end`) makes a circuit: the start is also the finish line, and
+///   a lap ends when the car crosses it after the last checkpoint.
+/// - `laps` repeats a circuit; a point-to-point course always has one.
+/// - `checkpoint_radius` sizes every gate of the course (yards, default 16).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeTrial {
     pub name: String,
     pub map_id: u32,
     pub start: [f32; 3], // WoW coordinates: [x north, y west, z up]
-    pub end: [f32; 3],   // WoW coordinates: [x north, y west, z up]
-    /// Optional starting rotation in degrees (if None, faces directly towards finish).
+    /// The finish line; the start itself for a circuit.
+    pub end: [f32; 3], // WoW coordinates: [x north, y west, z up]
+    /// Optional starting rotation in degrees (if None, faces the first checkpoint, else the finish).
     #[serde(default)]
     pub rotation: Option<f32>,
+    /// Gates to pass, in order, before each finish crossing.
+    #[serde(default)]
+    pub checkpoints: Vec<[f32; 3]>,
+    #[serde(default = "one_lap")]
+    pub laps: u32,
+    /// The start is the finish line.
+    #[serde(default)]
+    pub circuit: bool,
+    #[serde(default = "default_gate_radius")]
+    pub checkpoint_radius: f32,
+}
+
+impl TimeTrial {
+    /// A point-to-point sprint with no checkpoints.
+    pub fn sprint(
+        name: &str,
+        map_id: u32,
+        start: [f32; 3],
+        end: [f32; 3],
+        rotation: Option<f32>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            map_id,
+            start,
+            end,
+            rotation,
+            checkpoints: Vec::new(),
+            laps: 1,
+            circuit: false,
+            checkpoint_radius: DEFAULT_GATE_RADIUS,
+        }
+    }
+
+    /// Laps to complete, at least one.
+    pub fn lap_count(&self) -> u32 {
+        self.laps.max(1)
+    }
+
+    /// Whether the course has checkpoints or more than one lap, so the HUD tracks laps.
+    pub fn is_race(&self) -> bool {
+        !self.checkpoints.is_empty() || self.lap_count() > 1
+    }
+
+    /// The first gate the car should drive at from the start.
+    fn first_target(&self) -> [f32; 3] {
+        self.checkpoints.first().copied().unwrap_or(self.end)
+    }
+}
+
+/// Where the car is on the course.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RaceProgress {
+    /// Checkpoints passed this lap.
+    pub next_checkpoint: usize,
+    /// Race clock when the current lap began.
+    pub lap_start: f32,
+    /// Finished laps, in order.
+    pub lap_times: Vec<f32>,
+    /// The car has left the finish gate this lap, so crossing it counts. A circuit starts inside it.
+    pub armed: bool,
+}
+
+/// Whether a car at `pos` is inside the gate at WoW coordinates `gate`.
+fn in_gate(pos: Vec3, gate: [f32; 3], radius: f32) -> bool {
+    let g = wow_to_bevy(gate);
+    Vec2::new(pos.x - g.x, pos.z - g.z).length() <= radius && (pos.y - g.y).abs() <= GATE_HEIGHT
 }
 
 /// Flexible JSON coordinate definition that accepts either `[x, y, z]` or `{"x": .., "y": .., "z": ..}`.
@@ -63,14 +165,24 @@ pub struct TimeTrialDef {
         alias = "start_position"
     )]
     pub start: CoordDef,
+    /// The finish line; a course without one is a circuit finishing at its start.
     #[serde(
+        default,
         alias = "end_coords",
         alias = "end_coord",
         alias = "end_pos",
         alias = "end_position",
         alias = "finish"
     )]
-    pub end: CoordDef,
+    pub end: Option<CoordDef>,
+    #[serde(default, alias = "gates", alias = "waypoints")]
+    pub checkpoints: Vec<CoordDef>,
+    #[serde(default, alias = "lap_count")]
+    pub laps: Option<u32>,
+    #[serde(default, rename = "loop", alias = "circuit")]
+    pub is_loop: bool,
+    #[serde(default, alias = "gate_radius", alias = "radius")]
+    pub checkpoint_radius: Option<f32>,
     /// Starting rotation / heading in degrees (finetunable in JSON).
     #[serde(
         default,
@@ -84,12 +196,34 @@ pub struct TimeTrialDef {
 
 impl From<TimeTrialDef> for TimeTrial {
     fn from(def: TimeTrialDef) -> Self {
+        let start = def.start.to_array();
+        let circuit = def.is_loop || def.end.is_none();
+        let end = if circuit {
+            start
+        } else {
+            def.end.map_or(start, |e| e.to_array())
+        };
+        let mut laps = def.laps.unwrap_or(1).max(1);
+        if laps > 1 && !circuit {
+            eprintln!(
+                "benilla-lambo: '{}' has laps but no loop; running a single lap",
+                def.name
+            );
+            laps = 1;
+        }
         Self {
             name: def.name,
             map_id: def.map_id,
-            start: def.start.to_array(),
-            end: def.end.to_array(),
+            start,
+            end,
             rotation: def.rotation,
+            checkpoints: def.checkpoints.iter().map(CoordDef::to_array).collect(),
+            laps,
+            circuit,
+            checkpoint_radius: def
+                .checkpoint_radius
+                .filter(|r| *r > 0.0)
+                .unwrap_or(DEFAULT_GATE_RADIUS),
         }
     }
 }
@@ -109,7 +243,9 @@ pub struct TimeTrialManager {
     pub trials: Vec<TimeTrial>,
     pub current_trial_idx: Option<usize>,
     pub state: TrialState,
+    pub progress: RaceProgress,
     pub best_times: HashMap<String, f32>,
+    pub best_laps: HashMap<String, f32>,
     pub menu_open: bool,
     pub selected_menu_idx: usize,
     pub free_drive_loc: usize, // 0 = Lakeshire, 1 = Crossroads, 2 = Goldshire
@@ -125,7 +261,9 @@ impl Default for TimeTrialManager {
             trials,
             current_trial_idx: None,
             state: TrialState::FreeDriving,
+            progress: RaceProgress::default(),
             best_times: HashMap::new(),
+            best_laps: HashMap::new(),
             menu_open: false,
             selected_menu_idx: 0,
             free_drive_loc,
@@ -139,6 +277,40 @@ impl TimeTrialManager {
     pub fn current_trial(&self) -> Option<&TimeTrial> {
         self.current_trial_idx.and_then(|idx| self.trials.get(idx))
     }
+
+    /// The gate the car is driving at now: the next checkpoint, else the finish.
+    pub fn target_gate(&self) -> Option<[f32; 3]> {
+        let trial = self.current_trial()?;
+        Some(
+            trial
+                .checkpoints
+                .get(self.progress.next_checkpoint)
+                .copied()
+                .unwrap_or(trial.end),
+        )
+    }
+
+    /// "Lap 2/3 · CP 1/4" for a race, empty for a plain time trial.
+    pub fn race_label(&self) -> String {
+        let Some(trial) = self.current_trial().filter(|t| t.is_race()) else {
+            return String::new();
+        };
+        let lap = (self.progress.lap_times.len() as u32 + 1).min(trial.lap_count());
+        let mut label = format!("Lap {lap}/{}", trial.lap_count());
+        if !trial.checkpoints.is_empty() {
+            label.push_str(&format!(
+                " · CP {}/{}",
+                self.progress.next_checkpoint,
+                trial.checkpoints.len()
+            ));
+        }
+        label
+    }
+}
+
+/// Formats seconds as `MM:SS.cc`.
+fn format_time(secs: f32) -> String {
+    format!("{:02}:{:05.2}", (secs / 60.0).floor() as u32, secs % 60.0)
 }
 
 /// Discovers and loads time trials from JSON files or environment variable.
@@ -193,34 +365,34 @@ pub fn load_time_trials() -> Vec<TimeTrial> {
 
     eprintln!("benilla-lambo: using default built-in time trials");
     vec![
-        TimeTrial {
-            name: "Crossroads to Ratchet Sprint".into(),
-            map_id: 1,
-            start: [-437.0, -2596.0, 96.0],
-            end: [-850.0, -3650.0, 30.0],
-            rotation: Some(115.0),
-        },
-        TimeTrial {
-            name: "Lakeshire to Sentinel Hill".into(),
-            map_id: 0,
-            start: [-9429.1, -2231.4, 68.65],
-            end: [-10628.89, 1036.68, 34.06],
-            rotation: Some(-90.0),
-        },
-        TimeTrial {
-            name: "Menethil Harbor to Thelsamar".into(),
-            map_id: 0,
-            start: [-3792.26, -783.29, 9.06],
-            end: [-5421.91, -2930.01, 347.25],
-            rotation: Some(90.0),
-        },
-        TimeTrial {
-            name: "Caverns of Time to The Great Lift".into(),
-            map_id: 1,
-            start: [-8180.0, -4460.0, 8.0],
-            end: [-4945.0, -1350.0, 85.0],
-            rotation: Some(45.0),
-        },
+        TimeTrial::sprint(
+            "Crossroads to Ratchet Sprint",
+            1,
+            [-437.0, -2596.0, 96.0],
+            [-850.0, -3650.0, 30.0],
+            Some(115.0),
+        ),
+        TimeTrial::sprint(
+            "Lakeshire to Sentinel Hill",
+            0,
+            [-9429.1, -2231.4, 68.65],
+            [-10628.89, 1036.68, 34.06],
+            Some(-90.0),
+        ),
+        TimeTrial::sprint(
+            "Menethil Harbor to Thelsamar",
+            0,
+            [-3792.26, -783.29, 9.06],
+            [-5421.91, -2930.01, 347.25],
+            Some(90.0),
+        ),
+        TimeTrial::sprint(
+            "Caverns of Time to The Great Lift",
+            1,
+            [-8180.0, -4460.0, 8.0],
+            [-4945.0, -1350.0, 85.0],
+            Some(45.0),
+        ),
     ]
 }
 
@@ -231,6 +403,20 @@ pub struct StartMarker;
 /// Component tagging the root entity for the Finish marker.
 #[derive(Component)]
 pub struct FinishMarker;
+
+/// Root entity of one checkpoint gate; only the next one is shown.
+#[derive(Component)]
+pub struct CheckpointMarker {
+    pub index: usize,
+}
+
+/// Shared look of the checkpoint gates.
+#[derive(Resource)]
+pub struct CheckpointAssets {
+    ring_mat: Handle<StandardMaterial>,
+    beam_mat: Handle<StandardMaterial>,
+    beam_mesh: Handle<Mesh>,
+}
 
 /// Component tagging rotating/animated visual parts on markers.
 #[derive(Component)]
@@ -246,6 +432,22 @@ pub fn setup_markers(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    commands.insert_resource(CheckpointAssets {
+        ring_mat: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.1, 0.8, 1.0, 0.7),
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        }),
+        beam_mat: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.1, 0.8, 1.0, 0.35),
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        }),
+        beam_mesh: meshes.add(Cylinder::new(2.5, 300.0)),
+    });
+
     // START MARKER: Bright green rings and floating crystal
     let start_ring_mesh = meshes.add(Cylinder::new(12.0, 0.4));
     let start_crystal_mesh = meshes.add(Cylinder::new(2.0, 4.0));
@@ -369,14 +571,77 @@ pub fn update_marker_positions(
         start_tf.translation = start_pos;
         finish_tf.translation = end_pos;
 
+        // A circuit's start and finish are one gate: show only the finish beacon.
         *start_vis = match manager.state {
-            TrialState::WaitingToStart | TrialState::Racing { .. } => Visibility::Visible,
+            TrialState::WaitingToStart | TrialState::Racing { .. } if !trial.circuit => {
+                Visibility::Visible
+            }
             _ => Visibility::Hidden,
         };
         *finish_vis = Visibility::Visible;
     } else {
         *start_vis = Visibility::Hidden;
         *finish_vis = Visibility::Hidden;
+    }
+}
+
+/// Rebuilds the checkpoint gates when the course changes, and shows only the next one.
+pub fn update_checkpoint_markers(
+    mut commands: Commands,
+    manager: Res<TimeTrialManager>,
+    assets: Option<Res<CheckpointAssets>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut markers: Query<(Entity, &CheckpointMarker, &mut Visibility)>,
+    mut built_for: Local<Option<usize>>,
+) {
+    let Some(assets) = assets else { return };
+    let course = manager.current_trial_idx;
+    if *built_for != course {
+        for (entity, _, _) in &markers {
+            commands.entity(entity).despawn();
+        }
+        *built_for = course;
+        if let Some(trial) = manager.current_trial() {
+            let ring = meshes.add(Cylinder::new(trial.checkpoint_radius, 0.5));
+            for (index, gate) in trial.checkpoints.iter().enumerate() {
+                commands
+                    .spawn((
+                        CheckpointMarker { index },
+                        Transform::from_translation(wow_to_bevy(*gate)),
+                        Visibility::Hidden,
+                    ))
+                    .with_children(|parent| {
+                        parent.spawn((
+                            Mesh3d(ring.clone()),
+                            MeshMaterial3d(assets.ring_mat.clone()),
+                            Transform::from_xyz(0.0, 0.25, 0.0),
+                        ));
+                        parent.spawn((
+                            Mesh3d(assets.beam_mesh.clone()),
+                            MeshMaterial3d(assets.beam_mat.clone()),
+                            Transform::from_xyz(0.0, 150.0, 0.0),
+                        ));
+                    });
+            }
+        }
+        // The new gates exist next frame; their visibility is set then.
+        return;
+    }
+
+    let live = matches!(
+        manager.state,
+        TrialState::WaitingToStart | TrialState::Racing { .. }
+    );
+    for (_, marker, mut vis) in &mut markers {
+        let show = live && marker.index == manager.progress.next_checkpoint;
+        let want = if show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
     }
 }
 
@@ -562,6 +827,7 @@ pub fn start_trial_by_index(
     };
     manager.current_trial_idx = Some(trial_idx);
     manager.state = TrialState::WaitingToStart;
+    manager.progress = RaceProgress::default();
 
     // Switch map if trial is on another continent
     if current_map.0 != trial.map_id {
@@ -575,7 +841,7 @@ pub fn start_trial_by_index(
     // Position car at start, facing towards finish or using the user's finetuned rotation
     let start_coords = [trial.start[0], trial.start[1], trial.start[2] + 40.0];
     let start_bevy = wow_to_bevy(start_coords);
-    let end_bevy = wow_to_bevy(trial.end);
+    let end_bevy = wow_to_bevy(trial.first_target());
     let fwd_vec = end_bevy - start_bevy;
     let initial_yaw = trial
         .rotation
@@ -622,18 +888,58 @@ pub fn update_trial_progress(
                 manager.state = TrialState::Racing { elapsed: 0.0 };
             }
         }
-        TrialState::Racing { ref mut elapsed } => {
-            *elapsed += dt;
-            let current_time = *elapsed;
+        TrialState::Racing { elapsed } => {
+            let current_time = elapsed + dt;
+            manager.state = TrialState::Racing {
+                elapsed: current_time,
+            };
+            let radius = trial.checkpoint_radius;
+            let mut progress = std::mem::take(&mut manager.progress);
 
-            // Check distance to finish line
-            let finish_bevy = wow_to_bevy(trial.end);
-            let horizontal_dist =
-                Vec2::new(car.pos.x - finish_bevy.x, car.pos.z - finish_bevy.z).length();
-            let vertical_dist = (car.pos.y - finish_bevy.y).abs();
+            // Checkpoints are taken in order; the finish only counts once they all are.
+            if let Some(gate) = trial.checkpoints.get(progress.next_checkpoint) {
+                if in_gate(car.pos, *gate, radius) {
+                    progress.next_checkpoint += 1;
+                }
+            }
 
-            // Finish gate radius is 16.0 yards horizontally, within 45 yards vertical
-            if horizontal_dist <= 16.0 && vertical_dist <= 45.0 {
+            // A circuit starts inside its finish gate, so the car must leave it once per lap.
+            let at_finish = in_gate(car.pos, trial.end, radius);
+            if !at_finish {
+                progress.armed = true;
+            }
+            let lap_done = at_finish
+                && progress.armed
+                && progress.next_checkpoint >= trial.checkpoints.len();
+
+            let mut race_over = false;
+            if lap_done {
+                let lap_time = current_time - progress.lap_start;
+                progress.lap_times.push(lap_time);
+                let best_lap = manager.best_laps.get(&trial.name).copied();
+                if best_lap.is_none_or(|b| lap_time < b) {
+                    manager.best_laps.insert(trial.name.clone(), lap_time);
+                }
+                if trial.is_race() {
+                    eprintln!(
+                        "benilla-lambo: '{}' lap {}/{} {:.2}s",
+                        trial.name,
+                        progress.lap_times.len(),
+                        trial.lap_count(),
+                        lap_time
+                    );
+                }
+                if progress.lap_times.len() as u32 >= trial.lap_count() {
+                    race_over = true;
+                } else {
+                    progress.next_checkpoint = 0;
+                    progress.lap_start = current_time;
+                    progress.armed = false;
+                }
+            }
+            manager.progress = progress;
+
+            if race_over {
                 let best = manager.best_times.get(&trial.name).copied();
                 let is_best = match best {
                     Some(b) => current_time < b,
@@ -754,10 +1060,14 @@ pub fn render_trial_ui(
 
     // 1. IN-GAME HUD (Top bar when racing, waiting, or finished)
     if let Some(trial) = manager.current_trial().cloned() {
-        let finish_bevy = wow_to_bevy(trial.end);
+        let target_bevy = wow_to_bevy(manager.target_gate().unwrap_or(trial.end));
+        let heading_to_checkpoint = manager.progress.next_checkpoint < trial.checkpoints.len();
         let car_pos = car_telemetry.map(|t| t.7).unwrap_or(Vec3::ZERO);
         let dist_to_finish =
-            Vec2::new(car_pos.x - finish_bevy.x, car_pos.z - finish_bevy.z).length();
+            Vec2::new(car_pos.x - target_bevy.x, car_pos.z - target_bevy.z).length();
+        let race_label = manager.race_label();
+        let lap_times = manager.progress.lap_times.clone();
+        let best_lap = manager.best_laps.get(&trial.name).copied();
 
         egui::Area::new(egui::Id::new("race_hud"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 16.0))
@@ -779,6 +1089,15 @@ pub fn render_trial_ui(
                             );
                             ui.add_space(4.0);
 
+                            if !race_label.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&race_label)
+                                        .color(egui::Color32::from_rgb(120, 220, 255))
+                                        .size(16.0)
+                                        .strong(),
+                                );
+                            }
+
                             match manager.state {
                                 TrialState::WaitingToStart => {
                                     ui.label(
@@ -799,24 +1118,41 @@ pub fn render_trial_ui(
                                     );
                                 }
                                 TrialState::Racing { elapsed } => {
-                                    let mins = (elapsed / 60.0).floor() as u32;
-                                    let secs = elapsed % 60.0;
-                                    let time_str = format!("{mins:02}:{secs:05.2}");
                                     ui.label(
-                                        egui::RichText::new(time_str)
+                                        egui::RichText::new(format_time(elapsed))
                                             .color(egui::Color32::from_rgb(255, 230, 80))
                                             .size(28.0)
                                             .monospace()
                                             .strong(),
                                     );
+                                    if !race_label.is_empty() {
+                                        let lap_now = elapsed - manager.progress.lap_start;
+                                        let mut line = format!("Lap {}", format_time(lap_now));
+                                        if let Some(last) = lap_times.last() {
+                                            line.push_str(&format!(
+                                                "  ·  Last {}",
+                                                format_time(*last)
+                                            ));
+                                        }
+                                        if let Some(best) = best_lap {
+                                            line.push_str(&format!(
+                                                "  ·  Best {}",
+                                                format_time(best)
+                                            ));
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(line)
+                                                .color(egui::Color32::LIGHT_GRAY)
+                                                .size(13.0)
+                                                .monospace(),
+                                        );
+                                    }
                                 }
                                 TrialState::Finished {
                                     final_time,
                                     is_best,
                                 } => {
-                                    let mins = (final_time / 60.0).floor() as u32;
-                                    let secs = final_time % 60.0;
-                                    let time_str = format!("{mins:02}:{secs:05.2}");
+                                    let time_str = format_time(final_time);
                                     let msg = if is_best {
                                         format!("FINISHED! {time_str} ★ NEW RECORD! ★")
                                     } else {
@@ -828,6 +1164,20 @@ pub fn render_trial_ui(
                                             .size(24.0)
                                             .strong(),
                                     );
+                                    if lap_times.len() > 1 {
+                                        for (i, lap) in lap_times.iter().enumerate() {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "Lap {}  {}",
+                                                    i + 1,
+                                                    format_time(*lap)
+                                                ))
+                                                .color(egui::Color32::LIGHT_GRAY)
+                                                .size(13.0)
+                                                .monospace(),
+                                            );
+                                        }
+                                    }
                                     ui.label(
                                         egui::RichText::new("Press 'R' to retry, or ESC for menu")
                                             .color(egui::Color32::LIGHT_GRAY)
@@ -841,8 +1191,14 @@ pub fn render_trial_ui(
                             let dist_km = dist_to_finish * 0.9144 / 1000.0;
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "Finish: {:.0} yd ({:.2} km)",
-                                    dist_to_finish, dist_km
+                                    "{}: {:.0} yd ({:.2} km)",
+                                    if heading_to_checkpoint {
+                                        "Checkpoint"
+                                    } else {
+                                        "Finish"
+                                    },
+                                    dist_to_finish,
+                                    dist_km
                                 ))
                                 .color(egui::Color32::from_rgb(200, 200, 200))
                                 .size(14.0),
@@ -1026,7 +1382,7 @@ pub fn render_trial_ui(
 
                     ui.add_space(10.0);
                     ui.label(
-                        egui::RichText::new("TIME TRIAL COURSES (NITRO DISABLED):")
+                        egui::RichText::new("TIME TRIALS & RACES (NITRO DISABLED):")
                             .color(egui::Color32::from_rgb(255, 140, 0))
                             .size(13.0)
                             .strong(),
@@ -1046,19 +1402,30 @@ pub fn render_trial_ui(
                         };
 
                         let best_str = if let Some(b) = manager.best_times.get(&trial.name) {
-                            let mins = (b / 60.0).floor() as u32;
-                            let secs = b % 60.0;
-                            format!(" ★ Best: {mins:02}:{secs:05.2}")
+                            format!(" ★ Best: {}", format_time(*b))
                         } else {
                             "".to_string()
                         };
 
+                        let race_str = if trial.is_race() {
+                            format!(
+                                " — {} lap{}, {} checkpoint{}",
+                                trial.lap_count(),
+                                if trial.lap_count() == 1 { "" } else { "s" },
+                                trial.checkpoints.len(),
+                                if trial.checkpoints.len() == 1 { "" } else { "s" },
+                            )
+                        } else {
+                            String::new()
+                        };
+
                         let label_text = format!(
-                            "{} [{}] {} ({}){}",
+                            "{} [{}] {} ({}){}{}",
                             if is_sel { "▶ " } else { "   " },
                             option_idx + 1,
                             trial.name,
                             map_name,
+                            race_str,
                             if is_active { " (Active)" } else { "" }
                         );
 
@@ -1454,16 +1821,79 @@ mod tests {
             serde_json::from_str(json_str).expect("parse time_trials.json");
         assert!(!defs.is_empty());
         let trials: Vec<TimeTrial> = defs.into_iter().map(Into::into).collect();
-        assert_eq!(trials.len(), 4);
         assert_eq!(trials[0].name, "Crossroads to Ratchet Sprint");
         assert_eq!(trials[0].map_id, 1);
         assert_eq!(trials[0].start, [-437.0, -2596.0, 96.0]);
-        assert_eq!(trials[0].end, [-850.0, -3650.0, 30.0]);
-        assert_eq!(trials[0].rotation, Some(115.0));
+        assert_eq!(trials[0].end, [-1000.33, -3822.91, 5.71]);
+        assert_eq!(trials[0].rotation, Some(253.0));
+        // Plain trials stay plain.
+        assert!(trials.iter().all(|t| !t.circuit && t.lap_count() == 1));
+    }
 
-        assert_eq!(trials[1].name, "Sentinel Hill's Road");
-        assert_eq!(trials[1].map_id, 0);
-        assert_eq!(trials[1].rotation, Some(327.0));
+    fn parse(json: &str) -> TimeTrial {
+        let defs: Vec<TimeTrialDef> = serde_json::from_str(json).unwrap();
+        defs.into_iter().next().unwrap().into()
+    }
+
+    #[test]
+    fn test_parse_circuit_race() {
+        let race = parse(
+            r#"[{
+                "name": "Loop", "map": 0,
+                "start": [0.0, 0.0, 0.0],
+                "checkpoints": [[100.0, 0.0, 0.0], {"x": 100.0, "y": 100.0, "z": 0.0}],
+                "loop": true, "laps": 3, "gate_radius": 25.0
+            }]"#,
+        );
+        assert!(race.circuit);
+        assert_eq!(race.end, race.start);
+        assert_eq!(race.lap_count(), 3);
+        assert_eq!(race.checkpoints.len(), 2);
+        assert_eq!(race.checkpoints[1], [100.0, 100.0, 0.0]);
+        assert_eq!(race.checkpoint_radius, 25.0);
+        assert!(race.is_race());
+    }
+
+    #[test]
+    fn test_parse_point_to_point_race_and_lap_rules() {
+        // Checkpoints with an explicit finish: one lap, however many are asked for.
+        let race = parse(
+            r#"[{"name": "A", "map_id": 1, "start": [0,0,0], "end": [9,9,9],
+                 "checkpoints": [[5,5,5]], "laps": 4}]"#,
+        );
+        assert!(!race.circuit);
+        assert_eq!(race.end, [9.0, 9.0, 9.0]);
+        assert_eq!(race.lap_count(), 1);
+        assert_eq!(race.checkpoint_radius, DEFAULT_GATE_RADIUS);
+        // Leaving out `end` makes a circuit even without `loop`.
+        assert!(parse(r#"[{"name": "B", "map_id": 0, "start": [0,0,0], "laps": 2}]"#).circuit);
+    }
+
+    #[test]
+    fn test_gate_needs_height_and_radius() {
+        let gate = [0.0, 0.0, 0.0];
+        let at = wow_to_bevy(gate);
+        assert!(in_gate(at, gate, 16.0));
+        assert!(in_gate(at + Vec3::new(15.0, 40.0, 0.0), gate, 16.0));
+        assert!(!in_gate(at + Vec3::new(17.0, 0.0, 0.0), gate, 16.0));
+        assert!(!in_gate(at + Vec3::new(0.0, 50.0, 0.0), gate, 16.0));
+    }
+
+    #[test]
+    fn test_race_label() {
+        let mut m = TimeTrialManager {
+            trials: vec![parse(
+                r#"[{"name": "L", "map_id": 0, "start": [0,0,0],
+                     "checkpoints": [[1,1,1],[2,2,2]], "laps": 3}]"#,
+            )],
+            current_trial_idx: Some(0),
+            ..TimeTrialManager::default()
+        };
+        assert_eq!(m.race_label(), "Lap 1/3 · CP 0/2");
+        m.progress.next_checkpoint = 2;
+        m.progress.lap_times = vec![30.0];
+        assert_eq!(m.race_label(), "Lap 2/3 · CP 2/2");
+        assert_eq!(m.target_gate(), Some([0.0, 0.0, 0.0]));
     }
 
     #[test]
