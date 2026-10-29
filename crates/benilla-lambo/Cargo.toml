@@ -21,6 +21,9 @@ benilla-world = { path = "../benilla-world", default-features = false }
 bevy = { workspace = true, features = ["bevy_gltf"] }
 bevy_egui = "0.39"
 serde = { version = "1", features = ["derive"] }
+# The car glb is split into body and wheels at startup (`model.rs`).
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = "1"
 kira = { version = "0.12", features = ["cpal", "wav"] }
 benilla-lambo-synth = { path = "../benilla-lambo-synth" }

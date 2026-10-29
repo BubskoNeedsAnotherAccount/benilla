@@ -48,7 +48,7 @@ function cleanState(m) {
   const p = vec3(m.p, 1e6), v = vec3(m.v, 1e4), u = vec3(m.u, 2);
   const y = num(m.y, 1e4);
   if (!p || !v || !u || y === null) return null;
-  return { t: "s", p, v, y, u, n: m.n ? 1 : 0 };
+  return { t: "s", p, v, y, u, n: m.n ? 1 : 0, d: m.d === 1 || m.d === 2 || m.d === 3 ? m.d : 0 };
 }
 
 function send(ws, msg) {

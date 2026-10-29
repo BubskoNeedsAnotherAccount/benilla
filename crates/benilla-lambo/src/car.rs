@@ -5,9 +5,11 @@
 //! a ground plane, a spring holds the body over it, and a bicycle model steers it. All lengths are
 //! yards, as in the world.
 
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::PI;
 
 use bevy::prelude::*;
+
+use crate::model::{self, Finish, PartKind};
 
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_world::collision::WorldCollision;
@@ -241,206 +243,114 @@ impl Input {
     }
 }
 
-/// Configuration for loading a 3D GLB model for the car.
-#[derive(Resource, Clone, Debug)]
-pub struct LamboModelConfig {
-    pub model_path: Option<String>,
-    pub auto_scale: f32,
-    pub auto_yaw: f32,
-    pub auto_offset: Vec3,
+/// The car's meshes and materials, built once and shared by the local car and every remote one.
+#[derive(Resource)]
+pub struct CarAssets {
+    parts: Vec<(PartKind, Vec3, Handle<Mesh>, Handle<StandardMaterial>)>,
 }
 
-impl Default for LamboModelConfig {
-    fn default() -> Self {
-        Self {
-            model_path: None,
-            auto_scale: 1.0,
-            auto_yaw: 0.0,
-            auto_offset: Vec3::ZERO,
-        }
-    }
+/// The wheel entities of a spawned model: back pair, front left, front right.
+#[derive(Clone, Copy)]
+pub struct Wheels {
+    pub back: Entity,
+    pub front: [Entity; 2],
 }
 
-/// Spawns the car: either a loaded GLB 3D model, or the procedural fallback body of coloured
-/// boxes and four wheels.
-pub fn spawn_car(
+/// Builds the car's parts from the embedded glb. Unlit and double-sided, as the engine's lighting
+/// does not reach glTF materials.
+pub fn load_car_assets(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    model_config: Res<LamboModelConfig>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
-    if let Some(ref model_name) = model_config.model_path {
-        let scale = std::env::var("LAMBO_SCALE")
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(model_config.auto_scale);
-        let yaw_deg = std::env::var("LAMBO_YAW")
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(model_config.auto_yaw);
-        let offset = std::env::var("LAMBO_OFFSET")
-            .ok()
-            .and_then(|s| {
-                let mut parts = s.split(',').filter_map(|p| p.trim().parse::<f32>().ok());
-                Some(Vec3::new(parts.next()?, parts.next()?, parts.next()?))
-            })
-            .unwrap_or(model_config.auto_offset);
-
-        let keep_wheels = std::env::var("LAMBO_WHEELS")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let scene_url = format!("{model_name}#Scene0");
-        let scene: Handle<Scene> = asset_server.load(scene_url);
-
-        commands
-            .spawn((
-                Car::new(),
-                Transform::from_translation(wow_to_bevy(SPAWN_WOW)),
-                Visibility::default(),
-            ))
-            .with_children(|car| {
-                car.spawn((
-                    SceneRoot(scene),
-                    Transform::from_translation(offset)
-                        .with_rotation(Quat::from_rotation_y(yaw_deg.to_radians()))
-                        .with_scale(Vec3::splat(scale)),
-                    Visibility::default(),
-                ));
-
-                if keep_wheels {
-                    let tyre = materials.add(StandardMaterial {
-                        base_color: Color::srgb(0.015, 0.015, 0.015),
-                        unlit: true,
-                        ..default()
-                    });
-                    let wheel_mesh = meshes.add(Cylinder::new(WHEEL_R, 0.3));
-                    for (sx, sz) in WHEELS {
-                        car.spawn((
-                            Wheel { front: sz < 0.0 },
-                            Mesh3d(wheel_mesh.clone()),
-                            MeshMaterial3d(tyre.clone()),
-                            Transform::from_xyz(sx * WHEEL_X, -(RIDE - WHEEL_R), sz * WHEEL_Z),
-                        ));
-                    }
-                }
-            });
-        return;
-    }
-
-    let mut mat = |r: f32, g: f32, b: f32| {
-        materials.add(StandardMaterial {
-            base_color: Color::srgb(r, g, b),
-            unlit: true,
-            ..default()
+    let (parts, texture) = model::load();
+    let texture = images.add(texture);
+    let base = StandardMaterial {
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    };
+    let solid = materials.add(base.clone());
+    let textured = materials.add(StandardMaterial {
+        base_color_texture: Some(texture),
+        ..base.clone()
+    });
+    let glass = materials.add(StandardMaterial {
+        alpha_mode: AlphaMode::Blend,
+        ..base
+    });
+    let parts = parts
+        .into_iter()
+        .map(|p| {
+            let material = match p.finish {
+                Finish::Plain => solid.clone(),
+                Finish::Textured => textured.clone(),
+                Finish::Glass => glass.clone(),
+            };
+            (p.kind, p.pivot, meshes.add(p.mesh), material)
         })
-    };
-    let orange = mat(1.0, 0.45, 0.02);
-    let dark = mat(0.03, 0.035, 0.05);
-    let tyre = mat(0.015, 0.015, 0.015);
-    let lamp = mat(1.0, 0.95, 0.75);
-    let tail = mat(0.9, 0.02, 0.02);
+        .collect();
+    commands.insert_resource(CarAssets { parts });
+}
 
-    let mut part = |size: Vec3, at: Vec3, tilt: f32, material: &Handle<StandardMaterial>| {
-        (
-            Mesh3d(meshes.add(Cuboid::new(size.x, size.y, size.z))),
-            MeshMaterial3d(material.clone()),
-            Transform::from_translation(at).with_rotation(Quat::from_rotation_x(tilt)),
-        )
+/// Spawns the car's model as a child of `parent`: the body and four wheels, which `Wheels` names.
+/// The model faces +Z; the car faces -Z, so it is turned half way round and set on the wheels' ground.
+pub fn spawn_model(commands: &mut Commands, assets: &CarAssets, parent: Entity) -> Wheels {
+    let root = commands
+        .spawn((
+            Transform::from_xyz(0.0, -RIDE, model::AXLE_MID * model::CAR_SCALE)
+                .with_rotation(Quat::from_rotation_y(PI))
+                .with_scale(Vec3::splat(model::CAR_SCALE)),
+            Visibility::default(),
+            ChildOf(parent),
+        ))
+        .id();
+    let mut wheels = Wheels {
+        back: Entity::PLACEHOLDER,
+        front: [Entity::PLACEHOLDER; 2],
     };
-    let parts = [
-        // Lower body, the hood sloping to the nose, the cabin, its roof, the splitter.
-        part(
-            Vec3::new(1.95, 0.42, 4.5),
-            Vec3::new(0.0, 0.02, 0.0),
-            0.0,
-            &orange,
-        ),
-        part(
-            Vec3::new(1.85, 0.12, 1.7),
-            Vec3::new(0.0, 0.28, -1.35),
-            -0.12,
-            &orange,
-        ),
-        part(
-            Vec3::new(1.5, 0.38, 1.6),
-            Vec3::new(0.0, 0.5, 0.25),
-            0.0,
-            &dark,
-        ),
-        part(
-            Vec3::new(1.4, 0.08, 1.0),
-            Vec3::new(0.0, 0.72, 0.3),
-            0.0,
-            &orange,
-        ),
-        part(
-            Vec3::new(1.9, 0.05, 0.5),
-            Vec3::new(0.0, -0.18, -2.1),
-            0.0,
-            &dark,
-        ),
-        // Rear wing on two posts.
-        part(
-            Vec3::new(1.8, 0.06, 0.45),
-            Vec3::new(0.0, 0.58, 2.0),
-            0.0,
-            &dark,
-        ),
-        part(
-            Vec3::new(0.08, 0.3, 0.1),
-            Vec3::new(-0.6, 0.4, 2.0),
-            0.0,
-            &dark,
-        ),
-        part(
-            Vec3::new(0.08, 0.3, 0.1),
-            Vec3::new(0.6, 0.4, 2.0),
-            0.0,
-            &dark,
-        ),
-        // Lamps.
-        part(
-            Vec3::new(0.4, 0.08, 0.12),
-            Vec3::new(-0.6, 0.18, -2.24),
-            0.0,
-            &lamp,
-        ),
-        part(
-            Vec3::new(0.4, 0.08, 0.12),
-            Vec3::new(0.6, 0.18, -2.24),
-            0.0,
-            &lamp,
-        ),
-        part(
-            Vec3::new(1.5, 0.08, 0.08),
-            Vec3::new(0.0, 0.2, 2.26),
-            0.0,
-            &tail,
-        ),
-    ];
+    for (kind, pivot, mesh, material) in &assets.parts {
+        let id = commands
+            .spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::from_translation(*pivot),
+                ChildOf(root),
+            ))
+            .id();
+        let slot = match kind {
+            PartKind::Body => continue,
+            PartKind::BackWheels => &mut wheels.back,
+            PartKind::FrontLeft => &mut wheels.front[0],
+            PartKind::FrontRight => &mut wheels.front[1],
+        };
+        // A wheel's parts share its pivot; the first one spawned carries the others.
+        if *slot == Entity::PLACEHOLDER {
+            *slot = id;
+        } else {
+            commands
+                .entity(id)
+                .insert((Transform::default(), ChildOf(*slot)));
+        }
+    }
+    wheels
+}
 
-    let wheel_mesh = meshes.add(Cylinder::new(WHEEL_R, 0.3));
-    commands
+/// Spawns the player's car.
+pub fn spawn_car(mut commands: Commands, assets: Res<CarAssets>) {
+    let car = commands
         .spawn((
             Car::new(),
             Transform::from_translation(wow_to_bevy(SPAWN_WOW)),
             Visibility::default(),
         ))
-        .with_children(|car| {
-            for bundle in parts {
-                car.spawn(bundle);
-            }
-            for (sx, sz) in WHEELS {
-                car.spawn((
-                    Wheel { front: sz < 0.0 },
-                    Mesh3d(wheel_mesh.clone()),
-                    MeshMaterial3d(tyre.clone()),
-                    Transform::from_xyz(sx * WHEEL_X, -(RIDE - WHEEL_R), sz * WHEEL_Z),
-                ));
-            }
-        });
+        .id();
+    let wheels = spawn_model(&mut commands, &assets, car);
+    commands.entity(wheels.back).insert(Wheel { front: false });
+    for w in wheels.front {
+        commands.entity(w).insert(Wheel { front: true });
+    }
 }
 
 /// Updates newly spawned glTF materials to be unlit and double-sided so they render under the
@@ -472,15 +382,17 @@ pub fn prepare_car_materials(
 /// Wheel positions as (x, z) signs: front left, front right, rear left, rear right.
 const WHEELS: [(f32, f32); 4] = [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)];
 
+/// A wheel in the model's space (+X left, +Z front): steered about Y, then rolled about its axle X.
+pub fn wheel_rotation(steer: f32, roll: f32) -> Quat {
+    Quat::from_rotation_y(steer) * Quat::from_rotation_x(roll)
+}
+
 /// Rolls and steers the wheel meshes from the car's state.
 pub fn animate_wheels(car: Query<&Car>, mut wheels: Query<(&Wheel, &mut Transform)>) {
     let Ok(car) = car.single() else { return };
     for (wheel, mut tf) in &mut wheels {
         let steer = if wheel.front { -car.steer } else { 0.0 };
-        // The cylinder's axis is Y; lay it along X, roll it, then steer it.
-        tf.rotation = Quat::from_rotation_y(steer)
-            * Quat::from_rotation_x(car.spin)
-            * Quat::from_rotation_z(FRAC_PI_2);
+        tf.rotation = wheel_rotation(steer, -car.spin);
     }
 }
 
@@ -773,7 +685,7 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
 
     car.pos += car.vel * dt;
     if !car.burnout {
-        car.spin -= car.vel.dot(fwd) / WHEEL_R * dt;
+        car.spin -= car.vel.dot(fwd) / model::WHEEL_RADIUS * dt;
     }
     hit_walls(car, dt, world);
 }

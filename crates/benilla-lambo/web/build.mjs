@@ -81,7 +81,6 @@ for (const f of ["index.html", "net-bridge.js", "io-bridge.js", "io-worker.js", 
 }
 const assets = join(repo, "crates/benilla-lambo/assets");
 mkdirSync(join(dist, "assets/sounds"), { recursive: true });
-cpSync(join(assets, "car.glb"), join(dist, "assets/car.glb"));
 cpSync(join(assets, "lambo_v10.json"), join(dist, "assets/lambo_v10.json"));
 for (const s of ["skid_loop.wav", "nitro.wav"]) cpSync(join(assets, "sounds", s), join(dist, "assets/sounds", s));
 

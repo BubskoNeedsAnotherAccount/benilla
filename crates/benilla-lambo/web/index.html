@@ -318,7 +318,7 @@ async function startNet() {
 }
 
 async function fetchAssets() {
-  const wanted = ["car.glb", "sounds/skid_loop.wav", "sounds/nitro.wav"];
+  const wanted = ["sounds/skid_loop.wav", "sounds/nitro.wav"];
   const assets = new Map();
   await Promise.all(wanted.map(async (path) => {
     const res = await fetch(`./assets/${path}`);

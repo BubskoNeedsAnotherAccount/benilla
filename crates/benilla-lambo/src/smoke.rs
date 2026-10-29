@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
-use crate::car::{Car, RIDE, WHEEL_X, WHEEL_Z};
+use crate::car::{Car, RIDE};
+use crate::model::{SMOKE_X, SMOKE_Z};
 
 /// A single expanding, fading tire smoke puff.
 #[derive(Component)]
@@ -57,6 +58,37 @@ pub fn setup_tire_smoke(
     });
 }
 
+/// How hard a car is smoking its tyres: 0 not at all, 1 drifting or braking hard (rear tyres), 2 a violent
+/// drift or a fast handbrake turn (all four), 3 a burnout.
+pub fn smoke_level(car: &Car) -> u8 {
+    // Strictly no tire smoke while airborne or unplaced
+    if !car.placed || !car.grounded {
+        return 0;
+    }
+    let speed = car.speed();
+    if car.burnout {
+        3
+    } else if car.lateral_speed > 6.5 || (car.handbrake_input && speed > 16.0) {
+        2
+    } else if car.lateral_speed > 3.2
+        || (car.handbrake_input && speed > 5.0)
+        || (car.brake_input > 0.0 && speed > 14.0)
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// Seconds between puffs at a smoke level.
+pub fn smoke_interval(level: u8) -> f32 {
+    match level {
+        3 => 0.024,
+        2 => 0.028,
+        _ => 0.038,
+    }
+}
+
 pub fn spawn_tire_smoke(
     mut commands: Commands,
     time: Res<Time>,
@@ -66,49 +98,45 @@ pub fn spawn_tire_smoke(
     let Ok((car, car_tf)) = car_q.single() else {
         return;
     };
-
-    // Strictly no tire smoke while airborne or unplaced
-    if !car.placed || !car.grounded {
+    let level = smoke_level(car);
+    if level == 0 {
         return;
     }
 
-    let is_drifting = car.lateral_speed > 3.2;
-    let is_burnout = car.burnout;
-    let is_handbraking = car.handbrake_input && car.speed() > 5.0;
-    let is_hard_braking = car.brake_input > 0.0 && car.speed() > 14.0;
-
-    if !is_drifting && !is_burnout && !is_handbraking && !is_hard_braking {
-        return;
-    }
-
-    let dt = time.delta_secs();
-    smoke_assets.spawn_timer -= dt;
+    smoke_assets.spawn_timer -= time.delta_secs();
     if smoke_assets.spawn_timer > 0.0 {
         return;
     }
+    smoke_assets.spawn_timer = smoke_interval(level);
+    puff(
+        &mut commands,
+        &mut smoke_assets,
+        car_tf.translation,
+        car_tf.rotation,
+        car.vel,
+        level,
+    );
+}
 
-    let interval = if is_burnout {
-        0.024
-    } else if car.lateral_speed > 6.0 {
-        0.028
-    } else {
-        0.038
-    };
-    smoke_assets.spawn_timer = interval;
-
-    let rot = car_tf.rotation;
-    let pos = car_tf.translation;
-    let (fwd, right) = car.basis();
-
-    // Rear tires always emit smoke; front tires join on violent drifts / handbrake spins
+/// One round of puffs from a car at `pos` facing `rot`, moving at `vel`: both rear tyres, and the
+/// front ones at level 2 and up.
+pub fn puff(
+    commands: &mut Commands,
+    smoke_assets: &mut TireSmokeAssets,
+    pos: Vec3,
+    rot: Quat,
+    vel: Vec3,
+    level: u8,
+) {
+    let (fwd, right, up) = (rot * Vec3::NEG_Z, rot * Vec3::X, rot * Vec3::Y);
+    let ground = -(RIDE - 0.05);
     let mut wheel_offsets = vec![
-        Vec3::new(-WHEEL_X, -(RIDE - 0.05), WHEEL_Z),
-        Vec3::new(WHEEL_X, -(RIDE - 0.05), WHEEL_Z),
+        Vec3::new(-SMOKE_X, ground, SMOKE_Z),
+        Vec3::new(SMOKE_X, ground, SMOKE_Z),
     ];
-
-    if car.lateral_speed > 6.5 || (car.handbrake_input && car.speed() > 16.0) {
-        wheel_offsets.push(Vec3::new(-WHEEL_X, -(RIDE - 0.05), -WHEEL_Z));
-        wheel_offsets.push(Vec3::new(WHEEL_X, -(RIDE - 0.05), -WHEEL_Z));
+    if level >= 2 {
+        wheel_offsets.push(Vec3::new(-SMOKE_X, ground, -SMOKE_Z));
+        wheel_offsets.push(Vec3::new(SMOKE_X, ground, -SMOKE_Z));
     }
 
     let mesh_handle = smoke_assets.mesh.clone();
@@ -123,13 +151,13 @@ pub fn spawn_tire_smoke(
         let spawn_pos = pos + rot * offset + jitter;
 
         let outward = if offset.x < 0.0 { -right } else { right };
-        let puff_vel = car.vel * 0.12
-            + car.up * (0.8 + r2 * 0.8)
+        let puff_vel = vel * 0.12
+            + up * (0.8 + r2 * 0.8)
             + outward * (0.4 + r3 * 0.6)
             + fwd * ((r1 - 0.5) * 0.4);
 
         let initial_scale = 0.35 + r1 * 0.2;
-        let max_scale = if is_burnout {
+        let max_scale = if level == 3 {
             2.2 + r2 * 0.8
         } else {
             1.6 + r2 * 0.7
@@ -151,7 +179,6 @@ pub fn spawn_tire_smoke(
         ));
     }
 }
-
 pub fn update_tire_smoke(
     mut commands: Commands,
     time: Res<Time>,

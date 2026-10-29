@@ -625,6 +625,8 @@ dependencies = [
  "bevy_egui",
  "console_error_panic_hook",
  "dlmalloc",
+ "gltf",
+ "image",
  "kira",
  "serde",
  "serde_json",

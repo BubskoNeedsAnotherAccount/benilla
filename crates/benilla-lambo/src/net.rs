@@ -12,7 +12,9 @@ use wasm_bindgen::prelude::*;
 
 use benilla_world::view::WorldCamera;
 
-use crate::car::{orientation, smooth, Car, LamboModelConfig};
+use crate::car::{orientation, smooth, spawn_model, wheel_rotation, Car, CarAssets, Wheels};
+use crate::model::WHEEL_RADIUS;
+use crate::smoke::{puff, smoke_interval, smoke_level, TireSmokeAssets};
 
 #[wasm_bindgen]
 extern "C" {
@@ -69,6 +71,9 @@ struct State {
     y: f32,
     u: [f32; 3],
     n: u8,
+    /// Tyre smoke level (smoke::smoke_level); older clients send none.
+    #[serde(default)]
+    d: u8,
 }
 
 /// The other drivers in the room.
@@ -94,6 +99,12 @@ struct RemoteCar {
     /// `Time::elapsed_secs` of the latest state.
     seen: f32,
     placed: bool,
+    wheels: Wheels,
+    smoke: u8,
+    /// Seconds until the next puff.
+    smoke_wait: f32,
+    /// Wheel roll angle, from the speed along the car's heading.
+    spin: f32,
 }
 
 pub struct NetPlugin;
@@ -101,7 +112,10 @@ pub struct NetPlugin;
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Roster>()
-            .add_systems(Update, (receive, send_state, ease_remote_cars).chain())
+            .add_systems(
+                Update,
+                (receive, send_state, ease_remote_cars, roll_remote_wheels, smoke_remote_cars).chain(),
+            )
             .add_systems(EguiPrimaryContextPass, hud);
     }
 }
@@ -117,10 +131,7 @@ fn drop_all(commands: &mut Commands, roster: &mut Roster) {
 fn receive(
     mut commands: Commands,
     time: Res<Time>,
-    asset_server: Res<AssetServer>,
-    model: Res<LamboModelConfig>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    assets: Res<CarAssets>,
     mut roster: ResMut<Roster>,
     mut cars: Query<&mut RemoteCar>,
 ) {
@@ -164,16 +175,14 @@ fn receive(
                         car.yaw = s.y;
                         car.up = up;
                         car.nitro = s.n != 0;
+                        car.smoke = s.d.min(3);
                         car.seen = seen;
                     }
                     continue;
                 }
                 let e = spawn_remote_car(
                     &mut commands,
-                    &asset_server,
-                    &model,
-                    &mut meshes,
-                    &mut materials,
+                    &assets,
                     RemoteCar {
                         id: s.id,
                         pos,
@@ -183,6 +192,13 @@ fn receive(
                         nitro: s.n != 0,
                         seen,
                         placed: false,
+                        wheels: Wheels {
+                            back: Entity::PLACEHOLDER,
+                            front: [Entity::PLACEHOLDER; 2],
+                        },
+                        spin: 0.0,
+                        smoke: s.d.min(3),
+                        smoke_wait: 0.0,
                     },
                 );
                 roster.cars.insert(s.id, e);
@@ -192,40 +208,56 @@ fn receive(
     }
 }
 
-/// A remote car looks like the local one: the same model, or the plain body without it.
-fn spawn_remote_car(
-    commands: &mut Commands,
-    asset_server: &AssetServer,
-    model: &LamboModelConfig,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    car: RemoteCar,
-) -> Entity {
+/// A remote car looks like the local one, wheels included.
+fn spawn_remote_car(commands: &mut Commands, assets: &CarAssets, mut car: RemoteCar) -> Entity {
     let at = Transform::from_translation(car.pos).with_rotation(orientation(car.yaw, car.up));
-    let mut e = commands.spawn((car, at, Visibility::default()));
-    e.with_children(|c| {
-        if let Some(file) = &model.model_path {
-            c.spawn((
-                SceneRoot(asset_server.load(format!("{file}#Scene0"))),
-                Transform::from_translation(model.auto_offset)
-                    .with_rotation(Quat::from_rotation_y(model.auto_yaw.to_radians()))
-                    .with_scale(Vec3::splat(model.auto_scale)),
-                Visibility::default(),
-            ));
-        } else {
-            c.spawn((
-                Mesh3d(meshes.add(Cuboid::new(1.95, 0.5, 4.5))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(0.1, 0.45, 1.0),
-                    unlit: true,
-                    ..default()
-                })),
-            ));
-        }
-    });
-    e.id()
+    let e = commands.spawn((at, Visibility::default())).id();
+    car.wheels = spawn_model(commands, assets, e);
+    commands.entity(e).insert(car);
+    e
 }
 
+/// Puffs tyre smoke from the remote cars that report drifting, braking hard or a burnout.
+fn smoke_remote_cars(
+    mut commands: Commands,
+    time: Res<Time>,
+    smoke: Option<ResMut<TireSmokeAssets>>,
+    mut cars: Query<(&mut RemoteCar, &Transform)>,
+) {
+    let Some(mut smoke) = smoke else { return };
+    let dt = time.delta_secs();
+    for (mut car, tf) in &mut cars {
+        if car.smoke == 0 {
+            car.smoke_wait = 0.0;
+            continue;
+        }
+        car.smoke_wait -= dt;
+        if car.smoke_wait > 0.0 {
+            continue;
+        }
+        car.smoke_wait = smoke_interval(car.smoke);
+        puff(&mut commands, &mut smoke, tf.translation, tf.rotation, car.vel, car.smoke);
+    }
+}
+
+/// Rolls each remote car's wheels at the speed along its heading.
+fn roll_remote_wheels(
+    time: Res<Time>,
+    mut cars: Query<&mut RemoteCar>,
+    mut transforms: Query<&mut Transform, Without<RemoteCar>>,
+) {
+    let dt = time.delta_secs().min(1.0 / 20.0);
+    for mut car in &mut cars {
+        let forward = Vec3::new(-car.yaw.sin(), 0.0, -car.yaw.cos());
+        car.spin += car.vel.dot(forward) / WHEEL_RADIUS * dt;
+        let roll = wheel_rotation(0.0, car.spin);
+        for wheel in [car.wheels.back, car.wheels.front[0], car.wheels.front[1]] {
+            if let Ok(mut tf) = transforms.get_mut(wheel) {
+                tf.rotation = roll;
+            }
+        }
+    }
+}
 /// Sends the local car's state, if the socket is open and the car has found the ground.
 fn send_state(time: Res<Time>, mut roster: ResMut<Roster>, car: Query<&Car>) {
     roster.since_send += time.delta_secs();
@@ -244,6 +276,7 @@ fn send_state(time: Res<Time>, mut roster: ResMut<Roster>, car: Query<&Car>) {
         "y": car.yaw,
         "u": [car.up.x, car.up.y, car.up.z],
         "n": u8::from(car.nitro_timer > 0.0),
+        "d": smoke_level(car),
     });
     net_send(&msg.to_string());
 }
