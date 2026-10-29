@@ -198,7 +198,9 @@ pub fn mount_picked_files() {
 /// Whether this is a worker, not the page. A threaded build runs `main` in every instance of the
 /// module, and only the page's is the game.
 pub fn on_worker() -> bool {
-    #[wasm_bindgen(inline_js = "export function on_worker() { return typeof document === 'undefined'; }")]
+    #[wasm_bindgen(
+        inline_js = "export function on_worker() { return typeof document === 'undefined'; }"
+    )]
     extern "C" {
         fn on_worker() -> bool;
     }
@@ -231,7 +233,10 @@ mod pool {
     static READY: Condvar = Condvar::new();
 
     fn submit(job: Job) {
-        QUEUE.lock().unwrap_or_else(|p| p.into_inner()).push_back(job);
+        QUEUE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push_back(job);
         READY.notify_one();
     }
 

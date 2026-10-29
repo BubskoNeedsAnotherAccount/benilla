@@ -150,6 +150,29 @@ fn parts_of(p: &[[f32; 3]], tris: &[u32]) -> Vec<PartKind> {
         .collect()
 }
 
+/// Where the baked sun sits in model space (+Y up, +Z front): high, behind and to the left.
+const SUN: Vec3 = Vec3::new(0.35, 0.85, -0.4);
+/// The darkest a face turns away from the sky and sun, and the brightest the sun lifts one.
+const SHADE_MIN: f32 = 0.45;
+const SHADE_MAX: f32 = 1.0;
+/// A tyre spins, so its baked light cannot follow the sun: it takes one flat tone.
+const WHEEL_TONE: f32 = 0.8;
+
+/// The factor a vertex's colour takes: sky against ground by the normal's height plus a sun term,
+/// the unlit car's only shading. The unlit material draws the vertex colour as it is.
+fn shade(kind: PartKind, finish: Finish, normal: Vec3) -> f32 {
+    if finish == Finish::Glass {
+        return 1.0;
+    }
+    if kind != PartKind::Body {
+        return WHEEL_TONE;
+    }
+    let n = normal.normalize_or(Vec3::Y);
+    let sky = n.y * 0.5 + 0.5;
+    let sun = n.dot(SUN.normalize()).max(0.0);
+    (SHADE_MIN + (SHADE_MAX - SHADE_MIN) * (0.6 * sky + 0.4 * sun)).min(SHADE_MAX)
+}
+
 #[derive(Default)]
 struct Builder {
     pos: Vec<[f32; 3]>,
@@ -225,7 +248,9 @@ pub fn load() -> (Vec<Part>, Image) {
                         let alpha = if finish == Finish::Glass { GLASS } else { 1.0 };
                         b.pos.push(point(p[i as usize]).to_array());
                         b.nrm.push(normal.to_array());
-                        b.col.push([base.x, base.y, base.z, alpha]);
+                        let lit = shade(kind, finish, normal);
+                        b.col
+                            .push([base.x * lit, base.y * lit, base.z * lit, alpha]);
                         b.uv.push(t.get(i as usize).copied().unwrap_or_default());
                         b.pos.len() as u32 - 1
                     });
@@ -298,6 +323,20 @@ mod tests {
         assert!(
             wheel_tris > 100 && wheel_tris < body_tris,
             "{wheel_tris} vs {body_tris}"
+        );
+    }
+
+    #[test]
+    fn body_shade_runs_from_underside_to_roof() {
+        let roof = shade(PartKind::Body, Finish::Plain, Vec3::Y);
+        let side = shade(PartKind::Body, Finish::Plain, Vec3::Z);
+        let floor = shade(PartKind::Body, Finish::Plain, Vec3::NEG_Y);
+        assert!(roof > side && side > floor, "{roof} {side} {floor}");
+        assert!(floor >= SHADE_MIN && roof <= SHADE_MAX);
+        assert_eq!(shade(PartKind::Body, Finish::Glass, Vec3::NEG_Y), 1.0);
+        assert_eq!(
+            shade(PartKind::BackWheels, Finish::Plain, Vec3::Y),
+            WHEEL_TONE
         );
     }
 
