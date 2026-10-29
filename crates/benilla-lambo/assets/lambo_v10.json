@@ -1,7 +1,8 @@
 {
-  "engine_id": "v8",
+  "engine_id": "v10_80",
   "muffler": "delete",
-  "quality": "balanced",
+  "quality": "high",
   "volume": 0.2,
-  "burble": 0.3
+  "burble": 0.3,
+  "adaptive": true
 }

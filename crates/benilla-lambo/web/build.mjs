@@ -67,13 +67,17 @@ if (mode !== "dev" && spawnSync("wasm-opt", ["--version"], { shell: true }).stat
   run("wasm-opt", ["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-simd", ...(threads ? ["--enable-threads", "--enable-mutable-globals"] : []), "-o", bg, bg]);
 }
 
-// The engine-sound worker's own wasm: the synth alone, a few hundred KiB.
+// The engine-sound worker's own wasm: the synth alone, a few hundred KiB. It is built with SIMD,
+// which every current browser runs: the solver costs about a third less (balanced 1.25 -> 0.80 of
+// real time in a 48 kHz block bench), the difference between holding the finer tiers and not.
+process.env.CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-C target-feature=+simd128";
 run("cargo", ["build", "-p", "benilla-lambo-synth", "--target", "wasm32-unknown-unknown", ...profileArgs]);
+delete process.env.CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS;
 const synthWasm = join(repo, "target/wasm32-unknown-unknown", mode === "dev" ? "debug" : mode, "benilla_lambo_synth.wasm");
 run("wasm-bindgen", ["--target", "web", "--no-typescript", ...strip, "--out-dir", join(dist, "synth"), "--out-name", "benilla_lambo_synth", synthWasm]);
 const synthBg = join(dist, "synth/benilla_lambo_synth_bg.wasm");
 if (mode !== "dev" && spawnSync("wasm-opt", ["--version"], { shell: true }).status === 0) {
-  run("wasm-opt", ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "-o", synthBg, synthBg]);
+  run("wasm-opt", ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-simd", "-o", synthBg, synthBg]);
 }
 
 for (const f of ["index.html", "net-bridge.js", "io-bridge.js", "io-worker.js", "synth-bridge.js", "synth-worker.js", "thread-bridge.js", "thread-worker.js", "coi-sw.js", "_headers"]) {
