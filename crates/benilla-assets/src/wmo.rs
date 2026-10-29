@@ -370,7 +370,7 @@ impl AssetLoader for WmoModelLoader {
         reader.read_to_end(&mut bytes).await?;
         crate::frame_budget::turn().await;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
-        let root = parse_wmo_root(&bytes).map_err(to_io)?;
+        let root = std::sync::Arc::new(parse_wmo_root(&bytes).map_err(to_io)?);
 
         // Lowercased so the `.wmo` strip matches; MPQ lookup is case-insensitive anyway.
         let root_path = ctx.path().path().to_string_lossy().to_ascii_lowercase();
@@ -424,10 +424,47 @@ impl AssetLoader for WmoModelLoader {
             let Ok(gbytes) = ctx.read_asset_bytes(group_url).await else {
                 continue; // a missing or unreadable group is skipped
             };
-            crate::frame_budget::turn().await;
-            if let (Some(h), Some(nav)) =
-                (wmo_group_header(&gbytes), group_nav.get_mut(gi as usize))
-            {
+            // The group's parse is the CPU half of the load: off the main thread where the page
+            // has a pool, else after this frame's turn ([`crate::offload`]).
+            let parse_root = root.clone();
+            let parsed = crate::offload::run(move || {
+                let root = &*parse_root;
+                let header = wmo_group_header(&gbytes);
+                // One walking gather feeds both the per-group faces and the flat collider.
+                let mut gpos: Vec<[f32; 3]> = Vec::new();
+                let mut gidx: Vec<u32> = Vec::new();
+                accumulate_wmo_group_collision(&gbytes, &mut gpos, &mut gidx);
+                let (mut cpos, mut cidx): (Vec<[f32; 3]>, Vec<u32>) = (Vec::new(), Vec::new());
+                accumulate_wmo_group_camera_collision(&gbytes, &mut cpos, &mut cidx);
+                let (mut dpos, mut didx): (Vec<[f32; 3]>, Vec<u32>) = (Vec::new(), Vec::new());
+                accumulate_wmo_group_camera_only_collision(&gbytes, &mut dpos, &mut didx);
+                let subs = wmo_group_submeshes(&gbytes, root).map_err(|e| format!("{e:#}"));
+                // The reference walks MODR at `0x695aa0` and MOLR at `0x695c00`.
+                (
+                    header,
+                    (gpos, gidx),
+                    (cpos, cidx),
+                    (dpos, didx),
+                    subs,
+                    wmo_group_doodad_refs(&gbytes),
+                    wmo_group_light_refs(&gbytes),
+                    wmo_group_footprint_tris(&gbytes),
+                    wmo_group_liquid_mesh(&gbytes),
+                )
+            })
+            .await;
+            let (
+                header,
+                (gpos, gidx),
+                (cpos, cidx),
+                (dpos, didx),
+                subs,
+                doodad_refs,
+                light_refs,
+                footprints,
+                liquid,
+            ) = parsed;
+            if let (Some(h), Some(nav)) = (header, group_nav.get_mut(gi as usize)) {
                 nav.flags = h.flags;
                 nav.ref_start = h.portal_ref_start;
                 nav.ref_count = h.portal_ref_count;
@@ -435,10 +472,6 @@ impl AssetLoader for WmoModelLoader {
                 nav.fog_indices = h.fog_indices;
                 nav.group_liquid = h.group_liquid;
             }
-            // One walking gather feeds both the per-group faces and the flat collider.
-            let mut gpos: Vec<[f32; 3]> = Vec::new();
-            let mut gidx: Vec<u32> = Vec::new();
-            accumulate_wmo_group_collision(&gbytes, &mut gpos, &mut gidx);
             if let Some(tris) = group_collision_tris.get_mut(gi as usize) {
                 for t in gidx.as_chunks::<3>().0 {
                     if let (Some(&a), Some(&b), Some(&c)) = (
@@ -453,9 +486,9 @@ impl AssetLoader for WmoModelLoader {
             let base = col_pos.len() as u32;
             col_pos.extend_from_slice(&gpos);
             col_idx.extend(gidx.iter().map(|i| i + base));
-            accumulate_wmo_group_camera_collision(&gbytes, &mut cam_pos, &mut cam_idx);
-            let (mut dpos, mut didx): (Vec<[f32; 3]>, Vec<u32>) = (Vec::new(), Vec::new());
-            accumulate_wmo_group_camera_only_collision(&gbytes, &mut dpos, &mut didx);
+            let cbase = cam_pos.len() as u32;
+            cam_pos.extend_from_slice(&cpos);
+            cam_idx.extend(cidx.iter().map(|i| i + cbase));
             if let Some(tris) = group_camera_only_tris.get_mut(gi as usize) {
                 for t in didx.as_chunks::<3>().0 {
                     if let (Some(&a), Some(&b), Some(&c)) = (
@@ -467,19 +500,18 @@ impl AssetLoader for WmoModelLoader {
                     }
                 }
             }
-            let subs = wmo_group_submeshes(&gbytes, &root).map_err(to_io)?;
-            // The reference walks MODR at `0x695aa0` and MOLR at `0x695c00`.
+            let subs = subs.map_err(std::io::Error::other)?;
             if let Some(slot) = group_doodad_refs.get_mut(gi as usize) {
-                *slot = wmo_group_doodad_refs(&gbytes);
+                *slot = doodad_refs;
             }
             if let Some(slot) = group_light_refs.get_mut(gi as usize) {
-                *slot = wmo_group_light_refs(&gbytes);
+                *slot = light_refs;
             }
             if let Some(slot) = group_footprints.get_mut(gi as usize) {
-                *slot = wmo_group_footprint_tris(&gbytes);
+                *slot = footprints;
             }
             if let Some(slot) = group_liquids.get_mut(gi as usize) {
-                *slot = wmo_group_liquid_mesh(&gbytes);
+                *slot = liquid;
             }
             for sub in subs {
                 // Lowercased: Bevy's loader lookup is case-sensitive, and an uppercase `.BLP` falls
