@@ -73,6 +73,9 @@ impl CarAudio {
             Decibels(20.0 * volume.log10())
         };
         self.manager.main_track().set_volume(db, Tween::default());
+        // The engine does not go through kira's mixer in a browser.
+        #[cfg(target_arch = "wasm32")]
+        crate::web::set_synth_master(volume.clamp(0.0, 1.0));
     }
 
     /// Attempts to locate `assets/sounds/` and load all sound effects.
@@ -102,6 +105,11 @@ impl CarAudio {
 
         // 1. Initialize real-time procedural physical engine synthesizer (48 kHz)
         let synth_data = EngineSoundData::new(48000);
+        // In a browser the page plays the engine on its own audio thread (`web/synth-worklet.js`),
+        // so a frame that stalls cannot starve it; the handle only sends it the car's state.
+        #[cfg(target_arch = "wasm32")]
+        let synth_handle = Some(synth_data.handle());
+        #[cfg(not(target_arch = "wasm32"))]
         let synth_handle = match manager.play(synth_data) {
             Ok(h) => {
                 eprintln!("benilla-lambo audio: procedural V10 synthesizer online");
@@ -310,6 +318,8 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 synth.set_drivetrain(speed, audio.current_gear, audio.gear_shift_timer > 0.0);
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        synth.flush();
     } else if let Some(ref mut engine) = audio.static_engine_handle {
         // Fallback for static loop if procedural synth was unavailable
         if !car.placed {

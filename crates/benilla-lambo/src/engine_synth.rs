@@ -5,8 +5,9 @@
 //! mechanical machinery clatter, transmission gear whine, and overrun burble/backfire.
 //!
 //! The synth itself is `benilla-lambo-synth`. Natively kira's audio thread renders it. In a
-//! browser the audio callback shares the game's thread, which the solver would take most of, so a
-//! worker renders it and the callback only copies finished samples (`web.rs`).
+//! browser kira's callback shares the game's thread, which the solver would take most of and a
+//! long frame would stall, so a worker renders it and an audio worklet plays it, both off the
+//! game's thread; the game only pushes the car's state (`web.rs`).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use benilla_lambo_synth::Params;
 #[cfg(not(target_arch = "wasm32"))]
 use benilla_lambo_synth::Synth;
+#[cfg(not(target_arch = "wasm32"))]
 use kira::{
     info::Info,
     sound::{Sound, SoundData},
@@ -95,8 +97,10 @@ pub fn load_lambo_config() -> LamboConfig {
     LamboConfig::default()
 }
 
-/// Kira `SoundData` for streaming `engine-core`'s physical thermodynamic sound simulation.
+/// Kira `SoundData` for streaming `engine-core`'s physical thermodynamic sound simulation. In a
+/// browser it only names the config and makes the handle: the page plays the sound.
 pub struct EngineSoundData {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub sample_rate: u32,
     pub config: LamboConfig,
 }
@@ -106,6 +110,19 @@ impl EngineSoundData {
         Self {
             sample_rate,
             config: load_lambo_config(),
+        }
+    }
+
+    /// The control handle, with the state the config starts the engine in.
+    pub fn handle(&self) -> EngineSoundHandle {
+        EngineSoundHandle {
+            rpm: Arc::new(AtomicU32::new(850)),
+            throttle: Arc::new(AtomicU32::new(0)),
+            volume: Arc::new(AtomicU32::new((self.config.volume * 1000.0) as u32)),
+            speed: Arc::new(AtomicU32::new(0)),
+            gear: Arc::new(AtomicU32::new(1)),
+            shift_pop: Arc::new(AtomicBool::new(false)),
+            stopped: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -157,6 +174,12 @@ impl EngineSoundHandle {
         self.stopped.store(true, Ordering::Relaxed);
     }
 
+    /// Send the state the game last set to the page's engine sound (`web/synth-bridge.js`).
+    #[cfg(target_arch = "wasm32")]
+    pub fn flush(&self) {
+        crate::web::push_synth(&self.params());
+    }
+
     /// The state the game last set, as the synth takes it; a pending gear-shift pop is consumed.
     fn params(&self) -> Params {
         Params {
@@ -169,60 +192,43 @@ impl EngineSoundHandle {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl SoundData for EngineSoundData {
     type Error = std::convert::Infallible;
     type Handle = EngineSoundHandle;
 
     fn into_sound(self) -> Result<(Box<dyn Sound>, Self::Handle), Self::Error> {
-        let handle = EngineSoundHandle {
-            rpm: Arc::new(AtomicU32::new(850)),
-            throttle: Arc::new(AtomicU32::new(0)),
-            volume: Arc::new(AtomicU32::new((self.config.volume * 1000.0) as u32)),
-            speed: Arc::new(AtomicU32::new(0)),
-            gear: Arc::new(AtomicU32::new(1)),
-            shift_pop: Arc::new(AtomicBool::new(false)),
-            stopped: Arc::new(AtomicBool::new(false)),
-        };
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let sound = {
-            let synth = Synth::new(
-                &self.config.engine_id,
-                &self.config.muffler,
-                &self.config.quality,
-                self.config.burble,
-                self.sample_rate,
-            );
-            eprintln!(
-                "benilla-lambo audio: running engine-core with {} ({} cylinders)",
-                self.config.engine_id,
-                synth.cylinders()
-            );
-            EngineSoundStream {
-                synth,
-                ctl: handle.clone(),
-                scratch: Vec::new(),
-            }
-        };
-        // The worker makes its own synth from the page's copy of the config.
-        #[cfg(target_arch = "wasm32")]
+        let handle = self.handle();
+        let synth = Synth::new(
+            &self.config.engine_id,
+            &self.config.muffler,
+            &self.config.quality,
+            self.config.burble,
+            self.sample_rate,
+        );
+        eprintln!(
+            "benilla-lambo audio: running engine-core with {} ({} cylinders)",
+            self.config.engine_id,
+            synth.cylinders()
+        );
         let sound = EngineSoundStream {
+            synth,
             ctl: handle.clone(),
             scratch: Vec::new(),
         };
-
         Ok((Box::new(sound), handle))
     }
 }
 
 /// An actively streaming audio sound running `engine-core` on Kira's audio thread.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct EngineSoundStream {
-    #[cfg(not(target_arch = "wasm32"))]
     synth: Synth,
     ctl: EngineSoundHandle,
     scratch: Vec<f32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Sound for EngineSoundStream {
     fn process(&mut self, out: &mut [Frame], _dt: f64, _info: &Info) {
         if self.ctl.stopped.load(Ordering::Relaxed) {
@@ -231,15 +237,7 @@ impl Sound for EngineSoundStream {
         }
         let params = self.ctl.params();
         self.scratch.resize(out.len(), 0.0);
-
-        #[cfg(not(target_arch = "wasm32"))]
         self.synth.render(&params, &mut self.scratch);
-        // The output device's rate is the frame spacing kira reports.
-        #[cfg(target_arch = "wasm32")]
-        let got = crate::web::pull_synth(&params, (1.0 / _dt).round() as u32, &mut self.scratch);
-        #[cfg(target_arch = "wasm32")]
-        self.scratch[got..].fill(0.0);
-
         for (frame, sample) in out.iter_mut().zip(&self.scratch) {
             *frame = Frame::from_mono(*sample);
         }
@@ -250,7 +248,7 @@ impl Sound for EngineSoundStream {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
