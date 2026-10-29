@@ -1,7 +1,7 @@
 //! Multiplayer, browser build only. The page holds one WebSocket to a relay (`server/server.mjs`,
 //! `web/net-bridge.js`); this module sends the local car's state 20 times a second and shows the
-//! other drivers' cars from theirs. Every car drives itself: there is no shared physics, so cars
-//! pass through each other and each client is the authority for its own.
+//! other drivers' cars from theirs. Every car drives itself: there is no shared physics, and each
+//! client is the authority for its own car, bumping it off the others as it sees them.
 
 use std::collections::HashMap;
 
@@ -120,8 +120,10 @@ impl Plugin for NetPlugin {
                     ease_remote_cars,
                     roll_remote_wheels,
                     smoke_remote_cars,
+                    collide_cars,
                 )
-                    .chain(),
+                    .chain()
+                    .after(crate::car::drive),
             )
             .add_systems(EguiPrimaryContextPass, hud);
     }
@@ -326,6 +328,60 @@ fn ease_remote_cars(
         tf.rotation = tf
             .rotation
             .slerp(orientation(car.yaw, car.up), smooth(dt, 14.0));
+    }
+}
+
+/// Each car is three circles along its length, flat on the ground.
+const BODY_RADIUS: f32 = 1.15;
+const BODY_SPOTS: [f32; 3] = [-1.2, 0.0, 1.2];
+/// Cars on different levels (a bridge over a road) do not touch.
+const HEIGHT_REACH: f32 = 1.8;
+/// Share of the closing speed kept as bounce.
+const BOUNCE: f32 = 0.3;
+/// Most the local car is pushed out of another in one frame, yards.
+const MAX_PUSH: f32 = 2.0;
+
+/// Cars bump. Every client runs this for its own car against the others' as they appear to it:
+/// each pushes itself half the overlap away and takes half the impulse, so the two sides agree
+/// without any shared physics.
+fn collide_cars(
+    mut local: Query<(&mut Car, &mut Transform), Without<RemoteCar>>,
+    remotes: Query<(&RemoteCar, &Transform), Without<Car>>,
+) {
+    let Ok((mut car, mut tf)) = local.single_mut() else {
+        return;
+    };
+    if !car.placed {
+        return;
+    }
+    let heading = |yaw: f32| Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    let mine = heading(car.yaw);
+    for (other, otf) in &remotes {
+        if !other.placed || (otf.translation.y - car.pos.y).abs() > HEIGHT_REACH {
+            continue;
+        }
+        let theirs = heading(other.yaw);
+        // The deepest overlap among the circle pairs.
+        let mut hit: Option<(Vec3, f32)> = None;
+        for a in BODY_SPOTS {
+            for b in BODY_SPOTS {
+                let delta = (car.pos + mine * a) - (otf.translation + theirs * b);
+                let delta = Vec3::new(delta.x, 0.0, delta.z);
+                let dist = delta.length();
+                let depth = 2.0 * BODY_RADIUS - dist;
+                if depth > 0.0 && hit.is_none_or(|(_, d)| depth > d) {
+                    hit = Some((delta.normalize_or(-mine), depth));
+                }
+            }
+        }
+        let Some((normal, depth)) = hit else { continue };
+        let push = (depth * 0.5).min(MAX_PUSH);
+        car.pos += normal * push;
+        let closing = (car.vel - other.vel).dot(normal);
+        if closing < 0.0 {
+            car.vel -= normal * closing * (1.0 + BOUNCE) * 0.5;
+        }
+        tf.translation = car.pos;
     }
 }
 
