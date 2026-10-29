@@ -277,7 +277,11 @@ mod tests {
     fn wheels_are_split_from_the_body() {
         let (parts, _) = load();
         assert!(count(&parts, PartKind::Body) > 0);
-        for wheel in [PartKind::BackWheels, PartKind::FrontLeft, PartKind::FrontRight] {
+        for wheel in [
+            PartKind::BackWheels,
+            PartKind::FrontLeft,
+            PartKind::FrontRight,
+        ] {
             assert!(count(&parts, wheel) > 0, "{wheel:?} has no parts");
         }
         // The wheels are small next to the body: a tyre, not the car, was cut out.
@@ -291,7 +295,10 @@ mod tests {
             .filter(|p| p.kind == PartKind::Body)
             .map(|p| p.mesh.indices().map_or(0, |i| i.len()) / 3)
             .sum();
-        assert!(wheel_tris > 100 && wheel_tris < body_tris, "{wheel_tris} vs {body_tris}");
+        assert!(
+            wheel_tris > 100 && wheel_tris < body_tris,
+            "{wheel_tris} vs {body_tris}"
+        );
     }
 
     #[test]

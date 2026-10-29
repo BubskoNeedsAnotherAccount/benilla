@@ -93,8 +93,12 @@ pub fn spawn_tire_smoke(
     mut commands: Commands,
     time: Res<Time>,
     mut smoke_assets: ResMut<TireSmokeAssets>,
+    settings: Res<crate::settings::Settings>,
     car_q: Query<(&Car, &Transform)>,
 ) {
+    if !settings.tire_smoke {
+        return;
+    }
     let Ok((car, car_tf)) = car_q.single() else {
         return;
     };

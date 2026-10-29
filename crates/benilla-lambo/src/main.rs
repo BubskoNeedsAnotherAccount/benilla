@@ -18,6 +18,7 @@ mod engine_synth;
 mod model;
 #[cfg(target_arch = "wasm32")]
 mod net;
+mod settings;
 mod shadow;
 mod smoke;
 mod sound;
@@ -107,6 +108,8 @@ fn main() -> AppExit {
     if let Some(audio) = sound::CarAudio::new() {
         app.insert_resource(audio);
     }
+
+    app.add_plugins(settings::SettingsPlugin);
 
     // Initialize time trial manager.
     app.init_resource::<trial::TimeTrialManager>();

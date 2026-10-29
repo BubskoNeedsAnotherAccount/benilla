@@ -114,7 +114,14 @@ impl Plugin for NetPlugin {
         app.init_resource::<Roster>()
             .add_systems(
                 Update,
-                (receive, send_state, ease_remote_cars, roll_remote_wheels, smoke_remote_cars).chain(),
+                (
+                    receive,
+                    send_state,
+                    ease_remote_cars,
+                    roll_remote_wheels,
+                    smoke_remote_cars,
+                )
+                    .chain(),
             )
             .add_systems(EguiPrimaryContextPass, hud);
     }
@@ -222,9 +229,13 @@ fn smoke_remote_cars(
     mut commands: Commands,
     time: Res<Time>,
     smoke: Option<ResMut<TireSmokeAssets>>,
+    settings: Res<crate::settings::Settings>,
     mut cars: Query<(&mut RemoteCar, &Transform)>,
 ) {
     let Some(mut smoke) = smoke else { return };
+    if !settings.tire_smoke {
+        return;
+    }
     let dt = time.delta_secs();
     for (mut car, tf) in &mut cars {
         if car.smoke == 0 {
@@ -236,7 +247,14 @@ fn smoke_remote_cars(
             continue;
         }
         car.smoke_wait = smoke_interval(car.smoke);
-        puff(&mut commands, &mut smoke, tf.translation, tf.rotation, car.vel, car.smoke);
+        puff(
+            &mut commands,
+            &mut smoke,
+            tf.translation,
+            tf.rotation,
+            car.vel,
+            car.smoke,
+        );
     }
 }
 

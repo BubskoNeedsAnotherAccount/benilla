@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 
+use crate::settings::{MenuTab, Settings, RENDER_SCALES};
+use benilla_world::view::FARCLIP_RANGE;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use serde::{Deserialize, Serialize};
@@ -385,10 +387,18 @@ pub fn handle_trial_input(
     mut car: Query<&mut Car>,
     mut chase_cam: Query<&mut ChaseCam>,
     mut current_map: ResMut<CurrentMap>,
+    mut tab: ResMut<MenuTab>,
 ) {
     // ESC toggles the menu
     if keys.just_pressed(KeyCode::Escape) {
         manager.menu_open = !manager.menu_open;
+    }
+    // Tab flips between the menu's pages.
+    if manager.menu_open && keys.just_pressed(KeyCode::Tab) {
+        *tab = match *tab {
+            MenuTab::Drive => MenuTab::Settings,
+            MenuTab::Settings => MenuTab::Drive,
+        };
     }
 
     // 'G' toggles the debug telemetry overlay
@@ -398,6 +408,10 @@ pub fn handle_trial_input(
 
     // When menu is open, handle keyboard navigation
     if manager.menu_open {
+        // The settings page is driven with the mouse; the keys would pick a course.
+        if *tab == MenuTab::Settings {
+            return;
+        }
         let total_items = manager.trials.len() + 3; // +3 for Lakeshire, Crossroads and Goldshire Free Driving
         if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW) {
             if manager.selected_menu_idx == 0 {
@@ -648,6 +662,68 @@ pub fn update_trial_progress(
     }
 }
 
+/// The Settings page: what changes here is applied the moment it changes.
+fn settings_page(ui: &mut egui::Ui, s: &mut Settings) {
+    ui.add_space(8.0);
+    let heading = |ui: &mut egui::Ui, text: &str| {
+        ui.label(
+            egui::RichText::new(text)
+                .color(egui::Color32::from_rgb(255, 140, 0))
+                .size(13.0)
+                .strong(),
+        );
+    };
+
+    heading(ui, "SOUND");
+    let mut percent = (s.volume * 100.0).round();
+    ui.add(
+        egui::Slider::new(&mut percent, 0.0..=100.0)
+            .suffix("%")
+            .text("Master volume"),
+    );
+    s.volume = percent / 100.0;
+
+    ui.add_space(12.0);
+    heading(ui, "GRAPHICS");
+    ui.add(
+        egui::Slider::new(&mut s.view_distance, FARCLIP_RANGE)
+            .suffix(" yd")
+            .text("View distance"),
+    );
+    ui.label(
+        egui::RichText::new("Shorter is smoother on slower machines.")
+            .color(egui::Color32::GRAY)
+            .size(12.0),
+    );
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label("Resolution");
+        for scale in RENDER_SCALES {
+            let label = format!("{:.0}%", scale * 100.0);
+            if ui
+                .selectable_label((s.render_scale - scale).abs() < 0.01, label)
+                .clicked()
+            {
+                s.render_scale = scale;
+            }
+        }
+    });
+    ui.label(
+        egui::RichText::new(
+            "Renders fewer pixels and stretches them to the window: the biggest speed-up.",
+        )
+        .color(egui::Color32::GRAY)
+        .size(12.0),
+    );
+    ui.add_space(6.0);
+    ui.checkbox(&mut s.tire_smoke, "Tyre smoke (drifts and burnouts)");
+
+    ui.add_space(12.0);
+    if ui.button("Reset to defaults").clicked() {
+        *s = Settings::default();
+    }
+}
+
 /// Renders the in-game Time Trial UI: the ESC menu modal and the live race HUD.
 pub fn render_trial_ui(
     mut contexts: EguiContexts,
@@ -655,6 +731,8 @@ pub fn render_trial_ui(
     mut car: Query<&mut Car>,
     mut chase_cam: Query<&mut ChaseCam>,
     mut current_map: ResMut<CurrentMap>,
+    mut settings: ResMut<Settings>,
+    mut tab: ResMut<MenuTab>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -778,6 +856,8 @@ pub fn render_trial_ui(
     if manager.menu_open {
         let mut chosen_idx: Option<usize> = None;
         let selected = manager.selected_menu_idx;
+        let mut edit = settings.clone();
+        let mut new_tab = *tab;
 
         egui::Window::new("TIME TRIAL MENU")
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -810,170 +890,198 @@ pub fn render_trial_ui(
                     );
                 });
 
-                ui.add_space(16.0);
-                ui.separator();
-                ui.label(
-                    egui::RichText::new("FREE DRIVING MODES:")
-                        .color(egui::Color32::from_rgb(255, 140, 0))
-                        .size(13.0)
-                        .strong(),
-                );
-                ui.add_space(4.0);
-
-                // Option 0: Free Driving (Lakeshire, Redridge Mountains)
-                let is_sel0 = selected == 0;
-                let is_active0 = manager.current_trial_idx.is_none() && manager.free_drive_loc == 0;
-                let free0_text = format!(
-                    "{} [1] Redridge Mountains — Lakeshire (Eastern Kingdoms) {}",
-                    if is_sel0 { "▶ " } else { "   " },
-                    if is_active0 { "(Active)" } else { "" }
-                );
-
-                let btn0 = ui.add_sized(
-                    [ui.available_width(), 36.0],
-                    egui::Button::new(
-                        egui::RichText::new(free0_text)
-                            .size(15.0)
-                            .color(if is_sel0 {
-                                egui::Color32::from_rgb(255, 220, 0)
-                            } else {
-                                egui::Color32::WHITE
-                            })
-                            .strong(),
-                    )
-                    .fill(if is_sel0 {
-                        egui::Color32::from_rgb(60, 45, 10)
-                    } else {
-                        egui::Color32::from_black_alpha(100)
-                    }),
-                );
-                if btn0.clicked() {
-                    chosen_idx = Some(0);
-                }
-
-                ui.add_space(4.0);
-
-                // Option 1: Free Driving (Crossroads, The Barrens)
-                let is_sel1 = selected == 1;
-                let is_active1 = manager.current_trial_idx.is_none() && manager.free_drive_loc == 1;
-                let free1_text = format!(
-                    "{} [2] The Barrens — Crossroads (Kalimdor) {}",
-                    if is_sel1 { "▶ " } else { "   " },
-                    if is_active1 { "(Active)" } else { "" }
-                );
-
-                let btn1 = ui.add_sized(
-                    [ui.available_width(), 36.0],
-                    egui::Button::new(
-                        egui::RichText::new(free1_text)
-                            .size(15.0)
-                            .color(if is_sel1 {
-                                egui::Color32::from_rgb(255, 220, 0)
-                            } else {
-                                egui::Color32::WHITE
-                            })
-                            .strong(),
-                    )
-                    .fill(if is_sel1 {
-                        egui::Color32::from_rgb(60, 45, 10)
-                    } else {
-                        egui::Color32::from_black_alpha(100)
-                    }),
-                );
-                if btn1.clicked() {
-                    chosen_idx = Some(1);
-                }
-
-                ui.add_space(4.0);
-
-                // Option 2: Free Driving (Goldshire, Elwynn Forest)
-                let is_sel2 = selected == 2;
-                let is_active2 = manager.current_trial_idx.is_none() && manager.free_drive_loc == 2;
-                let free2_text = format!(
-                    "{} [3] Elwynn Forest — Goldshire (Eastern Kingdoms) {}",
-                    if is_sel2 { "▶ " } else { "   " },
-                    if is_active2 { "(Active)" } else { "" }
-                );
-
-                let btn2 = ui.add_sized(
-                    [ui.available_width(), 36.0],
-                    egui::Button::new(
-                        egui::RichText::new(free2_text)
-                            .size(15.0)
-                            .color(if is_sel2 {
-                                egui::Color32::from_rgb(255, 220, 0)
-                            } else {
-                                egui::Color32::WHITE
-                            })
-                            .strong(),
-                    )
-                    .fill(if is_sel2 {
-                        egui::Color32::from_rgb(60, 45, 10)
-                    } else {
-                        egui::Color32::from_black_alpha(100)
-                    }),
-                );
-                if btn2.clicked() {
-                    chosen_idx = Some(2);
-                }
-
                 ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new("TIME TRIAL COURSES (NITRO DISABLED):")
-                        .color(egui::Color32::from_rgb(255, 140, 0))
-                        .size(13.0)
-                        .strong(),
-                );
-                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    for (page, label) in
+                        [(MenuTab::Drive, "Drive"), (MenuTab::Settings, "Settings")]
+                    {
+                        if ui
+                            .selectable_label(
+                                new_tab == page,
+                                egui::RichText::new(label).size(17.0).strong(),
+                            )
+                            .clicked()
+                        {
+                            new_tab = page;
+                        }
+                    }
+                    ui.label(
+                        egui::RichText::new("Tab switches pages")
+                            .color(egui::Color32::GRAY)
+                            .size(12.0),
+                    );
+                });
+                ui.separator();
+                if new_tab == MenuTab::Settings {
+                    settings_page(ui, &mut edit);
+                } else {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("FREE DRIVING MODES:")
+                            .color(egui::Color32::from_rgb(255, 140, 0))
+                            .size(13.0)
+                            .strong(),
+                    );
+                    ui.add_space(4.0);
 
-                // Trial Options (3..N+2)
-                for (i, trial) in manager.trials.iter().enumerate() {
-                    let option_idx = i + 3;
-                    let is_sel = selected == option_idx;
-                    let is_active = manager.current_trial_idx == Some(i);
-
-                    let map_name = match trial.map_id {
-                        0 => "Eastern Kingdoms",
-                        1 => "Kalimdor",
-                        other => &format!("Map {other}"),
-                    };
-
-                    let best_str = if let Some(b) = manager.best_times.get(&trial.name) {
-                        let mins = (b / 60.0).floor() as u32;
-                        let secs = b % 60.0;
-                        format!(" ★ Best: {mins:02}:{secs:05.2}")
-                    } else {
-                        "".to_string()
-                    };
-
-                    let label_text = format!(
-                        "{} [{}] {} ({}){}",
-                        if is_sel { "▶ " } else { "   " },
-                        option_idx + 1,
-                        trial.name,
-                        map_name,
-                        if is_active { " (Active)" } else { "" }
+                    // Option 0: Free Driving (Lakeshire, Redridge Mountains)
+                    let is_sel0 = selected == 0;
+                    let is_active0 =
+                        manager.current_trial_idx.is_none() && manager.free_drive_loc == 0;
+                    let free0_text = format!(
+                        "{} [1] Redridge Mountains — Lakeshire (Eastern Kingdoms) {}",
+                        if is_sel0 { "▶ " } else { "   " },
+                        if is_active0 { "(Active)" } else { "" }
                     );
 
-                    let full_text = format!("{label_text}{best_str}");
-
-                    let btn = ui.add_sized(
-                        [ui.available_width(), 38.0],
-                        egui::Button::new(egui::RichText::new(full_text).size(15.0).color(
-                            if is_sel {
-                                egui::Color32::from_rgb(255, 220, 0)
-                            } else {
-                                egui::Color32::WHITE
-                            },
-                        ))
-                        .fill(if is_sel {
+                    let btn0 = ui.add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Button::new(
+                            egui::RichText::new(free0_text)
+                                .size(15.0)
+                                .color(if is_sel0 {
+                                    egui::Color32::from_rgb(255, 220, 0)
+                                } else {
+                                    egui::Color32::WHITE
+                                })
+                                .strong(),
+                        )
+                        .fill(if is_sel0 {
                             egui::Color32::from_rgb(60, 45, 10)
                         } else {
                             egui::Color32::from_black_alpha(100)
                         }),
                     );
-                    if btn.clicked() {
-                        chosen_idx = Some(option_idx);
+                    if btn0.clicked() {
+                        chosen_idx = Some(0);
+                    }
+
+                    ui.add_space(4.0);
+
+                    // Option 1: Free Driving (Crossroads, The Barrens)
+                    let is_sel1 = selected == 1;
+                    let is_active1 =
+                        manager.current_trial_idx.is_none() && manager.free_drive_loc == 1;
+                    let free1_text = format!(
+                        "{} [2] The Barrens — Crossroads (Kalimdor) {}",
+                        if is_sel1 { "▶ " } else { "   " },
+                        if is_active1 { "(Active)" } else { "" }
+                    );
+
+                    let btn1 = ui.add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Button::new(
+                            egui::RichText::new(free1_text)
+                                .size(15.0)
+                                .color(if is_sel1 {
+                                    egui::Color32::from_rgb(255, 220, 0)
+                                } else {
+                                    egui::Color32::WHITE
+                                })
+                                .strong(),
+                        )
+                        .fill(if is_sel1 {
+                            egui::Color32::from_rgb(60, 45, 10)
+                        } else {
+                            egui::Color32::from_black_alpha(100)
+                        }),
+                    );
+                    if btn1.clicked() {
+                        chosen_idx = Some(1);
+                    }
+
+                    ui.add_space(4.0);
+
+                    // Option 2: Free Driving (Goldshire, Elwynn Forest)
+                    let is_sel2 = selected == 2;
+                    let is_active2 =
+                        manager.current_trial_idx.is_none() && manager.free_drive_loc == 2;
+                    let free2_text = format!(
+                        "{} [3] Elwynn Forest — Goldshire (Eastern Kingdoms) {}",
+                        if is_sel2 { "▶ " } else { "   " },
+                        if is_active2 { "(Active)" } else { "" }
+                    );
+
+                    let btn2 = ui.add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Button::new(
+                            egui::RichText::new(free2_text)
+                                .size(15.0)
+                                .color(if is_sel2 {
+                                    egui::Color32::from_rgb(255, 220, 0)
+                                } else {
+                                    egui::Color32::WHITE
+                                })
+                                .strong(),
+                        )
+                        .fill(if is_sel2 {
+                            egui::Color32::from_rgb(60, 45, 10)
+                        } else {
+                            egui::Color32::from_black_alpha(100)
+                        }),
+                    );
+                    if btn2.clicked() {
+                        chosen_idx = Some(2);
+                    }
+
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("TIME TRIAL COURSES (NITRO DISABLED):")
+                            .color(egui::Color32::from_rgb(255, 140, 0))
+                            .size(13.0)
+                            .strong(),
+                    );
+                    ui.add_space(4.0);
+
+                    // Trial Options (3..N+2)
+                    for (i, trial) in manager.trials.iter().enumerate() {
+                        let option_idx = i + 3;
+                        let is_sel = selected == option_idx;
+                        let is_active = manager.current_trial_idx == Some(i);
+
+                        let map_name = match trial.map_id {
+                            0 => "Eastern Kingdoms",
+                            1 => "Kalimdor",
+                            other => &format!("Map {other}"),
+                        };
+
+                        let best_str = if let Some(b) = manager.best_times.get(&trial.name) {
+                            let mins = (b / 60.0).floor() as u32;
+                            let secs = b % 60.0;
+                            format!(" ★ Best: {mins:02}:{secs:05.2}")
+                        } else {
+                            "".to_string()
+                        };
+
+                        let label_text = format!(
+                            "{} [{}] {} ({}){}",
+                            if is_sel { "▶ " } else { "   " },
+                            option_idx + 1,
+                            trial.name,
+                            map_name,
+                            if is_active { " (Active)" } else { "" }
+                        );
+
+                        let full_text = format!("{label_text}{best_str}");
+
+                        let btn = ui.add_sized(
+                            [ui.available_width(), 38.0],
+                            egui::Button::new(egui::RichText::new(full_text).size(15.0).color(
+                                if is_sel {
+                                    egui::Color32::from_rgb(255, 220, 0)
+                                } else {
+                                    egui::Color32::WHITE
+                                },
+                            ))
+                            .fill(if is_sel {
+                                egui::Color32::from_rgb(60, 45, 10)
+                            } else {
+                                egui::Color32::from_black_alpha(100)
+                            }),
+                        );
+                        if btn.clicked() {
+                            chosen_idx = Some(option_idx);
+                        }
                     }
                 }
 
@@ -1005,6 +1113,12 @@ pub fn render_trial_ui(
                 });
             });
 
+        if new_tab != *tab {
+            *tab = new_tab;
+        }
+        if edit != *settings {
+            *settings = edit;
+        }
         if let Some(choice) = chosen_idx {
             apply_menu_choice(
                 choice,

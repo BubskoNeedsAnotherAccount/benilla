@@ -65,6 +65,16 @@ fn load_effect(
 }
 
 impl CarAudio {
+    /// Sets the master volume, 0 to 1 as an amplitude, on Kira's main track.
+    pub fn set_master_volume(&mut self, volume: f32) {
+        let db = if volume <= 0.001 {
+            Decibels::SILENCE
+        } else {
+            Decibels(20.0 * volume.log10())
+        };
+        self.manager.main_track().set_volume(db, Tween::default());
+    }
+
     /// Attempts to locate `assets/sounds/` and load all sound effects.
     pub fn new() -> Option<Self> {
         // A browser has no directory to find; `load_effect` asks the page.
