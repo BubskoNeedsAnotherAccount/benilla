@@ -15,6 +15,8 @@
 mod camera;
 mod car;
 mod engine_synth;
+#[cfg(target_arch = "wasm32")]
+mod net;
 mod shadow;
 mod smoke;
 mod sound;
@@ -110,6 +112,10 @@ fn main() -> AppExit {
     .add_plugins(benilla_world::world_plugins::WorldPlugins)
     .add_plugins(bevy::gltf::GltfPlugin::default())
     .add_plugins(bevy_egui::EguiPlugin::default());
+
+    // Other drivers, over the page's socket to the relay (`server/`).
+    #[cfg(target_arch = "wasm32")]
+    app.add_plugins(net::NetPlugin);
 
     // Initialize audio system if sounds are present.
     if let Some(audio) = sound::CarAudio::new() {

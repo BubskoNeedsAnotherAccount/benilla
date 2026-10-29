@@ -1,0 +1,11 @@
+﻿{
+  "name": "benilla-lambo-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WebSocket relay for benilla-lambo rooms",
+  "scripts": { "start": "node server.mjs" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "ws": "8.22.0" }
+}
+

@@ -44,3 +44,5 @@ __pycache__/
 /wow-addons-vanilla
 /crates/benilla-lambo/dist
 /crates/benilla-lambo/web/dist
+
+/crates/benilla-lambo/server/node_modules

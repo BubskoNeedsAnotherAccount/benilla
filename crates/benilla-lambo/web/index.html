@@ -40,6 +40,14 @@
   kbd { font: 12px ui-monospace, Menlo, Consolas, monospace; border: 1px solid var(--line);
     border-radius: 4px; padding: 0 5px; }
   .fine { font-size: 12px; margin: 16px 0 0; }
+  .mp { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .mp label.row { display: block; font-weight: 600; margin-bottom: 8px; }
+  .mp .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .mp .grid .wide { grid-column: 1 / -1; }
+  .mp span.l { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  input[type=text], input[type=url] { width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); margin-top: 8px; padding: 6px 12px; font-weight: 500; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -61,6 +69,22 @@
     <ul id="found"></ul>
     <div id="status" role="status"></div>
     <label class="fine"><input id="sound" type="checkbox"> Engine sound (runs on its own thread; untick if the game stutters)</label><br>
+
+    <div class="mp">
+      <label class="row"><input id="mp-on" type="checkbox"> Drive with friends</label>
+      <div id="mp-form" hidden>
+        <p class="fine" style="margin:0">Everyone who types the same room name and uses the same server meets in the same world.
+          Each of you needs your own copy of the game data.</p>
+        <div class="grid">
+          <label><span class="l">Your name</span><input id="mp-name" type="text" maxlength="16" autocomplete="nickname"></label>
+          <label><span class="l">Room</span><input id="mp-room" type="text" maxlength="32" autocomplete="off" spellcheck="false"></label>
+          <label class="wide"><span class="l">Server</span><input id="mp-server" type="url" placeholder="wss://your-relay.example.com" autocomplete="off" spellcheck="false" required></label>
+        </div>
+        <p class="fine" style="margin:8px 0 0">Ask whoever hosts for the server address (it starts with wss://) and paste it here.</p>
+        <button id="mp-copy" class="ghost" type="button">Copy invite link</button>
+      </div>
+    </div>
+
     <button id="start" hidden>Start driving</button>
 
     <div class="keys">
@@ -76,6 +100,7 @@
 import { installIo } from "./io-bridge.js";
 import { installSynth } from "./synth-bridge.js";
 import { installThreads } from "./thread-bridge.js";
+import { installNet, checkServer } from "./net-bridge.js";
 
 const $ = (id) => document.getElementById(id);
 const status = (text, err = false) => { $("status").textContent = text; $("status").className = err ? "err" : ""; };
@@ -243,6 +268,55 @@ if (new URLSearchParams(location.search).has("devdata")) {
   accept(list.map((f) => ({ name: f.name, size: f.size, url: `/__data/${encodeURIComponent(f.name)}` })));
 }
 
+// Multiplayer: a room on a relay server (`server/server.mjs`), named by the page's address or the
+// form. The server address is always typed in; an invite link carries the room only.
+const store = {
+  get: (k) => { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+};
+{
+  const q = new URLSearchParams(location.search);
+  // The server address is never prefilled, remembered or carried by a link: joining means typing it.
+  $("mp-name").value = q.get("name") || store.get("lambo-name") || "";
+  $("mp-room").value = q.get("room") || store.get("lambo-room") || "";
+  $("mp-on").checked = q.has("room") || store.get("lambo-mp") === "1";
+  const sync = () => { $("mp-form").hidden = !$("mp-on").checked; };
+  $("mp-on").onchange = sync;
+  sync();
+  $("mp-copy").onclick = async () => {
+    const room = $("mp-room").value.trim() || randomRoom();
+    $("mp-room").value = room;
+    const url = new URL(location.href);
+    url.search = "";
+    url.searchParams.set("room", room);
+    try { await navigator.clipboard.writeText(url.href); $("mp-copy").textContent = "Copied"; }
+    catch { $("mp-copy").textContent = url.href; }
+    setTimeout(() => { $("mp-copy").textContent = "Copy invite link"; }, 2500);
+  };
+}
+function randomRoom() {
+  const a = "abcdefghjkmnpqrstuvwxyz23456789";
+  return Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => a[b % a.length]).join("");
+}
+
+// Reads the form, checks the room can be joined, and hands the socket to the game; false to stay on the page.
+async function startNet() {
+  if (!$("mp-on").checked) { installNet({}); store.set("lambo-mp", "0"); return true; }
+  const room = $("mp-room").value.trim();
+  const server = $("mp-server").value.trim();
+  const name = $("mp-name").value.trim() || "driver";
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(room)) { status("Room names are letters, digits, - and _ (up to 32).", true); return false; }
+  if (!server) { status("Enter the server address your host gave you, or untick Drive with friends.", true); $("mp-server").focus(); return false; }
+  status("Reaching the server…");
+  const probe = await checkServer({ server, room, name });
+  if (!probe.ok) { status(`Cannot join: ${probe.why}.`, true); return false; }
+  store.set("lambo-mp", "1");
+  store.set("lambo-name", name);
+  store.set("lambo-room", room);
+  installNet({ server, room, name });
+  return true;
+}
+
 async function fetchAssets() {
   const wanted = ["car.glb", "sounds/skid_loop.wav", "sounds/nitro.wav"];
   const assets = new Map();
@@ -259,6 +333,11 @@ async function start() {
   started = true;
   $("start").disabled = true;
   try {
+    if (!(await startNet())) {
+      started = false;
+      $("start").disabled = false;
+      return;
+    }
     status("Opening your files…");
     await installIo(files, await fetchAssets());
     await installSynth(soundOn);

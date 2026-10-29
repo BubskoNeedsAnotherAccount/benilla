@@ -25,6 +25,26 @@ Any static host. The page needs `SharedArrayBuffer`, which needs cross-origin is
 - GitHub Pages and the like cannot set headers: `coi-sw.js` sets them from a service worker and
   the page reloads once. This needs HTTPS (or `localhost`).
 
+## Play with friends
+
+GitHub Pages only serves files, so the page talks to a small relay (`server/server.mjs`, Node, one
+dependency) that you host separately. It runs no game logic: each browser drives its own car and the
+relay forwards car states to the others in the same room (up to 8). Everyone still picks their own
+`Data` folder. "Drive with friends" is off by default and single player does not touch the network.
+
+1. Host the relay anywhere that runs Node and gives you `wss://` (Fly, Render, Railway, a VPS, or
+   `cloudflared tunnel --url http://localhost:8787` from your own machine):
+   ```sh
+   cd crates/benilla-lambo/server && npm install && ORIGINS=https://<you>.github.io node server.mjs
+   ```
+   `ORIGINS` limits which pages may connect; leave it unset to accept any. A `Dockerfile` is included.
+2. On the page tick "Drive with friends", type the relay's `wss://` address and a room name. The
+   address is never prefilled, stored or put in a link, so the site needs no update when it changes.
+3. Send friends the address and press "Copy invite link" for the room. They paste the address,
+   choose their game files, and join.
+
+An https page can only open `wss://` (plain `ws://` is allowed for `localhost`).
+
 ## Run locally
 
 ```sh

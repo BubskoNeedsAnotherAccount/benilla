@@ -174,9 +174,14 @@ impl Car {
     }
 
     pub fn rotation(&self) -> Quat {
-        let (f, r) = self.basis();
-        Quat::from_mat3(&Mat3::from_cols(r, self.up, -f))
+        orientation(self.yaw, self.up)
     }
+}
+
+/// The body's rotation for a heading on the plane with normal `up`.
+pub fn orientation(yaw: f32, up: Vec3) -> Quat {
+    let (f, r) = basis(yaw, up);
+    Quat::from_mat3(&Mat3::from_cols(r, up, -f))
 }
 
 /// Forward (−Z at yaw 0, turning left as yaw grows) and right, on the plane with normal `up`.

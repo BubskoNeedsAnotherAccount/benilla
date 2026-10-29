@@ -76,7 +76,7 @@ if (mode !== "dev" && spawnSync("wasm-opt", ["--version"], { shell: true }).stat
   run("wasm-opt", ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "-o", synthBg, synthBg]);
 }
 
-for (const f of ["index.html", "io-bridge.js", "io-worker.js", "synth-bridge.js", "synth-worker.js", "thread-bridge.js", "thread-worker.js", "coi-sw.js", "_headers"]) {
+for (const f of ["index.html", "net-bridge.js", "io-bridge.js", "io-worker.js", "synth-bridge.js", "synth-worker.js", "thread-bridge.js", "thread-worker.js", "coi-sw.js", "_headers"]) {
   cpSync(join(here, f), join(dist, f));
 }
 const assets = join(repo, "crates/benilla-lambo/assets");
