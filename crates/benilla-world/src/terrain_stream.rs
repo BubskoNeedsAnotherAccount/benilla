@@ -971,7 +971,14 @@ fn spawn_streamed_tiles(
             },
         });
         // One static trimesh per tile from the drawn chunks, built off-thread, riding the root.
-        let collider_data = terrain_collider_data(&adt.chunks);
+        let collider_data = {
+            let mut prebuilt = adt.prebuilt.lock().unwrap_or_else(|p| p.into_inner());
+            if prebuilt.collider_built {
+                prebuilt.collider.take()
+            } else {
+                terrain_collider_data(&adt.chunks)
+            }
+        };
         // The impassable-chunk fences are a second collider, on the walk layer only: the reference
         // emits them into the movement box gather alone, never its segment and ray path.
         let wall_data = impassable_wall_data(&adt.chunks);
@@ -1706,6 +1713,7 @@ mod inner_hold_tests {
             doodads: Vec::new(),
             wmos: Vec::new(),
             chunks,
+            prebuilt: Default::default(),
         }
     }
 

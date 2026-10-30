@@ -6,6 +6,7 @@
 //! shares one material.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use benilla_formats::{
     adt_to_tile_mesh, blp_bytes_to_native_chain, ChunkMesh, Doodad, WmoInstance, ALPHA_MAP_SIZE,
@@ -13,6 +14,7 @@ use benilla_formats::{
 };
 use bevy::asset::io::Reader;
 use bevy::asset::{Asset, AssetLoader, LoadContext, RenderAssetUsages};
+use bevy::camera::primitives::{Aabb, MeshAabb};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
@@ -40,6 +42,74 @@ pub struct AdtTile {
     /// The decoded MCNK chunks, kept resident: the app derives the collider, the MCLQ liquids and
     /// the ground clutter from them.
     pub chunks: Vec<ChunkMesh>,
+    /// Meshes and collider vertices the loader built off the main thread, taken once by the
+    /// streamer; empty where a tile was made without the loader.
+    pub prebuilt: Mutex<Prebuilt>,
+}
+
+/// A terrain cell is 4×4 chunks, one mesh and one draw; a tile is 4×4 cells.
+pub const CELL_SPAN: usize = 4;
+/// Cells per tile.
+pub const CELLS_PER_TILE: usize = (16 / CELL_SPAN) * (16 / CELL_SPAN);
+
+/// A built terrain cell and its bounds (the mesh is `RENDER_WORLD`-only, so the `Aabb` is taken
+/// before the first upload).
+pub struct CellMesh {
+    pub mesh: Mesh,
+    pub aabb: Option<Aabb>,
+}
+
+/// A tile's terrain collider as `(vertices, triangles)` in Bevy space.
+pub type ColliderData = (Vec<Vec3>, Vec<[u32; 3]>);
+
+/// The main-thread work of a tile, done where the tile loads: its cell meshes and collider data.
+#[derive(Default)]
+pub struct Prebuilt {
+    /// Index = cell (row-major); `None` is a hole-emptied cell. Empty when not prebuilt.
+    pub cells: Vec<Option<CellMesh>>,
+    /// The collider data was built (it may still be `None` for an all-hole tile).
+    pub collider_built: bool,
+    pub collider: Option<ColliderData>,
+}
+
+/// A tile's chunks as terrain collider `(vertices, triangles)` in Bevy space, one trimesh over every
+/// chunk; `None` when every chunk is a hole.
+pub fn terrain_collider_data(chunks: &[ChunkMesh]) -> Option<ColliderData> {
+    let mut verts: Vec<Vec3> = Vec::new();
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    for chunk in chunks {
+        let base = verts.len() as u32;
+        verts.extend(chunk.positions.iter().map(|p| wow_to_bevy(*p)));
+        tris.extend(
+            chunk
+                .indices
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|c| [base + c[0], base + c[1], base + c[2]]),
+        );
+    }
+    (!tris.is_empty()).then_some((verts, tris))
+}
+
+/// The tile's cell meshes, cell `i` over chunks `(i / 4·4 + dy)·16 + (i % 4)·4 + dx` (MCIN order is
+/// row-major).
+fn build_cells(chunks: &[ChunkMesh], shading: &[ChunkShading]) -> Vec<Option<CellMesh>> {
+    let per_row = 16 / CELL_SPAN;
+    (0..CELLS_PER_TILE)
+        .map(|cell| {
+            let (cy, cx) = (cell / per_row, cell % per_row);
+            let parts: Vec<_> = (0..CELL_SPAN)
+                .flat_map(|dy| {
+                    (0..CELL_SPAN).map(move |dx| (cy * CELL_SPAN + dy) * 16 + cx * CELL_SPAN + dx)
+                })
+                .filter_map(|i| Some((chunks.get(i)?, shading.get(i)?)))
+                .collect();
+            let mesh = chunks_to_mesh(&parts)?;
+            let aabb = mesh.compute_aabb();
+            Some(CellMesh { mesh, aabb })
+        })
+        .collect()
 }
 
 /// One drawn chunk's array indices, uniform over its vertices.
@@ -237,14 +307,27 @@ impl AssetLoader for AdtLoader {
         let alpha_array = alpha_array_image(ALPHA_MAP_SIZE, alpha_count, alpha_buf);
         let shadow_array = shadow_array_image(SHADOW_MAP_SIZE, shadow_count, shadow_buf);
 
+        // The cell meshes and collider vertices are the tile's main-thread cost if built at spawn,
+        // so they are built here, off it ([`crate::offload`]), and the chunks make the round trip.
+        let (chunks, shading, prebuilt) = crate::offload::run(move || {
+            let prebuilt = Prebuilt {
+                cells: build_cells(&tile.chunks, &shading),
+                collider_built: true,
+                collider: terrain_collider_data(&tile.chunks),
+            };
+            (tile.chunks, shading, prebuilt)
+        })
+        .await;
+
         Ok(AdtTile {
+            prebuilt: Mutex::new(prebuilt),
             shading,
             layer_array: ctx.add_labeled_asset("layer_array".to_string(), layer_array),
             alpha_array: ctx.add_labeled_asset("alpha_array".to_string(), alpha_array),
             shadow_array: ctx.add_labeled_asset("shadow_array".to_string(), shadow_array),
             doodads: tile.doodads,
             wmos: tile.wmos,
-            chunks: tile.chunks,
+            chunks,
         })
     }
 

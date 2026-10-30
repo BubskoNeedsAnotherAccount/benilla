@@ -255,27 +255,7 @@ pub fn placement_collider_data(
     Some((verts, tris))
 }
 
-/// A terrain tile's collider: one trimesh welded from its decoded MCNK chunks in draw space, the
-/// loader's hole-masked indices rebased onto the running vertex count.
-pub(super) fn terrain_collider_data(
-    chunks: &[benilla_formats::ChunkMesh],
-) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
-    let mut verts: Vec<Vec3> = Vec::new();
-    let mut tris: Vec<[u32; 3]> = Vec::new();
-    for chunk in chunks {
-        let base = verts.len() as u32;
-        verts.extend(chunk.positions.iter().map(|p| wow_to_bevy(*p)));
-        tris.extend(
-            chunk
-                .indices
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .map(|c| [base + c[0], base + c[1], base + c[2]]),
-        );
-    }
-    (!tris.is_empty()).then_some((verts, tris))
-}
+pub(super) use benilla_assets::terrain_collider_data;
 
 /// How far an impassable chunk's fence rises from the chunk AABB's min z (`chunk+0x4c`): the
 /// reference's `(0, 0, 32000.0)` (`0x46fa0000` at `0x6ab599`, emitter `0x6ab530`). Nothing extends

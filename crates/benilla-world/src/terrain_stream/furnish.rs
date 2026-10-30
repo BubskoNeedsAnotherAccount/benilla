@@ -6,8 +6,8 @@
 
 use web_time::Instant;
 
-use benilla_assets::{chunks_to_mesh, AdtTile};
-use bevy::camera::primitives::MeshAabb;
+use benilla_assets::{chunks_to_mesh, AdtTile, CELL_SPAN};
+use bevy::camera::primitives::{Aabb, MeshAabb};
 use bevy::prelude::*;
 
 use super::TerrainStreamer;
@@ -19,7 +19,6 @@ const CELL_SPAWN_CAP: usize = 64;
 /// A tile's 16×16 chunks furnish as 4×4 cells of 4×4 chunks, one mesh and one draw each: every
 /// per-chunk fact is baked per vertex and the material is the tile's. The 133⅓-yd cell matches
 /// `static_gx` and the merge lanes.
-const CELL_SPAN: usize = 4;
 const CELLS_PER_TILE: usize = (16 / CELL_SPAN) * (16 / CELL_SPAN);
 const CHUNKS_PER_CELL: usize = CELL_SPAN * CELL_SPAN;
 
@@ -85,21 +84,11 @@ pub(super) fn furnish_tile_cells(
             if ablated {
                 continue;
             }
-            // The cell's chunks: MCIN order is row-major, index = row·16 + column.
-            let (cy, cx) = (cell / (16 / CELL_SPAN), cell % (16 / CELL_SPAN));
-            let parts: Vec<_> = (0..CELL_SPAN)
-                .flat_map(|dy| {
-                    (0..CELL_SPAN).map(move |dx| (cy * CELL_SPAN + dy) * 16 + cx * CELL_SPAN + dx)
-                })
-                .filter_map(|i| Some((adt.chunks.get(i)?, adt.shading.get(i)?)))
-                .collect();
-            // A hole-emptied cell yields no mesh and does not count.
-            let Some(mesh) = chunks_to_mesh(&parts) else {
+            // The loader built the tile's cell meshes off-thread; a tile made without it (a test)
+            // builds the cell here. A hole-emptied cell yields no mesh and does not count.
+            let Some((mesh, aabb)) = take_cell(adt, cell) else {
                 continue;
             };
-            // The Aabb is computed here: the mesh is `RENDER_WORLD`-only, so `calculate_bounds`
-            // may find it already extracted, and the exterior cull fails open on a missing Aabb.
-            let aabb = mesh.compute_aabb();
             let handle = meshes.add(mesh);
             commands.entity(root).with_children(|cells| {
                 let mut cell = cells.spawn((
@@ -120,6 +109,33 @@ pub(super) fn furnish_tile_cells(
     }
     activity.cells_spawned += built as u32;
     activity.furnish_ms += t0.elapsed().as_secs_f32() * 1000.0;
+}
+
+/// The tile's cell `cell` as a mesh and its `Aabb`, from the loader's prebuilt set or, for a tile
+/// made without one, built now. The `Aabb` is taken here: the mesh is `RENDER_WORLD`-only, so
+/// `calculate_bounds` may find it already extracted, and the exterior cull fails open without one.
+fn take_cell(adt: &AdtTile, cell: usize) -> Option<(Mesh, Option<Aabb>)> {
+    {
+        let mut prebuilt = adt.prebuilt.lock().unwrap_or_else(|p| p.into_inner());
+        if !prebuilt.cells.is_empty() {
+            return prebuilt
+                .cells
+                .get_mut(cell)?
+                .take()
+                .map(|c| (c.mesh, c.aabb));
+        }
+    }
+    // MCIN order is row-major, index = row·16 + column.
+    let (cy, cx) = (cell / (16 / CELL_SPAN), cell % (16 / CELL_SPAN));
+    let parts: Vec<_> = (0..CELL_SPAN)
+        .flat_map(|dy| {
+            (0..CELL_SPAN).map(move |dx| (cy * CELL_SPAN + dy) * 16 + cx * CELL_SPAN + dx)
+        })
+        .filter_map(|i| Some((adt.chunks.get(i)?, adt.shading.get(i)?)))
+        .collect();
+    let mesh = chunks_to_mesh(&parts)?;
+    let aabb = mesh.compute_aabb();
+    Some((mesh, aabb))
 }
 
 /// `WOW_NO_TILE_CELLS=1` furnishes no cell entities (a dev measurement switch).
