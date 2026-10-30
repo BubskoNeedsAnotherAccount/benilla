@@ -101,11 +101,23 @@ impl MpqAssetReader {
             .read(&internal)
             .map_err(|e| AssetReaderError::Io(Arc::new(std::io::Error::other(format!("{e:#}")))))
     }
+
+    /// [`Self::read_bytes`], on the pool where there is one: a browser runs asset loads on the
+    /// page's thread, and an archive read there (the file read and the sector decompression) stalls
+    /// the frame. Elsewhere the read runs here, already on an I/O thread natively.
+    async fn read_bytes_off(&self, path: &Path) -> Result<Vec<u8>, AssetReaderError> {
+        if !offload::threaded() {
+            return self.read_bytes(path);
+        }
+        let reader = self.clone();
+        let path = path.to_path_buf();
+        offload::run(move || reader.read_bytes(&path)).await
+    }
 }
 
 impl AssetReader for MpqAssetReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
-        Ok(VecReader::new(self.read_bytes(path)?))
+        Ok(VecReader::new(self.read_bytes_off(path).await?))
     }
 
     async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
@@ -150,7 +162,7 @@ impl AssetReader for LooseAssetReader {
             Some(file) => file
                 .read()
                 .ok_or_else(|| AssetReaderError::NotFound(path.to_path_buf()))?,
-            None => self.mpq.read_bytes(path)?,
+            None => self.mpq.read_bytes_off(path).await?,
         };
         Ok(VecReader::new(bytes))
     }

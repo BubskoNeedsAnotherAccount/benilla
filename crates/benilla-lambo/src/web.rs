@@ -5,8 +5,9 @@
 //!
 //! The engine reads archives synchronously, and a browser's main thread cannot block on a file.
 //! The worker does the read and hands the bytes over a `SharedArrayBuffer`, which `read` waits on
-//! by polling (`web/io-bridge.js`). Reads go through a chunk cache so a sector-sized read does not
-//! cost a round trip.
+//! by polling (`web/io-bridge.js`). A pool worker, which may block, reads the files directly
+//! (`web/thread-worker.js`), and the engine runs its archive reads there. Reads go through a chunk
+//! cache shared by every thread, so a sector-sized read does not cost a round trip.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -83,20 +84,38 @@ struct PickedFile {
     cache: Arc<Mutex<Cache>>,
 }
 
+/// The cache, from any thread. Pool workers read archives too (`benilla_assets` hands them the
+/// reads), and the page's thread may not block on a contended lock (`Atomics.wait` traps there):
+/// it spins, and the lock is never held across a read, so the spin is short.
+fn lock(cache: &Mutex<Cache>) -> std::sync::MutexGuard<'_, Cache> {
+    loop {
+        match cache.try_lock() {
+            Ok(c) => return c,
+            Err(std::sync::TryLockError::Poisoned(p)) => return p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+        }
+    }
+}
+
 impl PickedFile {
     fn chunk(&self, n: u64) -> io::Result<Arc<[u8]>> {
-        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-        cache.tick += 1;
-        let tick = cache.tick;
-        if let Some((bytes, used)) = cache.chunks.get_mut(&(self.index, n)) {
-            *used = tick;
-            return Ok(bytes.clone());
+        {
+            let mut cache = lock(&self.cache);
+            cache.tick += 1;
+            let tick = cache.tick;
+            if let Some((bytes, used)) = cache.chunks.get_mut(&(self.index, n)) {
+                *used = tick;
+                return Ok(bytes.clone());
+            }
         }
         let start = n * CHUNK;
         let len = CHUNK.min(self.size.saturating_sub(start)) as usize;
         let mut buf = vec![0u8; len];
         read_exact_js(self.index, start, &mut buf)?;
         let bytes: Arc<[u8]> = buf.into();
+        let mut cache = lock(&self.cache);
+        cache.tick += 1;
+        let tick = cache.tick;
         if cache.chunks.len() >= CHUNKS_KEPT {
             let oldest = cache
                 .chunks

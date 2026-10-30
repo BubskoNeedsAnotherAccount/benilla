@@ -77,6 +77,18 @@ mod pool {
 #[cfg(target_arch = "wasm32")]
 pub use pool::{set_runner, Job};
 
+/// Whether [`run`] hands its jobs to a pool: the browser build with threads.
+pub fn threaded() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        pool::threaded()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
+    }
+}
+
 /// Run `job` off the main thread where the host has a pool, else here.
 pub async fn run<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> T {
     #[cfg(target_arch = "wasm32")]
