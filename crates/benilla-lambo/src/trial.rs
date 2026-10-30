@@ -1836,13 +1836,19 @@ mod tests {
             serde_json::from_str(json_str).expect("parse time_trials.json");
         assert!(!defs.is_empty());
         let trials: Vec<TimeTrial> = defs.into_iter().map(Into::into).collect();
-        assert_eq!(trials[0].name, "Crossroads to Ratchet Sprint");
+        // A point-to-point race with checkpoints.
+        assert_eq!(trials[0].name, "Gold Road");
         assert_eq!(trials[0].map_id, 1);
-        assert_eq!(trials[0].start, [-437.0, -2596.0, 96.0]);
-        assert_eq!(trials[0].end, [-1000.33, -3822.91, 5.71]);
-        assert_eq!(trials[0].rotation, Some(253.0));
-        // Plain trials stay plain.
-        assert!(trials.iter().all(|t| !t.circuit && t.lap_count() == 1));
+        assert_eq!(trials[0].start, [-412.30, -1398.25, 92.19]);
+        assert_eq!(trials[0].end, [-4663.41, -1851.79, 85.81]);
+        assert_eq!(trials[0].rotation, Some(224.0));
+        assert_eq!(trials[0].checkpoints.len(), 12);
+        assert!(!trials[0].circuit && trials[0].lap_count() == 1);
+        // A three-lap circuit finishing at its start.
+        assert_eq!(trials[1].name, "Mirage Raceway");
+        assert!(trials[1].circuit && trials[1].end == trials[1].start);
+        assert_eq!(trials[1].lap_count(), 3);
+        assert_eq!(trials[1].checkpoints.len(), 6);
     }
 
     fn parse(json: &str) -> TimeTrial {
