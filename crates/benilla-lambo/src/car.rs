@@ -45,7 +45,7 @@ const WHEELBASE: f32 = 2.76;
 const SPRING_K: f32 = 180.0;
 const SPRING_C: f32 = 24.0;
 /// The WoW gravity the world's physics is set to (`world_plugins`), in yd/s².
-const GRAVITY: f32 = 23.291_105;
+const GRAVITY: f32 = 28.291_105;
 /// Lowest the body centre may sink toward the ground plane.
 const MIN_HEIGHT: f32 = 0.44;
 
@@ -57,6 +57,8 @@ const REVERSE_MAX: f32 = 33.0;
 pub const TOP_SPEED: f32 = 175.0;
 const GRIP: f32 = 7.5;
 const GRIP_HANDBRAKE: f32 = 1.3;
+/// The rear wheels locked by the handbrake slow the car this much, yd/s².
+const HANDBRAKE_DECEL: f32 = 32.0;
 
 /// Physics steps per frame, so a fast car's wheel rays do not skip a bump.
 const SUBSTEPS: u32 = 2;
@@ -655,7 +657,9 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
         }
 
         if input.handbrake {
-            v_f *= (-3.0 * dt).exp();
+            // A steady drag, not a share of the speed: a drift on throttle holds its pace, and
+            // off throttle the car still comes to a stop.
+            v_f -= v_f.signum() * v_f.abs().min(HANDBRAKE_DECEL * dt);
         }
         v_r *= (-(if input.handbrake {
             GRIP_HANDBRAKE
