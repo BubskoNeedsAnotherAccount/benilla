@@ -13,7 +13,9 @@ use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
 use bevy::render::render_resource::Face;
 
-use crate::clutter::{scatter_tile_clutter, ClutterConfig, GroundClutter};
+use crate::clutter::{
+    scatter_tile_clutter, scatter_tile_clutter_task, ClutterConfig, GroundClutter,
+};
 use crate::collision::{walk_layers, GroundDecalSurface, PickOccluder};
 use crate::interior::WmoResidency;
 use crate::lighting::SharedLightBuffer;
@@ -42,7 +44,7 @@ use collider::{
     PendingColliders,
 };
 use furnish::furnish_tile_cells;
-use merge::{flush_static_merge, StaticMerge};
+use merge::{flush_static_merge, land_blobs, StaticMerge};
 use spawn::prop_light::WmoDoodadInst;
 use spawn::spawn_loaded_placements;
 use weld::{flush_hull_welds, HullWelds};
@@ -490,6 +492,7 @@ impl Plugin for TerrainPlugin {
                     spawn_loaded_placements,
                     flush_hull_welds,
                     flush_static_merge,
+                    land_blobs,
                     sync_interior_volumes,
                     publish_terrain_residency,
                 )
@@ -1033,17 +1036,16 @@ fn spawn_streamed_tiles(
 
         // Ground clutter per chunk, meshed lazily within ~70 yd by `stream_chunk_clutter`.
         if let (Some(clutter), Some(clutter_cfg)) = (clutter.as_ref(), clutter_cfg.as_ref()) {
-            let mut clutter_ents = Vec::new();
-            scatter_tile_clutter(
+            // The scatter walks all 256 chunks, so it runs on the compute pool; `land_clutter`
+            // spawns the chunks under the tile's marker entity.
+            tile.clutter = vec![scatter_tile_clutter_task(
                 &mut commands,
-                &adt.chunks,
+                adt.chunks.clone(),
                 tx as u32,
                 ty as u32,
-                &clutter.catalog,
+                clutter.catalog.clone(),
                 clutter_cfg.density,
-                &mut clutter_ents,
-            );
-            tile.clutter = clutter_ents;
+            )];
         }
     }
 
@@ -1714,7 +1716,7 @@ mod inner_hold_tests {
             shadow_array: Handle::default(),
             doodads: Vec::new(),
             wmos: Vec::new(),
-            chunks,
+            chunks: std::sync::Arc::new(chunks),
             prebuilt: Default::default(),
         }
     }

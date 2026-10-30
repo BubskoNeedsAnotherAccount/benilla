@@ -41,7 +41,7 @@ pub struct AdtTile {
     pub wmos: Vec<WmoInstance>,
     /// The decoded MCNK chunks, kept resident: the app derives the collider, the MCLQ liquids and
     /// the ground clutter from them.
-    pub chunks: Vec<ChunkMesh>,
+    pub chunks: std::sync::Arc<Vec<ChunkMesh>>,
     /// Meshes and collider vertices the loader built off the main thread, taken once by the
     /// streamer; empty where a tile was made without the loader.
     pub prebuilt: Mutex<Prebuilt>,
@@ -327,7 +327,7 @@ impl AssetLoader for AdtLoader {
             shadow_array: ctx.add_labeled_asset("shadow_array".to_string(), shadow_array),
             doodads: tile.doodads,
             wmos: tile.wmos,
-            chunks,
+            chunks: std::sync::Arc::new(chunks),
         })
     }
 

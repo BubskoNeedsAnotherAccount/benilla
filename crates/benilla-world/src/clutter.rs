@@ -31,6 +31,7 @@ impl Plugin for ClutterPlugin {
             .add_systems(
                 Update,
                 (
+                    land_clutter,
                     remesh_on_cutout_change,
                     stream_chunk_clutter,
                     evict_clutter_geometry,
@@ -104,7 +105,9 @@ fn setup_clutter(mut commands: Commands, world_assets: Option<ResMut<WorldAssets
     match load_ground_effect_catalog(&mut chain, true) {
         Ok(catalog) => {
             info!("ground-effect catalog: {} effects", catalog.len());
-            commands.insert_resource(GroundClutter { catalog });
+            commands.insert_resource(GroundClutter {
+                catalog: std::sync::Arc::new(catalog),
+            });
         }
         Err(e) => warn!("ground-effect catalog unavailable, no ground clutter: {e:#}"),
     }
@@ -113,7 +116,7 @@ fn setup_clutter(mut commands: Commands, world_assets: Option<ResMut<WorldAssets
 /// The `effectId → (models, density)` catalog; absent, and no clutter, when the DBCs fail to load.
 #[derive(Resource)]
 pub(crate) struct GroundClutter {
-    pub(crate) catalog: GroundEffectCatalog,
+    pub(crate) catalog: std::sync::Arc<GroundEffectCatalog>,
 }
 
 /// The detail-doodad alpha-test ref, `detailDoodadAlpha` = 128/255, lower than the model key.
@@ -251,15 +254,14 @@ struct ShadedPlacement {
 }
 
 /// Scatter a tile's clutter into [`ClutterChunk`]s, tint and normal baked, building no meshes.
-pub(crate) fn scatter_tile_clutter(
-    commands: &mut Commands,
+fn scatter_chunks(
     chunks: &[ChunkMesh],
     tile_x: u32,
     tile_y: u32,
     catalog: &GroundEffectCatalog,
     density: f32,
-    entities: &mut Vec<Entity>,
-) {
+) -> Vec<ClutterChunk> {
+    let mut out = Vec::new();
     for chunk in chunks {
         let mut by_model: HashMap<String, Vec<ShadedPlacement>> = HashMap::new();
         for placement in scatter_ground_doodads(chunk, catalog, tile_x, tile_y, density) {
@@ -286,15 +288,72 @@ pub(crate) fn scatter_tile_clutter(
             hi = hi.max(v);
         }
         hi.y += CLUTTER_TUFT_HEIGHT;
-        entities.push(
-            commands
-                .spawn(ClutterChunk {
-                    bounds: (lo, hi),
-                    models: by_model.into_iter().collect(),
-                    built: Vec::new(),
-                })
-                .id(),
-        );
+        out.push(ClutterChunk {
+            bounds: (lo, hi),
+            models: by_model.into_iter().collect(),
+            built: Vec::new(),
+        });
+    }
+    out
+}
+
+/// [`scatter_chunks`] spawned as entities now, for a density change on resident tiles.
+pub(crate) fn scatter_tile_clutter(
+    commands: &mut Commands,
+    chunks: &[ChunkMesh],
+    tile_x: u32,
+    tile_y: u32,
+    catalog: &GroundEffectCatalog,
+    density: f32,
+    entities: &mut Vec<Entity>,
+) {
+    for chunk in scatter_chunks(chunks, tile_x, tile_y, catalog, density) {
+        entities.push(commands.spawn(chunk).id());
+    }
+}
+
+/// A tile's clutter scattering on the compute pool; the entity despawns with the tile, taking the
+/// [`ClutterChunk`]s [`land_clutter`] spawns under it.
+#[derive(Component)]
+pub(crate) struct PendingClutter(bevy::tasks::Task<Vec<ClutterChunk>>);
+
+/// [`scatter_tile_clutter`] off the main thread: the marker entity to track in the tile.
+pub(crate) fn scatter_tile_clutter_task(
+    commands: &mut Commands,
+    chunks: std::sync::Arc<Vec<ChunkMesh>>,
+    tile_x: u32,
+    tile_y: u32,
+    catalog: std::sync::Arc<GroundEffectCatalog>,
+    density: f32,
+) -> Entity {
+    let task = bevy::tasks::AsyncComputeTaskPool::get().spawn(async move {
+        benilla_assets::offload::run(move || {
+            scatter_chunks(&chunks, tile_x, tile_y, &catalog, density)
+        })
+        .await
+    });
+    commands.spawn(PendingClutter(task)).id()
+}
+
+/// Spawns each finished scatter's chunks under its tile's marker.
+fn land_clutter(mut commands: Commands, mut pending: Query<(Entity, &mut PendingClutter)>) {
+    for (entity, mut p) in &mut pending {
+        let Some(chunks) =
+            bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(&mut p.0))
+        else {
+            continue;
+        };
+        // The tile may have unloaded since: a despawned marker takes nothing.
+        commands.queue(move |world: &mut World| {
+            if let Ok(mut marker) = world.get_entity_mut(entity) {
+                marker.remove::<PendingClutter>();
+                marker.with_children(|c| {
+                    for chunk in chunks {
+                        c.spawn(chunk);
+                    }
+                });
+            }
+        });
     }
 }
 

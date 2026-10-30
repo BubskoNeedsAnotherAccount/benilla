@@ -21,6 +21,8 @@ use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::NoAutoAabb;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
+use bevy::tasks::futures_lite::future;
+use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 
 use benilla_assets::materials::WowModelMaterial;
 use benilla_assets::merged_static_mesh_faded;
@@ -163,10 +165,17 @@ struct SettledCell {
     dirty: bool,
 }
 
+/// A blob whose mesh is baking on the compute pool: the entity exists and draws nothing until
+/// [`land_blobs`] attaches the mesh, its bounds and its sort-key position.
+#[derive(Component)]
+pub(super) struct PendingBlob(Task<(Mesh, Vec3, Vec3, Vec3)>);
+
 /// A replaced fragment drawing out its successor's upload cushion ([`RETIRE_FRAMES`]).
 struct Retiring {
     entity: Entity,
     owner: (i32, i32),
+    /// The blobs that replaced it: it retires only once every one has its mesh.
+    successors: Vec<Entity>,
     /// [`StaticMerge::frame`] when the successor spawned.
     since: u32,
 }
@@ -301,7 +310,7 @@ impl StaticMerge {
 /// discarded. Runs in the Stream chain right after `flush_hull_welds`.
 pub(super) fn flush_static_merge(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
+    pending: Query<(), With<PendingBlob>>,
     merge: ResMut<StaticMerge>,
     mut streamer: ResMut<super::TerrainStreamer>,
     mut placements: ResMut<super::Placements>,
@@ -325,7 +334,7 @@ pub(super) fn flush_static_merge(
                 return true;
             }
             blobs += 1;
-            let entity = spawn_blob(&mut commands, &mut meshes, &key.2, acc.source(), None, true);
+            let entity = spawn_blob(&mut commands, &key.2, acc.source(), None, true);
             tile.merged.push(entity);
             // Keep the bake input for a later re-consolidation.
             let cell = settled.entry(key.clone()).or_insert_with(|| SettledCell {
@@ -367,7 +376,6 @@ pub(super) fn flush_static_merge(
         let exterior = vis.is_some();
         p.entities.push(spawn_blob(
             &mut commands,
-            &mut meshes,
             &key.2,
             acc.source(),
             vis,
@@ -424,7 +432,6 @@ pub(super) fn flush_static_merge(
                     .collect();
                 let entity = spawn_blob(
                     &mut commands,
-                    &mut meshes,
                     &key.2,
                     BlobSource {
                         parts: &parts,
@@ -446,10 +453,12 @@ pub(super) fn flush_static_merge(
                     spheres,
                 });
             }
+            let successors: Vec<Entity> = cell.blobs.iter().map(|b| b.entity).collect();
             for b in &old {
                 retiring.push(Retiring {
                     entity: b.entity,
                     owner: key.0,
+                    successors: successors.clone(),
                     since: frame,
                 });
             }
@@ -464,7 +473,10 @@ pub(super) fn flush_static_merge(
     }
     // Retire fragments past the cushion; a dead owner already despawned them with its tile.
     merge.retiring.retain(|r| {
-        if frame.wrapping_sub(r.since) < RETIRE_FRAMES {
+        // The cushion covers the upload, so it starts once the successors' meshes have landed.
+        if frame.wrapping_sub(r.since) < RETIRE_FRAMES
+            || r.successors.iter().any(|e| pending.contains(*e))
+        {
             return true;
         }
         if let Some(tile) = streamer.tiles.get_mut(&r.owner) {
@@ -565,7 +577,6 @@ pub(crate) fn log_blob_vis(
 /// the member placement it hits rather than the blob.
 fn spawn_blob(
     commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
     mat: &Handle<WowModelMaterial>,
     src: BlobSource<'_>,
     vis: Option<WmoGroupVis>,
@@ -580,10 +591,22 @@ fn spawn_blob(
         kind,
     } = src;
     let n = parts.len();
-    // `center` is the blob's transparent sort key (the mesh is baked around it); at the world
-    // origin a fader blob would sort first and hide what is behind it.
-    let (mesh, mn, mx, center) =
-        merged_static_mesh_faded(parts, spheres, (!slots.is_empty()).then_some(slots));
+    // The bake is the blob's cost (every vertex of every part, transformed), so it runs on the
+    // compute pool from the shared geometry; [`land_blobs`] attaches the result.
+    let (bake_parts, bake_spheres, bake_slots) = (parts.to_vec(), spheres.to_vec(), slots.to_vec());
+    let has_slots = !slots.is_empty();
+    let task = AsyncComputeTaskPool::get().spawn(async move {
+        benilla_assets::offload::run(move || {
+            // `center` is the blob's transparent sort key (the mesh is baked around it); at the
+            // world origin a fader blob would sort first and hide what is behind it.
+            merged_static_mesh_faded(
+                &bake_parts,
+                &bake_spheres,
+                has_slots.then_some(&bake_slots[..]),
+            )
+        })
+        .await
+    });
     // An interior blob's tag keeps the INTERIOR_FOG bit; the vertices carry the slot.
     let tag = if slots.is_empty() {
         alpha_bits(1.0)
@@ -591,12 +614,10 @@ fn spawn_blob(
         crate::mesh_tag::probe_bits(0)
     };
     let mut blob = commands.spawn((
-        Mesh3d(meshes.add(mesh)),
+        PendingBlob(task),
         MeshMaterial3d(mat.clone()),
-        Transform::from_translation(center),
         ModelPart { kind, blend },
         MeshTag(tag),
-        Aabb::from_min_max(mn, mx),
         NoAutoAabb,
         // The draw's own identity; the members answer the pick.
         WorldObject {
@@ -626,6 +647,28 @@ fn spawn_blob(
         blob.insert(vis);
     }
     blob.id()
+}
+
+/// Attaches each baked blob's mesh, bounds and position as its task finishes; the entity draws
+/// from then on. Runs in the Stream chain right after [`flush_static_merge`].
+pub(super) fn land_blobs(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut pending: Query<(Entity, &mut PendingBlob)>,
+) {
+    for (entity, mut blob) in &mut pending {
+        let Some((mesh, mn, mx, center)) = block_on(future::poll_once(&mut blob.0)) else {
+            continue;
+        };
+        commands
+            .entity(entity)
+            .try_remove::<PendingBlob>()
+            .try_insert((
+                Mesh3d(meshes.add(mesh)),
+                Transform::from_translation(center),
+                Aabb::from_min_max(mn, mx),
+            ));
+    }
 }
 
 #[cfg(test)]
@@ -767,8 +810,8 @@ mod tests {
                 ));
             }
         }
-        app.world_mut().run_system_once(flush_static_merge).unwrap();
-        app.world_mut().run_system_once(flush_static_merge).unwrap();
+        flush(&mut app);
+        flush(&mut app);
         let placements = app.world().resource::<Placements>();
         let owned = placements.by_id.get(&7).unwrap().entities.clone();
         assert_eq!(owned.len(), 1);
@@ -820,8 +863,8 @@ mod tests {
                 &object(),
             ));
         }
-        app.world_mut().run_system_once(flush_static_merge).unwrap();
-        app.world_mut().run_system_once(flush_static_merge).unwrap();
+        flush(&mut app);
+        flush(&mut app);
         let placements = app.world().resource::<Placements>();
         let owned = placements.by_id.get(&9).unwrap().entities.clone();
         assert_eq!(owned.len(), 1);
@@ -853,10 +896,10 @@ mod tests {
             3,
         );
         for _ in 0..(MERGE_IDLE_FRAMES - 1) {
-            app.world_mut().run_system_once(flush_static_merge).unwrap();
+            flush(&mut app);
         }
         assert_eq!(app.world().resource::<StaticMerge>().doodads.len(), 1);
-        app.world_mut().run_system_once(flush_static_merge).unwrap();
+        flush(&mut app);
         assert!(app.world().resource::<StaticMerge>().doodads.is_empty());
         let streamer = app.world().resource::<TerrainStreamer>();
         let owned = streamer.tiles.get(&(3, 4)).unwrap().merged.clone();
@@ -885,14 +928,32 @@ mod tests {
             3,
         );
         let before = app.world().entities().len();
-        app.world_mut().run_system_once(flush_static_merge).unwrap();
+        flush(&mut app);
         assert!(app.world().resource::<StaticMerge>().doodads.is_empty());
         assert_eq!(app.world().entities().len(), before);
     }
 
+    /// One flush frame, then the wait for the pool's bakes, so the frame ends with its blobs landed.
+    fn flush(app: &mut App) {
+        app.world_mut().run_system_once(flush_static_merge).unwrap();
+        for _ in 0..2000 {
+            app.world_mut().run_system_once(land_blobs).unwrap();
+            if app
+                .world_mut()
+                .query::<&PendingBlob>()
+                .iter(app.world())
+                .next()
+                .is_none()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     fn flush_n(app: &mut App, n: u32) {
         for _ in 0..n {
-            app.world_mut().run_system_once(flush_static_merge).unwrap();
+            flush(app);
         }
     }
 
@@ -1028,7 +1089,7 @@ mod tests {
             Vec3::ZERO,
             MERGE_MAX_VERTS,
         );
-        app.world_mut().run_system_once(flush_static_merge).unwrap();
+        flush(&mut app);
         let streamer = app.world().resource::<TerrainStreamer>();
         assert_eq!(streamer.tiles.get(&(0, 0)).unwrap().merged.len(), 1);
     }
