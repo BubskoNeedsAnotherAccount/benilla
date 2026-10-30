@@ -1787,11 +1787,17 @@ pub fn render_trial_ui(
                                         "[{:.2}, {:.2}, {:.2}]",
                                         wow_pos[0], wow_pos[1], wow_pos[2]
                                     );
-                                    ui.label(
-                                        egui::RichText::new(coords_str)
-                                            .color(egui::Color32::from_rgb(100, 255, 140))
-                                            .monospace(),
-                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(&coords_str)
+                                                .color(egui::Color32::from_rgb(100, 255, 140))
+                                                .monospace(),
+                                        );
+                                        // The `[x, y, z]` form `time_trials.json` takes.
+                                        if ui.small_button("Copy").clicked() {
+                                            ui.ctx().copy_text(coords_str.clone());
+                                        }
+                                    });
                                     ui.end_row();
 
                                     ui.label(
@@ -1800,11 +1806,17 @@ pub fn render_trial_ui(
                                             .strong(),
                                     );
                                     let rot_str = format!("{:.1}° ({:.2} rad)", yaw_deg, c.yaw);
-                                    ui.label(
-                                        egui::RichText::new(rot_str)
-                                            .color(egui::Color32::from_rgb(255, 160, 50))
-                                            .monospace(),
-                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(rot_str)
+                                                .color(egui::Color32::from_rgb(255, 160, 50))
+                                                .monospace(),
+                                        );
+                                        // Degrees, the unit of a course's `rotation`.
+                                        if ui.small_button("Copy").clicked() {
+                                            ui.ctx().copy_text(format!("{yaw_deg:.1}"));
+                                        }
+                                    });
                                     ui.end_row();
                                 });
                         });
@@ -1836,6 +1848,18 @@ mod tests {
     fn parse(json: &str) -> TimeTrial {
         let defs: Vec<TimeTrialDef> = serde_json::from_str(json).unwrap();
         defs.into_iter().next().unwrap().into()
+    }
+
+    #[test]
+    fn the_example_courses_parse() {
+        let defs: Vec<TimeTrialDef> =
+            serde_json::from_str(include_str!("../assets/time_trials.example.json"))
+                .expect("parse time_trials.example.json");
+        let trials: Vec<TimeTrial> = defs.into_iter().map(Into::into).collect();
+        assert_eq!(trials.len(), 3);
+        assert!(!trials[0].is_race());
+        assert!(!trials[1].circuit && trials[1].checkpoints.len() == 2);
+        assert!(trials[2].circuit && trials[2].lap_count() == 3);
     }
 
     #[test]

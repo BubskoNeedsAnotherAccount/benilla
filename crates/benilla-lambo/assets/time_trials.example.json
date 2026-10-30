@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Example Sprint: Lakeshire to Sentinel Hill",
+    "map_id": 0,
+    "start": [-9429.1, -2231.4, 68.65],
+    "end": [-10628.89, 1036.68, 34.06],
+    "rotation": 270
+  },
+  {
+    "name": "Example Sprint with Checkpoints",
+    "map_id": 0,
+    "start": [-9633.32, -2080.38, 61.66],
+    "checkpoints": [
+      [-9429.1, -2231.4, 68.65],
+      { "x": -9431.52, "y": -3019.81, "z": 137.11 }
+    ],
+    "end": [-9431.52, -3019.81, 137.11],
+    "checkpoint_radius": 20
+  },
+  {
+    "name": "Example Circuit: Lakeshire Loop",
+    "map_id": 0,
+    "start": [-9429.1, -2231.4, 68.65],
+    "rotation": 135,
+    "checkpoints": [
+      [-9633.32, -2080.38, 61.66]
+    ],
+    "loop": true,
+    "laps": 3,
+    "checkpoint_radius": 24
+  }
+]
