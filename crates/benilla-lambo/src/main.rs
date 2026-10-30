@@ -18,6 +18,7 @@ mod engine_synth;
 mod model;
 #[cfg(target_arch = "wasm32")]
 mod net;
+mod preload;
 mod settings;
 mod shadow;
 mod smoke;
@@ -114,6 +115,8 @@ fn main() -> AppExit {
     // Initialize time trial manager.
     app.init_resource::<trial::TimeTrialManager>();
     app.init_resource::<trial::VersusLobby>();
+    // The picked course's tiles and models, loaded ahead of the car.
+    app.init_resource::<preload::CoursePreload>();
 
     // The world is always live: there is no session to say otherwise.
     app.insert_resource(WorldLive(true));
@@ -157,6 +160,7 @@ fn main() -> AppExit {
             smoke::spawn_tire_smoke,
             smoke::update_tire_smoke,
             shadow::update_car_shadow,
+            preload::preload_course.after(trial::handle_trial_input),
         ),
     )
     .add_systems(bevy_egui::EguiPrimaryContextPass, trial::render_trial_ui);

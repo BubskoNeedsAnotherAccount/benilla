@@ -1207,6 +1207,7 @@ pub fn render_trial_ui(
     mut settings: ResMut<Settings>,
     mut tab: ResMut<MenuTab>,
     lobby: Res<VersusLobby>,
+    preload: Res<crate::preload::CoursePreload>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -1415,6 +1416,16 @@ pub fn render_trial_ui(
                                 .color(egui::Color32::from_rgb(200, 200, 200))
                                 .size(14.0),
                             );
+
+                            if let Some((ready, total)) = preload.pending() {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Loading course {ready}/{total}"
+                                    ))
+                                    .color(egui::Color32::GRAY)
+                                    .size(12.0),
+                                );
+                            }
                         });
                     });
             });
