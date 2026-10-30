@@ -54,7 +54,13 @@ mod pool {
                     *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(value);
                 }));
             }
-            let done = self.slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+            // `try_lock`, never `lock`: this polls on the page's thread, where a contended lock's
+            // `Atomics.wait` traps. A slot the worker is filling right now reads as not ready.
+            let done = match self.slot.try_lock() {
+                Ok(mut slot) => slot.take(),
+                Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().take(),
+                Err(std::sync::TryLockError::WouldBlock) => None,
+            };
             match done {
                 Some(value) => Poll::Ready(value),
                 None => {

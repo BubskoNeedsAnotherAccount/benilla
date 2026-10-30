@@ -60,6 +60,9 @@ impl AssetLoader for BlpImageLoader {
         // under two samplers.
         let wrap = crate::sampler_mode_of(&ctx.path().to_string());
         let variant = settings.variant;
+        // Resolve the filter policy here first: its lazy init on a worker could make this thread
+        // wait on the `OnceLock`, which a browser traps.
+        crate::tex_filter::tex_filter();
         // The decode is the CPU half of the load: off the main thread where the page has a pool,
         // else after this frame's turn ([`crate::offload`]).
         crate::offload::run(move || decode(variant, &bytes, wrap)).await

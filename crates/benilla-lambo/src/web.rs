@@ -236,11 +236,19 @@ mod pool {
     static QUEUE: Mutex<VecDeque<Job>> = Mutex::new(VecDeque::new());
     static READY: Condvar = Condvar::new();
 
+    /// Called on the page's thread, which a browser forbids to block (`Atomics.wait` traps there):
+    /// a contended `lock` would kill the calling task and its load. A worker holds the queue only
+    /// to pop, so a short spin on `try_lock` is the wait.
     fn submit(job: Job) {
-        QUEUE
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push_back(job);
+        let mut queue = loop {
+            match QUEUE.try_lock() {
+                Ok(q) => break q,
+                Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+            }
+        };
+        queue.push_back(job);
+        drop(queue);
         READY.notify_one();
     }
 
