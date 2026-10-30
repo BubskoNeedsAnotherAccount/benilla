@@ -3,7 +3,8 @@ use bevy::prelude::*;
 use crate::car::{Car, RIDE};
 use crate::model::{SMOKE_X, SMOKE_Z};
 
-/// A single expanding, fading tire smoke puff.
+/// A single expanding, fading tire smoke puff. Puffs are pooled: a finished one is hidden and
+/// handed out again, so drifting spawns no entities once the pool has grown.
 #[derive(Component)]
 pub struct TireSmokeParticle {
     pub lifetime: f32,
@@ -11,6 +12,8 @@ pub struct TireSmokeParticle {
     pub vel: Vec3,
     pub initial_scale: f32,
     pub max_scale: f32,
+    /// Showing and animating; a finished puff waits hidden in the pool.
+    pub active: bool,
 }
 
 /// Pre-allocated mesh and tiered alpha materials for zero-allocation runtime smoke.
@@ -20,6 +23,8 @@ pub struct TireSmokeAssets {
     pub materials: [Handle<StandardMaterial>; 8],
     pub spawn_timer: f32,
     rng_state: u64,
+    /// Finished puffs, ready to be reused.
+    free: Vec<Entity>,
 }
 
 impl TireSmokeAssets {
@@ -36,16 +41,23 @@ pub fn setup_tire_smoke(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mesh = meshes.add(Sphere::new(0.35));
+    // A soft, see-through blob needs few faces: 180 triangles, not the default sphere's 720.
+    let mesh = meshes.add(
+        Sphere::new(0.35)
+            .mesh()
+            .ico(2)
+            .expect("a low subdivision count is valid"),
+    );
 
     // 8 stages of fading alpha from dense puff to transparent dissipation
     const ALPHAS: [f32; 8] = [0.45, 0.38, 0.30, 0.22, 0.15, 0.09, 0.04, 0.01];
     let smoke_mats = ALPHAS.map(|a| {
         materials.add(StandardMaterial {
-            base_color: Color::srgba(0.92, 0.90, 0.88, a),
+            // Only the front faces are drawn, half the blended pixels of a double-sided sphere;
+            // `2a - a²` is the cover the two layers gave, so a puff looks as dense as before.
+            base_color: Color::srgba(0.92, 0.90, 0.88, 2.0 * a - a * a),
             alpha_mode: AlphaMode::Blend,
             unlit: true,
-            cull_mode: None,
             ..default()
         })
     });
@@ -55,6 +67,7 @@ pub fn setup_tire_smoke(
         materials: smoke_mats,
         spawn_timer: 0.0,
         rng_state: 0x853c49e6748fea9b,
+        free: Vec::new(),
     });
 }
 
@@ -134,19 +147,19 @@ pub fn puff(
 ) {
     let (fwd, right, up) = (rot * Vec3::NEG_Z, rot * Vec3::X, rot * Vec3::Y);
     let ground = -(RIDE - 0.05);
-    let mut wheel_offsets = vec![
+    let wheel_offsets = [
         Vec3::new(-SMOKE_X, ground, SMOKE_Z),
         Vec3::new(SMOKE_X, ground, SMOKE_Z),
+        Vec3::new(-SMOKE_X, ground, -SMOKE_Z),
+        Vec3::new(SMOKE_X, ground, -SMOKE_Z),
     ];
-    if level >= 2 {
-        wheel_offsets.push(Vec3::new(-SMOKE_X, ground, -SMOKE_Z));
-        wheel_offsets.push(Vec3::new(SMOKE_X, ground, -SMOKE_Z));
-    }
+    let wheel_offsets = if level >= 2 {
+        &wheel_offsets[..]
+    } else {
+        &wheel_offsets[..2]
+    };
 
-    let mesh_handle = smoke_assets.mesh.clone();
-    let initial_mat = smoke_assets.materials[0].clone();
-
-    for offset in wheel_offsets {
+    for &offset in wheel_offsets {
         let r1 = smoke_assets.next_f32();
         let r2 = smoke_assets.next_f32();
         let r3 = smoke_assets.next_f32();
@@ -168,33 +181,43 @@ pub fn puff(
         };
         let max_lifetime = 0.55 + r3 * 0.35;
 
-        commands.spawn((
+        let bundle = (
             TireSmokeParticle {
                 lifetime: 0.0,
                 max_lifetime,
                 vel: puff_vel,
                 initial_scale,
                 max_scale,
+                active: true,
             },
-            Mesh3d(mesh_handle.clone()),
-            MeshMaterial3d(initial_mat.clone()),
+            MeshMaterial3d(smoke_assets.materials[0].clone()),
             Transform::from_translation(spawn_pos).with_scale(Vec3::splat(initial_scale)),
-            Visibility::default(),
-        ));
+            Visibility::Inherited,
+        );
+        match smoke_assets.free.pop() {
+            // Overwrites the pooled puff's components in place: no new entity, no archetype move.
+            Some(e) => {
+                commands.entity(e).try_insert(bundle);
+            }
+            None => {
+                commands.spawn((bundle, Mesh3d(smoke_assets.mesh.clone())));
+            }
+        }
     }
 }
+
 pub fn update_tire_smoke(
-    mut commands: Commands,
     time: Res<Time>,
-    smoke_assets: Option<Res<TireSmokeAssets>>,
+    smoke_assets: Option<ResMut<TireSmokeAssets>>,
     mut particles: Query<(
         Entity,
         &mut Transform,
         &mut MeshMaterial3d<StandardMaterial>,
         &mut TireSmokeParticle,
+        &mut Visibility,
     )>,
 ) {
-    let Some(smoke_assets) = smoke_assets else {
+    let Some(mut smoke_assets) = smoke_assets else {
         return;
     };
     let dt = time.delta_secs();
@@ -202,10 +225,16 @@ pub fn update_tire_smoke(
         return;
     }
 
-    for (entity, mut tf, mut mat, mut particle) in particles.iter_mut() {
+    for (entity, mut tf, mut mat, mut particle, mut vis) in particles.iter_mut() {
+        // Read through `Deref` first, so an idle pooled puff is never marked changed.
+        if !particle.active {
+            continue;
+        }
         particle.lifetime += dt;
         if particle.lifetime >= particle.max_lifetime {
-            commands.entity(entity).despawn();
+            particle.active = false;
+            *vis = Visibility::Hidden;
+            smoke_assets.free.push(entity);
             continue;
         }
 
@@ -219,7 +248,10 @@ pub fn update_tire_smoke(
             particle.initial_scale + progress * (particle.max_scale - particle.initial_scale);
         tf.scale = Vec3::splat(current_scale);
 
+        // A changed material re-specialises the mesh: swap only when the fade moves a stage.
         let stage = ((progress * 7.99) as usize).min(7);
-        mat.0 = smoke_assets.materials[stage].clone();
+        if mat.0 != smoke_assets.materials[stage] {
+            mat.0 = smoke_assets.materials[stage].clone();
+        }
     }
 }

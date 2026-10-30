@@ -357,15 +357,27 @@ pub fn spawn_car(mut commands: Commands, assets: Res<CarAssets>) {
 
 /// Updates newly spawned glTF materials to be unlit and double-sided so they render under the
 /// engine's custom lighting environment without depending on Bevy's cluster lighting.
+#[allow(clippy::type_complexity)]
 pub fn prepare_car_materials(
     mut materials: ResMut<Assets<StandardMaterial>>,
-    query: Query<&MeshMaterial3d<StandardMaterial>, Added<MeshMaterial3d<StandardMaterial>>>,
+    query: Query<
+        &MeshMaterial3d<StandardMaterial>,
+        (
+            Added<MeshMaterial3d<StandardMaterial>>,
+            Without<crate::smoke::TireSmokeParticle>,
+        ),
+    >,
     mut count: Local<usize>,
 ) {
     let mut updated = 0;
     for handle in &query {
-        if let Some(mat) = materials.get_mut(handle) {
-            if !mat.unlit || mat.cull_mode.is_some() {
+        // `get_mut` marks the material modified (a GPU re-prepare) even when nothing changes, and
+        // every smoke puff spawns through here: borrow mutably only to make the change.
+        let needs = materials
+            .get(handle)
+            .is_some_and(|mat| !mat.unlit || mat.cull_mode.is_some());
+        if needs {
+            if let Some(mat) = materials.get_mut(handle) {
                 mat.unlit = true;
                 mat.cull_mode = None;
                 updated += 1;

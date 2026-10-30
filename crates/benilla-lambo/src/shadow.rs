@@ -152,8 +152,10 @@ pub fn update_car_shadow(
         return;
     };
 
+    // Visibility and material are written only when they change: a changed material re-specialises
+    // the mesh, and a changed visibility re-runs its propagation.
     if !car.placed {
-        *shadow_vis = Visibility::Hidden;
+        shadow_vis.set_if_neq(Visibility::Hidden);
         return;
     }
 
@@ -166,7 +168,7 @@ pub fn update_car_shadow(
         // When airborne, probe directly below the flying car
         let probe_origin = car.pos + Vec3::Y * 1.5;
         let Some(hit) = world.ray_body(probe_origin, Dir3::NEG_Y, 70.0) else {
-            *shadow_vis = Visibility::Hidden;
+            shadow_vis.set_if_neq(Visibility::Hidden);
             return;
         };
         let ground_point = probe_origin + Dir3::NEG_Y.as_vec3() * hit.distance;
@@ -180,11 +182,11 @@ pub fn update_car_shadow(
     };
 
     if altitude > 35.0 {
-        *shadow_vis = Visibility::Hidden;
+        shadow_vis.set_if_neq(Visibility::Hidden);
         return;
     }
 
-    *shadow_vis = Visibility::Visible;
+    shadow_vis.set_if_neq(Visibility::Visible);
 
     // Orient shadow to ground normal and car heading
     let (fwd, _) = car.basis();
@@ -214,5 +216,7 @@ pub fn update_car_shadow(
         let s = ((1.0 - fade) * 7.99) as usize;
         s.min(7)
     };
-    shadow_mat.0 = assets.materials[stage].clone();
+    if shadow_mat.0 != assets.materials[stage] {
+        shadow_mat.0 = assets.materials[stage].clone();
+    }
 }
