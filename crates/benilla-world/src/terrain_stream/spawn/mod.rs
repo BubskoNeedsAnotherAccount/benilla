@@ -57,6 +57,7 @@ type SpawnTables<'w> = (
     ResMut<'w, StaticMerge>,
     // `None` only under `WOW_STATIC_GX=0`, when the retained pass is not armed.
     Option<ResMut<'w, crate::static_gx::StaticGx>>,
+    Option<Res<'w, crate::stream_budget::StreamBudget>>,
 );
 
 /// Retires a placement, or a WMO prop, whose model load failed: it spawns nothing and stops
@@ -116,7 +117,8 @@ pub(super) fn spawn_loaded_placements(
     mut anim_table: ResMut<crate::mat_anim_table::MatAnimTable>,
     tables: SpawnTables,
 ) {
-    let (mut probes, mut activity, focus, mut forms, mut welds, mut merge, mut staticgx) = tables;
+    let (mut probes, mut activity, focus, mut forms, mut welds, mut merge, mut staticgx, budget) =
+        tables;
     let Some(shared_light) = shared_light else {
         return;
     };
@@ -147,9 +149,15 @@ pub(super) fn spawn_loaded_placements(
 
     // At most `SPAWN_BUDGET` per frame, resumed next frame through the `spawned` flags; the check
     // follows the work, so every frame spawns at least one.
-    let deadline = Instant::now() + SPAWN_BUDGET;
+    let deadline = Instant::now() + crate::stream_budget::duration(budget.as_deref(), SPAWN_BUDGET);
 
-    'placements: for (&unique_id, p) in by_id.iter_mut() {
+    // Nearest the viewer first, so a spent budget leaves the far ones waiting, not the building
+    // you are walking up to: tile ring, then squared distance to the body when there is one.
+    let order = spawn_order(by_id, &streamer, focus.body_bevy());
+    'placements: for unique_id in order {
+        let Some(p) = by_id.get_mut(&unique_id) else {
+            continue;
+        };
         // 1. The model's own geometry, once; a WMO also resolves its doodad props for step 2.
         if !p.spawned {
             let entities = match &p.model {
@@ -867,6 +875,26 @@ fn placement_priority(streamer: &TerrainStreamer, translation: Vec3) -> i32 {
     16 + d * 16
 }
 
+/// The ids of the placements with anything left to spawn, nearest the viewer first.
+fn spawn_order(
+    by_id: &std::collections::HashMap<u32, super::Placement>,
+    streamer: &TerrainStreamer,
+    viewer: Option<Vec3>,
+) -> Vec<u32> {
+    let mut order: Vec<(i32, u32, u32)> = by_id
+        .iter()
+        .filter(|(_, p)| !p.spawned || p.doodads.iter().any(|d| !d.spawned))
+        .map(|(&id, p)| {
+            let at = p.transform.translation;
+            // Squared distance is non-negative, so its bits order as the float does.
+            let d2 = viewer.map_or(0, |v| at.distance_squared(v).to_bits());
+            (placement_priority(streamer, at), d2, id)
+        })
+        .collect();
+    order.sort_unstable();
+    order.into_iter().map(|(_, _, id)| id).collect()
+}
+
 fn handle_label<A: Asset>(handle: &Handle<A>) -> String {
     handle
         .path()
@@ -955,6 +983,26 @@ mod retire_tests {
             light: PropLight::Exterior,
             spawned: false,
         }
+    }
+
+    #[test]
+    fn spawn_order_is_nearest_the_viewer_first_and_skips_the_finished() {
+        let model = || ModelHandle::M2(Handle::default());
+        let at = |x: f32| {
+            let mut p = placement(model(), Vec::new());
+            p.transform = Transform::from_xyz(x, 0.0, 0.0);
+            p
+        };
+        let mut done = at(1.0);
+        done.spawned = true;
+        let by_id: std::collections::HashMap<u32, Placement> =
+            [(1, at(300.0)), (2, at(10.0)), (3, at(120.0)), (4, done)].into();
+        let order = spawn_order(&by_id, &TerrainStreamer::default(), Some(Vec3::ZERO));
+        assert_eq!(
+            order,
+            vec![2, 3, 1],
+            "ascending distance, the spawned one left out"
+        );
     }
 
     /// Runs frames until every handle's load has failed (no loader is registered for the path).

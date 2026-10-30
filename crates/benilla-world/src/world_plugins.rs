@@ -119,6 +119,7 @@ impl PluginGroup for WorldPlugins {
             // Terrain streaming (`AdtTile` through the `AssetServer`): tiles with their doodads,
             // WMOs, liquid and clutter.
             .add(crate::terrain_stream::TerrainPlugin)
+            .add(crate::stream_budget::StreamBudgetPlugin)
     }
 }
 

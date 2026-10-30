@@ -203,6 +203,7 @@ fn build_entry(
     verts: &mut usize,
     in_flight: &mut usize,
     in_flight_cap: usize,
+    vert_budget: usize,
 ) -> usize {
     let mut built = 0usize;
     if kinds & WANT_STATIC != 0 && e.done & WANT_STATIC == 0 {
@@ -214,7 +215,7 @@ fn build_entry(
             *in_flight += 1;
         }
         while let Some(task) = e.stat_tasks.front_mut() {
-            if built >= budget || *verts >= VERT_BUDGET {
+            if built >= budget || *verts >= vert_budget {
                 return built;
             }
             let Some((mesh, aabb)) = block_on(future::poll_once(task)) else {
@@ -240,7 +241,7 @@ fn build_entry(
             *in_flight += 1;
         }
         while let Some(task) = e.skin_tasks.front_mut() {
-            if built >= budget || *verts >= VERT_BUDGET {
+            if built >= budget || *verts >= vert_budget {
                 return built;
             }
             let Some(mesh) = block_on(future::poll_once(task)) else {
@@ -297,6 +298,7 @@ pub(crate) fn furnish_model_forms(
     mut meshes: ResMut<Assets<Mesh>>,
     mut activity: ResMut<crate::terrain_stream::StreamActivity>,
     focus: Res<crate::terrain_stream::ViewFocus>,
+    budget: Option<Res<crate::stream_budget::StreamBudget>>,
     mut m2_events: MessageReader<AssetEvent<M2Model>>,
     mut wmo_events: MessageReader<AssetEvent<WmoModel>>,
 ) {
@@ -319,7 +321,12 @@ pub(crate) fn furnish_model_forms(
         }
     }
 
-    let cap = if focus.paced { MESH_BUDGET } else { usize::MAX };
+    let cap = if focus.paced {
+        crate::stream_budget::count(budget.as_deref(), MESH_BUDGET)
+    } else {
+        usize::MAX
+    };
+    let vert_budget = crate::stream_budget::count(budget.as_deref(), VERT_BUDGET);
 
     let mut pending: Vec<(i32, ModelKey)> = forms
         .entries
@@ -345,7 +352,7 @@ pub(crate) fn furnish_model_forms(
     let mut built = 0usize;
     let mut verts = 0usize;
     for (_, key) in pending {
-        if built >= cap || verts >= VERT_BUDGET {
+        if built >= cap || verts >= vert_budget {
             break;
         }
         // An asset still decoding or already dropped skips: it builds on landing or frees above.
@@ -372,6 +379,7 @@ pub(crate) fn furnish_model_forms(
             &mut verts,
             &mut in_flight,
             in_flight_cap,
+            vert_budget,
         );
         e.priority = i32::MAX; // re-asserted by next frame's require() calls
     }

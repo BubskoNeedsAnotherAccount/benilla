@@ -150,6 +150,7 @@ pub mod skybox;
 pub mod static_gx;
 pub mod static_merge;
 pub mod straddle;
+pub mod stream_budget;
 pub mod sun;
 pub mod surface;
 pub mod terrain_stream;
