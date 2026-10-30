@@ -985,7 +985,8 @@ fn spawn_streamed_tiles(
         // One static trimesh per tile from the drawn chunks, built off-thread, riding the root.
         let collider_data = {
             let mut prebuilt = adt.prebuilt.lock().unwrap_or_else(|p| p.into_inner());
-            if prebuilt.collider_built {
+            if prebuilt.collider_built && !prebuilt.collider_taken {
+                prebuilt.collider_taken = true;
                 prebuilt.collider.take()
             } else {
                 terrain_collider_data(&adt.chunks)

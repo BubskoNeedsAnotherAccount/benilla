@@ -118,7 +118,9 @@ pub(super) fn furnish_tile_cells(
 fn take_cell(adt: &AdtTile, cell: usize) -> Option<(Mesh, Option<Aabb>)> {
     {
         let mut prebuilt = adt.prebuilt.lock().unwrap_or_else(|p| p.into_inner());
-        if !prebuilt.cells.is_empty() {
+        let bit = 1u16 << cell.min(15);
+        if !prebuilt.cells.is_empty() && prebuilt.cells_taken & bit == 0 {
+            prebuilt.cells_taken |= bit;
             return prebuilt
                 .cells
                 .get_mut(cell)?

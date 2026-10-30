@@ -70,6 +70,10 @@ pub struct Prebuilt {
     /// The collider data was built (it may still be `None` for an all-hole tile).
     pub collider_built: bool,
     pub collider: Option<ColliderData>,
+    /// Bit per cell already taken, and whether the collider was: a tile spawned again from the same
+    /// resident asset (re-requested before its asset freed) finds them gone and builds its own.
+    pub cells_taken: u16,
+    pub collider_taken: bool,
 }
 
 /// A tile's chunks as terrain collider `(vertices, triangles)` in Bevy space, one trimesh over every
@@ -314,6 +318,7 @@ impl AssetLoader for AdtLoader {
                 cells: build_cells(&tile.chunks, &shading),
                 collider_built: true,
                 collider: terrain_collider_data(&tile.chunks),
+                ..Default::default()
             };
             (tile.chunks, shading, prebuilt)
         })
