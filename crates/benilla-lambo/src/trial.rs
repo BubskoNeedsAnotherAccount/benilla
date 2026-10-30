@@ -615,8 +615,18 @@ fn build_course(
     let banner = meshes.add(Cuboid::new(2.0 * r, banner_h, 0.3));
     let line = meshes.add(Cuboid::new(2.0 * r, 0.08, banner_h));
 
-    for (i, gate) in trial.checkpoints.iter().enumerate() {
-        let at = gate_transform(*gate, gate_heading(trial, Some(i)));
+    // On a circuit's laps before the last, the line is one more checkpoint: an arch indexed after
+    // the course's own gates, standing where the finish does.
+    let n = trial.checkpoints.len();
+    let lap_line = (trial.lap_count() > 1).then(|| (n, trial.end, gate_heading(trial, None)));
+    let arches = trial
+        .checkpoints
+        .iter()
+        .enumerate()
+        .map(|(i, gate)| (i, *gate, gate_heading(trial, Some(i))))
+        .chain(lap_line);
+    for (i, gate, heading) in arches {
+        let at = gate_transform(gate, heading);
         commands
             .spawn((GateRoot { index: Some(i) }, at, Visibility::Hidden))
             .with_children(|p| {
@@ -681,8 +691,23 @@ fn build_course(
         });
 }
 
+/// Whether gate `index` (`None` the checkered finish) stands, with `next` the gate driven at,
+/// `last` the course's checkpoint count (the lap-line arch's index), on the last lap or not, and
+/// the course `live` (not free driving or finished).
+fn gate_shown(index: Option<usize>, next: usize, last: usize, last_lap: bool, live: bool) -> bool {
+    match index {
+        // The checkered finish stands only on the last lap.
+        None => last_lap,
+        // Before it, the line is an arch at index `last`.
+        Some(i) if i == last => live && !last_lap && (next == last || next + 1 == last),
+        // Driving at the lap line, the next lap's first gate shows dim behind it.
+        Some(0) if next == last && !last_lap => live,
+        Some(i) => live && (i == next || i == next + 1),
+    }
+}
+
 /// Rebuilds the gates when the course changes. The next checkpoint is lit and the one after it
-/// shown dim; the finish is always up.
+/// shown dim; the checkered finish stands on the last lap, and before it the line is an arch.
 #[allow(clippy::type_complexity)]
 pub fn update_course_markers(
     mut commands: Commands,
@@ -712,11 +737,13 @@ pub fn update_course_markers(
         TrialState::WaitingToStart | TrialState::Countdown { .. } | TrialState::Racing { .. }
     );
     let next = manager.progress.next_checkpoint;
+    let Some(trial) = manager.current_trial() else {
+        return;
+    };
+    let last = trial.checkpoints.len();
+    let last_lap = manager.progress.lap_times.len() as u32 + 1 >= trial.lap_count();
     for (_, root, mut vis) in &mut roots {
-        let show = match root.index {
-            None => true,
-            Some(i) => live && (i == next || i == next + 1),
-        };
+        let show = gate_shown(root.index, next, last, last_lap, live);
         vis.set_if_neq(if show {
             Visibility::Visible
         } else {
@@ -2090,6 +2117,28 @@ mod tests {
         assert_eq!(trials[3].name, "Around the Forge");
         assert!(trials[3].circuit && trials[3].lap_count() == 2);
         assert_eq!(trials[3].checkpoints.len(), 10);
+    }
+
+    /// A three-checkpoint circuit: the line is an arch (index 3) until the last lap, then the
+    /// checkered finish.
+    #[test]
+    fn the_finish_stands_only_on_the_last_lap() {
+        let shown = |index, next, last_lap| gate_shown(index, next, 3, last_lap, true);
+        // Early lap, heading for checkpoint 2: it and the lap-line arch after it show, no finish.
+        assert!(shown(Some(2), 2, false) && shown(Some(3), 2, false));
+        assert!(!shown(None, 2, false));
+        // Heading for the line: the arch, and the next lap's first gate behind it.
+        assert!(shown(Some(3), 3, false) && shown(Some(0), 3, false));
+        assert!(!shown(None, 3, false));
+        // Last lap: the checkered finish, never the arch.
+        assert!(shown(None, 0, true) && shown(None, 3, true));
+        assert!(!shown(Some(3), 2, true) && !shown(Some(3), 3, true));
+        assert!(!shown(Some(0), 3, true));
+        // Early in a lap the arch is far off and hidden.
+        assert!(!shown(Some(3), 0, false));
+        // A circuit with no checkpoints: the arch is always the gate driven at.
+        assert!(gate_shown(Some(0), 0, 0, false, true));
+        assert!(!gate_shown(None, 0, 0, false, true));
     }
 
     fn parse(json: &str) -> TimeTrial {
