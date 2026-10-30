@@ -13,7 +13,9 @@ use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
 use bevy::render::render_resource::Face;
 
-use crate::clutter::{scatter_tile_clutter, ClutterConfig, GroundClutter};
+use crate::clutter::{
+    scatter_tile_clutter, scatter_tile_clutter_task, ClutterConfig, GroundClutter,
+};
 use crate::collision::{walk_layers, GroundDecalSurface, PickOccluder};
 use crate::interior::WmoResidency;
 use crate::lighting::SharedLightBuffer;
@@ -42,7 +44,7 @@ use collider::{
     PendingColliders,
 };
 use furnish::furnish_tile_cells;
-use merge::{flush_static_merge, StaticMerge};
+use merge::{flush_static_merge, land_blobs, StaticMerge};
 use spawn::prop_light::WmoDoodadInst;
 use spawn::spawn_loaded_placements;
 use weld::{flush_hull_welds, HullWelds};
@@ -50,7 +52,9 @@ pub use window::StreamWindow;
 // The WMO prop-light items, for the interior classifier and the app's WMO props.
 pub use spawn::prop_light::{fold_interior_probe, hex_word, interior_light_up, PropLobeLight};
 // The placed-model assembler and off-thread collider build, shared with WMO gameobject props.
-pub use collider::{build_collider_task, placement_collider_data, PendingCollider};
+pub use collider::{
+    build_collider_task, build_placement_collider_task, placement_collider_data, PendingCollider,
+};
 pub use spawn::{m2_anim_bound, m2_fade, point_light, spawn_model_entities, SpawnedModel};
 // The position queries and the area authority.
 use queries::update_current_area;
@@ -304,6 +308,11 @@ pub struct ViewFocus {
 }
 
 impl ViewFocus {
+    /// The avatar's position in Bevy space, when one is live.
+    pub(crate) fn body_bevy(&self) -> Option<Vec3> {
+        self.body.map(wow_to_bevy)
+    }
+
     /// No viewer: follow the camera, or the spawn point without one.
     pub fn camera() -> Self {
         Self::default()
@@ -488,6 +497,7 @@ impl Plugin for TerrainPlugin {
                     spawn_loaded_placements,
                     flush_hull_welds,
                     flush_static_merge,
+                    land_blobs,
                     sync_interior_volumes,
                     publish_terrain_residency,
                 )
@@ -918,6 +928,7 @@ fn spawn_streamed_tiles(
     mut load_progress: Option<ResMut<WorldLoadProgress>>,
     // `None` only under `WOW_STATIC_GX=0`.
     mut staticgx: Option<ResMut<crate::static_gx::StaticGx>>,
+    budget: Option<Res<crate::stream_budget::StreamBudget>>,
 ) {
     let (mut materials, mut meshes, wdts, mut activity) = asset_stores;
     let Some(shared_light) = shared_light else {
@@ -948,7 +959,8 @@ fn spawn_streamed_tiles(
         })
         .collect();
     landed.sort_unstable();
-    let tile_deadline = Instant::now() + SPAWN_BUDGET;
+    let tile_deadline =
+        Instant::now() + crate::stream_budget::duration(budget.as_deref(), SPAWN_BUDGET);
     for (outer, _, (tx, ty)) in landed {
         // Past the budget the outer ring waits a frame; the `entity` guard makes this re-entrant.
         if outer && Instant::now() >= tile_deadline {
@@ -971,7 +983,14 @@ fn spawn_streamed_tiles(
             },
         });
         // One static trimesh per tile from the drawn chunks, built off-thread, riding the root.
-        let collider_data = terrain_collider_data(&adt.chunks);
+        let collider_data = {
+            let mut prebuilt = adt.prebuilt.lock().unwrap_or_else(|p| p.into_inner());
+            if prebuilt.collider_built {
+                prebuilt.collider.take()
+            } else {
+                terrain_collider_data(&adt.chunks)
+            }
+        };
         // The impassable-chunk fences are a second collider, on the walk layer only: the reference
         // emits them into the movement box gather alone, never its segment and ray path.
         let wall_data = impassable_wall_data(&adt.chunks);
@@ -1024,17 +1043,16 @@ fn spawn_streamed_tiles(
 
         // Ground clutter per chunk, meshed lazily within ~70 yd by `stream_chunk_clutter`.
         if let (Some(clutter), Some(clutter_cfg)) = (clutter.as_ref(), clutter_cfg.as_ref()) {
-            let mut clutter_ents = Vec::new();
-            scatter_tile_clutter(
+            // The scatter walks all 256 chunks, so it runs on the compute pool; `land_clutter`
+            // spawns the chunks under the tile's marker entity.
+            tile.clutter = vec![scatter_tile_clutter_task(
                 &mut commands,
-                &adt.chunks,
+                adt.chunks.clone(),
                 tx as u32,
                 ty as u32,
-                &clutter.catalog,
+                clutter.catalog.clone(),
                 clutter_cfg.density,
-                &mut clutter_ents,
-            );
-            tile.clutter = clutter_ents;
+            )];
         }
     }
 
@@ -1705,7 +1723,8 @@ mod inner_hold_tests {
             shadow_array: Handle::default(),
             doodads: Vec::new(),
             wmos: Vec::new(),
-            chunks,
+            chunks: std::sync::Arc::new(chunks),
+            prebuilt: Default::default(),
         }
     }
 

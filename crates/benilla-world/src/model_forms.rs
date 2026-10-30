@@ -4,7 +4,7 @@
 //! nearest requester first, uncapped behind the loading cover. One [`Entry`] per model asset
 //! serves every instance.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use web_time::Instant;
 
 use benilla_assets::{
@@ -13,6 +13,8 @@ use benilla_assets::{
 use bevy::asset::AssetId;
 use bevy::camera::primitives::{Aabb, MeshAabb};
 use bevy::prelude::*;
+use bevy::tasks::futures_lite::future;
+use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 
 /// Request bit: the static (unskinned) render form.
 pub(crate) const WANT_STATIC: u8 = 1;
@@ -25,6 +27,11 @@ const MESH_BUDGET: usize = 96;
 /// Per-frame build budget while live, in vertices, for the huge WMO group batches; a submesh over
 /// it builds alone in its frame.
 const VERT_BUDGET: usize = 16_384;
+
+/// Meshes building on the compute pool at once while live, across all models: dispatch is cheap,
+/// so this bounds only how far past the landing budget the pool runs ahead, which keeps the
+/// nearest-first order from being spent on far models. Uncapped behind the loading cover.
+const IN_FLIGHT_CAP: usize = 192;
 
 /// A loaded model asset, M2 or WMO, as the forms cache keys it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -54,6 +61,10 @@ struct Entry {
     /// The skinned twin per submesh, for rigged lanes only; it keeps main-world data because the
     /// mouseover picker skins it on the CPU (`target::hover`).
     skin: Vec<Handle<Mesh>>,
+    /// Static meshes building on the compute pool, in submesh order after `stat`.
+    stat_tasks: VecDeque<Task<(Mesh, Option<Aabb>)>>,
+    /// Skinned twins building on the compute pool, in submesh order after `skin`.
+    skin_tasks: VecDeque<Task<Mesh>>,
     /// Kinds ever requested (`WANT_*` bits), sticky until the asset frees.
     want: u8,
     /// Kinds fully built.
@@ -147,7 +158,7 @@ impl ModelForms {
     ) {
         let e = self.entries.entry(key).or_default();
         e.want |= kinds;
-        build_entry(e, kinds, submeshes, meshes, usize::MAX, &mut 0);
+        build_entry_now(e, kinds, submeshes, meshes);
     }
 
     /// Drop one model's entry (its asset left the store).
@@ -161,7 +172,28 @@ impl ModelForms {
     }
 }
 
-/// Advance one entry's builds within `budget` submeshes and [`VERT_BUDGET`]; returns the count.
+/// Build a model's static mesh and its `Aabb` on the compute pool, from the shared geometry.
+fn spawn_static(geo: std::sync::Arc<benilla_formats::RenderSubmesh>) -> Task<(Mesh, Option<Aabb>)> {
+    AsyncComputeTaskPool::get().spawn(async move {
+        benilla_assets::offload::run(move || {
+            let mesh = submesh_to_static_mesh(&geo);
+            let aabb = mesh.compute_aabb();
+            (mesh, aabb)
+        })
+        .await
+    })
+}
+
+/// [`spawn_static`] for the skinned twin.
+fn spawn_skinned(geo: std::sync::Arc<benilla_formats::RenderSubmesh>) -> Task<Mesh> {
+    AsyncComputeTaskPool::get().spawn(async move {
+        benilla_assets::offload::run(move || submesh_to_skinned_mesh(&geo)).await
+    })
+}
+
+/// Advance one entry's builds: dispatch meshes to the compute pool while `in_flight` allows, then
+/// land the finished ones in submesh order within `budget` and [`VERT_BUDGET`]; returns the count
+/// landed. The main thread only adds the finished mesh to the store.
 fn build_entry(
     e: &mut Entry,
     kinds: u8,
@@ -169,35 +201,92 @@ fn build_entry(
     meshes: &mut Assets<Mesh>,
     budget: usize,
     verts: &mut usize,
+    in_flight: &mut usize,
+    in_flight_cap: usize,
+    vert_budget: usize,
 ) -> usize {
     let mut built = 0usize;
     if kinds & WANT_STATIC != 0 && e.done & WANT_STATIC == 0 {
-        while e.stat.len() < submeshes.len() {
-            if built >= budget || *verts >= VERT_BUDGET {
+        while e.stat.len() + e.stat_tasks.len() < submeshes.len() && *in_flight < in_flight_cap {
+            let geo = submeshes[e.stat.len() + e.stat_tasks.len()]
+                .geometry
+                .clone();
+            e.stat_tasks.push_back(spawn_static(geo));
+            *in_flight += 1;
+        }
+        while let Some(task) = e.stat_tasks.front_mut() {
+            if built >= budget || *verts >= vert_budget {
                 return built;
             }
-            let geo = &submeshes[e.stat.len()].geometry;
-            let mesh = submesh_to_static_mesh(geo);
-            let aabb = mesh.compute_aabb();
-            *verts += geo.positions.len();
+            let Some((mesh, aabb)) = block_on(future::poll_once(task)) else {
+                return built; // still building: lands in a later frame
+            };
+            e.stat_tasks.pop_front();
+            *in_flight -= 1;
+            *verts += submeshes[e.stat.len()].geometry.positions.len();
             e.stat.push((meshes.add(mesh), aabb));
             built += 1;
+        }
+        if e.stat.len() < submeshes.len() {
+            return built; // dispatch was capped: the rest follows next frame
         }
         e.done |= WANT_STATIC;
     }
     if kinds & WANT_SKINNED != 0 && e.done & WANT_SKINNED == 0 {
-        while e.skin.len() < submeshes.len() {
-            if built >= budget || *verts >= VERT_BUDGET {
+        while e.skin.len() + e.skin_tasks.len() < submeshes.len() && *in_flight < in_flight_cap {
+            let geo = submeshes[e.skin.len() + e.skin_tasks.len()]
+                .geometry
+                .clone();
+            e.skin_tasks.push_back(spawn_skinned(geo));
+            *in_flight += 1;
+        }
+        while let Some(task) = e.skin_tasks.front_mut() {
+            if built >= budget || *verts >= vert_budget {
                 return built;
             }
-            let geo = &submeshes[e.skin.len()].geometry;
-            *verts += geo.positions.len();
-            e.skin.push(meshes.add(submesh_to_skinned_mesh(geo)));
+            let Some(mesh) = block_on(future::poll_once(task)) else {
+                return built;
+            };
+            e.skin_tasks.pop_front();
+            *in_flight -= 1;
+            *verts += submeshes[e.skin.len()].geometry.positions.len();
+            e.skin.push(meshes.add(mesh));
             built += 1;
+        }
+        if e.skin.len() < submeshes.len() {
+            return built;
         }
         e.done |= WANT_SKINNED;
     }
     built
+}
+
+/// Build a model's missing forms in place, for [`ModelForms::ensure_now`]: every submesh now, on
+/// this thread.
+fn build_entry_now(
+    e: &mut Entry,
+    kinds: u8,
+    submeshes: &[ModelSubmesh],
+    meshes: &mut Assets<Mesh>,
+) {
+    if kinds & WANT_STATIC != 0 && e.done & WANT_STATIC == 0 {
+        // A paced build's in-flight tasks are dropped (cancelled) and redone here.
+        e.stat_tasks.clear();
+        while e.stat.len() < submeshes.len() {
+            let mesh = submesh_to_static_mesh(&submeshes[e.stat.len()].geometry);
+            let aabb = mesh.compute_aabb();
+            e.stat.push((meshes.add(mesh), aabb));
+        }
+        e.done |= WANT_STATIC;
+    }
+    if kinds & WANT_SKINNED != 0 && e.done & WANT_SKINNED == 0 {
+        e.skin_tasks.clear();
+        while e.skin.len() < submeshes.len() {
+            let mesh = submesh_to_skinned_mesh(&submeshes[e.skin.len()].geometry);
+            e.skin.push(meshes.add(mesh));
+        }
+        e.done |= WANT_SKINNED;
+    }
 }
 
 /// Build requested forms most urgent first, [`MESH_BUDGET`] and [`VERT_BUDGET`] per frame while
@@ -209,6 +298,7 @@ pub(crate) fn furnish_model_forms(
     mut meshes: ResMut<Assets<Mesh>>,
     mut activity: ResMut<crate::terrain_stream::StreamActivity>,
     focus: Res<crate::terrain_stream::ViewFocus>,
+    budget: Option<Res<crate::stream_budget::StreamBudget>>,
     mut m2_events: MessageReader<AssetEvent<M2Model>>,
     mut wmo_events: MessageReader<AssetEvent<WmoModel>>,
 ) {
@@ -231,7 +321,12 @@ pub(crate) fn furnish_model_forms(
         }
     }
 
-    let cap = if focus.paced { MESH_BUDGET } else { usize::MAX };
+    let cap = if focus.paced {
+        crate::stream_budget::count(budget.as_deref(), MESH_BUDGET)
+    } else {
+        usize::MAX
+    };
+    let vert_budget = crate::stream_budget::count(budget.as_deref(), VERT_BUDGET);
 
     let mut pending: Vec<(i32, ModelKey)> = forms
         .entries
@@ -244,10 +339,20 @@ pub(crate) fn furnish_model_forms(
     }
     pending.sort_unstable_by_key(|(p, _)| *p);
 
+    let in_flight_cap = if focus.paced {
+        IN_FLIGHT_CAP
+    } else {
+        usize::MAX
+    };
+    let mut in_flight: usize = forms
+        .entries
+        .values()
+        .map(|e| e.stat_tasks.len() + e.skin_tasks.len())
+        .sum();
     let mut built = 0usize;
     let mut verts = 0usize;
     for (_, key) in pending {
-        if built >= cap || verts >= VERT_BUDGET {
+        if built >= cap || verts >= vert_budget {
             break;
         }
         // An asset still decoding or already dropped skips: it builds on landing or frees above.
@@ -265,7 +370,17 @@ pub(crate) fn furnish_model_forms(
             continue;
         };
         let want = e.want;
-        built += build_entry(e, want, submeshes, &mut meshes, cap - built, &mut verts);
+        built += build_entry(
+            e,
+            want,
+            submeshes,
+            &mut meshes,
+            cap - built,
+            &mut verts,
+            &mut in_flight,
+            in_flight_cap,
+            vert_budget,
+        );
         e.priority = i32::MAX; // re-asserted by next frame's require() calls
     }
     activity.model_meshes_built += built as u32;

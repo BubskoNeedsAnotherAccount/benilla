@@ -2,6 +2,7 @@
 //! ([`build_collider_task`]) and [`finish_colliders`] attaches the results under a per-frame
 //! budget, since a streamed burst finishes together and each attach is main-thread work.
 
+use std::sync::Arc;
 use std::time::Duration;
 use web_time::Instant;
 
@@ -111,9 +112,15 @@ pub(super) fn finish_colliders(world: &mut World, state: &mut PendingColliders) 
 
     // Pass 2: attach. The deadline is checked after each attach, so an oversized one still lands.
     let mut attached = 0u32;
-    let budget = world
-        .get_resource::<AttachBudget>()
-        .map_or(ATTACH_BUDGET, |b| b.0);
+    let budget = world.get_resource::<AttachBudget>().map_or_else(
+        || {
+            crate::stream_budget::duration(
+                world.get_resource::<crate::stream_budget::StreamBudget>(),
+                ATTACH_BUDGET,
+            )
+        },
+        |b| b.0,
+    );
     let deadline = Instant::now() + budget;
     for entity in ready {
         // The entity may have streamed out while its collider was building.
@@ -255,27 +262,24 @@ pub fn placement_collider_data(
     Some((verts, tris))
 }
 
-/// A terrain tile's collider: one trimesh welded from its decoded MCNK chunks in draw space, the
-/// loader's hole-masked indices rebased onto the running vertex count.
-pub(super) fn terrain_collider_data(
-    chunks: &[benilla_formats::ChunkMesh],
-) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
-    let mut verts: Vec<Vec3> = Vec::new();
-    let mut tris: Vec<[u32; 3]> = Vec::new();
-    for chunk in chunks {
-        let base = verts.len() as u32;
-        verts.extend(chunk.positions.iter().map(|p| wow_to_bevy(*p)));
-        tris.extend(
-            chunk
-                .indices
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .map(|c| [base + c[0], base + c[1], base + c[2]]),
-        );
-    }
-    (!tris.is_empty()).then_some((verts, tris))
+/// [`placement_collider_data`] and the trimesh build as one task, so a large hull's per-vertex
+/// transform runs on the compute pool and not in the spawn frame; `None` for a missing or empty hull.
+pub fn build_placement_collider_task(
+    hull: Option<&Arc<CollisionMesh>>,
+    transform: Transform,
+) -> Option<Task<Collider>> {
+    let hull = hull.filter(|h| h.indices.len() >= 3)?.clone();
+    Some(AsyncComputeTaskPool::get().spawn(async move {
+        benilla_assets::offload::run(move || {
+            let (verts, tris) = placement_collider_data(Some(&hull), &transform)?;
+            Some(Collider::trimesh(verts, tris))
+        })
+        .await
+        .unwrap_or_else(|| Collider::trimesh(Vec::new(), Vec::new()))
+    }))
 }
+
+pub(super) use benilla_assets::terrain_collider_data;
 
 /// How far an impassable chunk's fence rises from the chunk AABB's min z (`chunk+0x4c`): the
 /// reference's `(0, 0, 32000.0)` (`0x46fa0000` at `0x6ab599`, emitter `0x6ab530`). Nothing extends
