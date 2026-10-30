@@ -50,7 +50,9 @@ pub use window::StreamWindow;
 // The WMO prop-light items, for the interior classifier and the app's WMO props.
 pub use spawn::prop_light::{fold_interior_probe, hex_word, interior_light_up, PropLobeLight};
 // The placed-model assembler and off-thread collider build, shared with WMO gameobject props.
-pub use collider::{build_collider_task, placement_collider_data, PendingCollider};
+pub use collider::{
+    build_collider_task, build_placement_collider_task, placement_collider_data, PendingCollider,
+};
 pub use spawn::{m2_anim_bound, m2_fade, point_light, spawn_model_entities, SpawnedModel};
 // The position queries and the area authority.
 use queries::update_current_area;

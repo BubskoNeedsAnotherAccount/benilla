@@ -2,6 +2,7 @@
 //! ([`build_collider_task`]) and [`finish_colliders`] attaches the results under a per-frame
 //! budget, since a streamed burst finishes together and each attach is main-thread work.
 
+use std::sync::Arc;
 use std::time::Duration;
 use web_time::Instant;
 
@@ -253,6 +254,23 @@ pub fn placement_collider_data(
         .map(|c| [c[0], c[1], c[2]])
         .collect();
     Some((verts, tris))
+}
+
+/// [`placement_collider_data`] and the trimesh build as one task, so a large hull's per-vertex
+/// transform runs on the compute pool and not in the spawn frame; `None` for a missing or empty hull.
+pub fn build_placement_collider_task(
+    hull: Option<&Arc<CollisionMesh>>,
+    transform: Transform,
+) -> Option<Task<Collider>> {
+    let hull = hull.filter(|h| h.indices.len() >= 3)?.clone();
+    Some(AsyncComputeTaskPool::get().spawn(async move {
+        benilla_assets::offload::run(move || {
+            let (verts, tris) = placement_collider_data(Some(&hull), &transform)?;
+            Some(Collider::trimesh(verts, tris))
+        })
+        .await
+        .unwrap_or_else(|| Collider::trimesh(Vec::new(), Vec::new()))
+    }))
 }
 
 pub(super) use benilla_assets::terrain_collider_data;

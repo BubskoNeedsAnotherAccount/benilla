@@ -33,8 +33,8 @@ use benilla_assets::m2_url;
 use benilla_assets::materials::WowModelMaterial;
 
 use super::collider::{
-    build_collider_task, doodad_bodies_disabled, doodad_hulls_bare, placement_collider_data,
-    PendingCollider,
+    build_collider_task, build_placement_collider_task, doodad_bodies_disabled, doodad_hulls_bare,
+    placement_collider_data, PendingCollider,
 };
 use super::merge::{MergeSite, StaticMerge};
 use super::weld::{hull_weld_disabled, HullWelds};
@@ -486,17 +486,13 @@ pub(super) fn spawn_loaded_placements(
                     }
                     // Two colliders, each on its layer: the reference gathers different faces for
                     // the body (drops DETAIL) and the camera (drops NOCAMCOLLIDE, keeps DETAIL).
-                    if let Some((verts, tris)) =
-                        placement_collider_data(m.collision.as_ref(), &p.transform)
+                    if let Some(task) =
+                        build_placement_collider_task(m.collision.as_ref(), p.transform)
                     {
                         ents.push(
                             commands
                                 .spawn((
-                                    PendingCollider::new(
-                                        build_collider_task(verts, tris),
-                                        Some(walk_layers()),
-                                        true,
-                                    ),
+                                    PendingCollider::new(task, Some(walk_layers()), true),
                                     // The walk faces take the selection ring (floors, steps).
                                     GroundDecalSurface,
                                     // Clamps the mouse pick. The reference's occluder faces are
@@ -506,16 +502,12 @@ pub(super) fn spawn_loaded_placements(
                                 .id(),
                         );
                     }
-                    if let Some((verts, tris)) =
-                        placement_collider_data(m.collision_camera.as_ref(), &p.transform)
+                    if let Some(task) =
+                        build_placement_collider_task(m.collision_camera.as_ref(), p.transform)
                     {
                         ents.push(
                             commands
-                                .spawn(PendingCollider::new(
-                                    build_collider_task(verts, tris),
-                                    Some(camera_layers()),
-                                    true,
-                                ))
+                                .spawn(PendingCollider::new(task, Some(camera_layers()), true))
                                 .id(),
                         );
                     }

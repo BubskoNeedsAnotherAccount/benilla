@@ -70,10 +70,11 @@ pub struct WmoModel {
     pub group_collision_grids: Vec<Option<ColumnGrid>>,
     /// The union of [`Self::group_collision_bounds`]: the whole-building broad phase.
     pub collision_bounds: Option<([f32; 3], [f32; 3])>,
-    /// Walking collision across all groups in WMO-local coords, DETAIL faces excluded.
-    pub collision: Option<CollisionMesh>,
+    /// Walking collision across all groups in WMO-local coords, DETAIL faces excluded; shared so a
+    /// collider task can transform it off the main thread.
+    pub collision: Option<Arc<CollisionMesh>>,
     /// Camera and line-of-sight collision: DETAIL kept, NOCAMCOLLIDE dropped.
-    pub collision_camera: Option<CollisionMesh>,
+    pub collision_camera: Option<Arc<CollisionMesh>>,
     /// The root's MODD doodads in WMO model space, spawned by doodad set.
     pub doodads: Vec<WmoDoodad>,
     /// The MODS ranges into [`Self::doodads`]: set 0 always, plus the one a placement picks.
@@ -566,14 +567,14 @@ impl AssetLoader for WmoModelLoader {
             &group_light_refs,
         );
 
-        let collision = (!col_idx.is_empty()).then_some(CollisionMesh {
+        let collision = (!col_idx.is_empty()).then_some(Arc::new(CollisionMesh {
             positions: col_pos,
             indices: col_idx,
-        });
-        let collision_camera = (!cam_idx.is_empty()).then_some(CollisionMesh {
+        }));
+        let collision_camera = (!cam_idx.is_empty()).then_some(Arc::new(CollisionMesh {
             positions: cam_pos,
             indices: cam_idx,
-        });
+        }));
         resolve_shared_liquid_cells(&mut group_liquids);
         let portals = root.portals();
         let (group_collision_bounds, collision_bounds) =
