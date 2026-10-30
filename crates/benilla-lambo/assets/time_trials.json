@@ -1,35 +1,5 @@
 [
   {
-    "name": "Crossroads to Ratchet Sprint",
-    "map_id": 1,
-    "start": [
-      -437.0,
-      -2596.0,
-      96.0
-    ],
-    "end": [
-      -1000.33,
-      -3822.91,
-      5.71
-    ],
-    "rotation": 253.0
-  },
-  {
-    "name": "Sentinel Hill's Road",
-    "map_id": 0,
-    "start": [
-      -10646.20,
-      1017.75,
-      31.89
-    ],
-    "end": [
-      -9804.40,
-      837.31,
-      29.65
-    ],
-    "rotation": 327.0
-  },
-  {
     "name": "Redridge Highway",
     "map_id": 0,
     "start": [
