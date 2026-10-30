@@ -11,7 +11,7 @@ use benilla_formats::{
     accumulate_wmo_group_collision, parse_wmo_lights, parse_wmo_root, wmo_group_doodad_refs,
     wmo_group_footprint_tris, wmo_group_header, wmo_group_light_refs, wmo_group_liquid_mesh,
     wmo_group_submeshes, CollisionMesh, FootprintTris, LiquidMesh, WmoDoodad, WmoDoodadSet, WmoFog,
-    WmoGroupInfo, WmoLight, WmoPortalInfo, WmoPortalRef,
+    WmoGroupInfo, WmoLight, WmoPortalInfo, WmoPortalRef, WmoRoot,
 };
 use bevy::asset::io::Reader;
 use bevy::asset::{Asset, AssetLoader, LoadContext};
@@ -369,9 +369,16 @@ impl AssetLoader for WmoModelLoader {
         crate::frame_budget::turn().await;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        crate::frame_budget::turn().await;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
-        let root = std::sync::Arc::new(parse_wmo_root(&bytes).map_err(to_io)?);
+        // The root parse and the finalize after the groups are CPU work like each group's parse,
+        // so they go through [`crate::offload`] too; the bytes are shared with both.
+        let bytes = Arc::new(bytes);
+        let root_bytes = bytes.clone();
+        let root = Arc::new(
+            crate::offload::run(move || parse_wmo_root(&root_bytes))
+                .await
+                .map_err(to_io)?,
+        );
 
         // Lowercased so the `.wmo` strip matches; MPQ lookup is case-insensitive anyway.
         let root_path = ctx.path().path().to_string_lossy().to_ascii_lowercase();
@@ -557,67 +564,126 @@ impl AssetLoader for WmoModelLoader {
                 submesh_group.push(gi as u16);
             }
         }
-        let doodad_owner = modr_owners(root.doodads().len(), &group_doodad_refs);
-        let doodad_groups = modr_refs(root.doodads().len(), &group_doodad_refs);
-        let doodad_base = resolve_doodad_bases(
-            root.doodads(),
-            root.group_infos(),
-            &doodad_owner,
-            &doodad_groups,
-            &group_light_refs,
-        );
-
-        let collision = (!col_idx.is_empty()).then_some(Arc::new(CollisionMesh {
-            positions: col_pos,
-            indices: col_idx,
-        }));
-        let collision_camera = (!cam_idx.is_empty()).then_some(Arc::new(CollisionMesh {
-            positions: cam_pos,
-            indices: cam_idx,
-        }));
-        resolve_shared_liquid_cells(&mut group_liquids);
-        let portals = root.portals();
-        let (group_collision_bounds, collision_bounds) =
-            collision_tri_bounds(&group_collision_tris);
-        let group_footprint_bounds = footprint_tri_bounds(&group_footprints);
-        let group_collision_grids = collision_tri_grids(&group_collision_tris);
-        let group_footprint_grids = footprint_tri_grids(&group_footprints);
-        Ok(WmoModel {
-            wmo_id: benilla_formats::wmo_root_id(&bytes),
-            submeshes,
-            submesh_group,
-            portal_vertices: portals.vertices.clone(),
-            portal_infos: portals.infos.clone(),
-            portal_refs: portals.refs.clone(),
-            group_nav,
-            fogs: root.fogs().to_vec(),
-            skybox: root.skybox().map(str::to_owned),
-            group_collision_tris,
-            group_camera_only_tris,
-            group_collision_bounds,
-            group_collision_grids,
-            collision_bounds,
-            collision,
-            collision_camera,
-            doodads: root.doodads().to_vec(),
-            doodad_sets: root.doodad_sets().to_vec(),
-            lights: parse_wmo_lights(&bytes),
-            group_bounds: root.group_infos().to_vec(),
-            doodad_base,
-            doodad_owner,
-            doodad_groups,
-            group_footprints,
-            material_ground_type: root.material_ground_types(),
-            material_diff_color: root.material_diff_colors(),
-            group_footprint_bounds,
-            group_footprint_grids,
-            group_light_refs,
-            group_liquids,
+        // The finalize: the doodad tables, the shared-liquid gate and the per-group collision
+        // bounds and grids, over every group at once (a city's are its largest single pass).
+        Ok(crate::offload::run(move || {
+            finish_wmo(
+                &bytes,
+                &root,
+                WmoGroupsParsed {
+                    submeshes,
+                    submesh_group,
+                    group_nav,
+                    group_collision_tris,
+                    group_camera_only_tris,
+                    col_pos,
+                    col_idx,
+                    cam_pos,
+                    cam_idx,
+                    group_doodad_refs,
+                    group_light_refs,
+                    group_liquids,
+                    group_footprints,
+                },
+            )
         })
+        .await)
     }
 
     fn extensions(&self) -> &[&str] {
         &["wmo"]
+    }
+}
+
+/// What the group loop gathers, for [`finish_wmo`].
+struct WmoGroupsParsed {
+    submeshes: Vec<ModelSubmesh>,
+    submesh_group: Vec<u16>,
+    group_nav: Vec<WmoGroupNav>,
+    group_collision_tris: Vec<Vec<[[f32; 3]; 3]>>,
+    group_camera_only_tris: Vec<Vec<[[f32; 3]; 3]>>,
+    col_pos: Vec<[f32; 3]>,
+    col_idx: Vec<u32>,
+    cam_pos: Vec<[f32; 3]>,
+    cam_idx: Vec<u32>,
+    group_doodad_refs: Vec<Vec<u16>>,
+    group_light_refs: Vec<Vec<u16>>,
+    group_liquids: Vec<Option<LiquidMesh>>,
+    group_footprints: Vec<Option<FootprintTris>>,
+}
+
+/// Build the [`WmoModel`] from the root and its parsed groups.
+fn finish_wmo(bytes: &[u8], root: &WmoRoot, parsed: WmoGroupsParsed) -> WmoModel {
+    let WmoGroupsParsed {
+        submeshes,
+        submesh_group,
+        group_nav,
+        group_collision_tris,
+        group_camera_only_tris,
+        col_pos,
+        col_idx,
+        cam_pos,
+        cam_idx,
+        group_doodad_refs,
+        group_light_refs,
+        mut group_liquids,
+        group_footprints,
+    } = parsed;
+    let doodad_owner = modr_owners(root.doodads().len(), &group_doodad_refs);
+    let doodad_groups = modr_refs(root.doodads().len(), &group_doodad_refs);
+    let doodad_base = resolve_doodad_bases(
+        root.doodads(),
+        root.group_infos(),
+        &doodad_owner,
+        &doodad_groups,
+        &group_light_refs,
+    );
+
+    let collision = (!col_idx.is_empty()).then_some(Arc::new(CollisionMesh {
+        positions: col_pos,
+        indices: col_idx,
+    }));
+    let collision_camera = (!cam_idx.is_empty()).then_some(Arc::new(CollisionMesh {
+        positions: cam_pos,
+        indices: cam_idx,
+    }));
+    resolve_shared_liquid_cells(&mut group_liquids);
+    let portals = root.portals();
+    let (group_collision_bounds, collision_bounds) = collision_tri_bounds(&group_collision_tris);
+    let group_footprint_bounds = footprint_tri_bounds(&group_footprints);
+    let group_collision_grids = collision_tri_grids(&group_collision_tris);
+    let group_footprint_grids = footprint_tri_grids(&group_footprints);
+    WmoModel {
+        wmo_id: benilla_formats::wmo_root_id(bytes),
+        submeshes,
+        submesh_group,
+        portal_vertices: portals.vertices.clone(),
+        portal_infos: portals.infos.clone(),
+        portal_refs: portals.refs.clone(),
+        group_nav,
+        fogs: root.fogs().to_vec(),
+        skybox: root.skybox().map(str::to_owned),
+        group_collision_tris,
+        group_camera_only_tris,
+        group_collision_bounds,
+        group_collision_grids,
+        collision_bounds,
+        collision,
+        collision_camera,
+        doodads: root.doodads().to_vec(),
+        doodad_sets: root.doodad_sets().to_vec(),
+        lights: parse_wmo_lights(bytes),
+        group_bounds: root.group_infos().to_vec(),
+        doodad_base,
+        doodad_owner,
+        doodad_groups,
+        group_footprints,
+        material_ground_type: root.material_ground_types(),
+        material_diff_color: root.material_diff_colors(),
+        group_footprint_bounds,
+        group_footprint_grids,
+        group_light_refs,
+        group_liquids,
     }
 }
 

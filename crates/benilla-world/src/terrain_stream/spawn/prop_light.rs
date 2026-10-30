@@ -7,7 +7,11 @@ use bevy::prelude::*;
 
 /// One WMO doodad prop at its world transform, spawned once its M2 loads.
 pub(crate) struct WmoDoodadInst {
-    pub(crate) handle: Handle<M2Model>,
+    /// The MODN model path, loaded into `handle` by the paced prop loop.
+    pub(crate) model: Arc<str>,
+    /// `None` until the prop loop starts its load: a city building names thousands of props, and
+    /// one frame of `AssetServer::load` for all of them is a hitch.
+    pub(crate) handle: Option<Handle<M2Model>>,
     pub(crate) transform: Transform,
     /// The groups whose MODR names this prop, its portal-cull key: drawn while any is visible.
     /// Empty for a MODD no group names: never instantiated by the reference, drawn here with no

@@ -46,7 +46,7 @@ const MIN_WINDOW_NDC: f32 = 0.02;
 /// object, as a container's box admits everything in it. Never on anything parented to a WMO
 /// group, which the portal PVS already culls (a second gate would blank its interior), nor on a net
 /// body, which is elected once at its root off `WorldUnit::bound`.
-#[derive(Component)]
+#[derive(Component, Clone, Copy)]
 pub struct ExteriorScene;
 
 /// Ordering handle: [`ExteriorWindows`] is consumed and `Visibility` written after this set.

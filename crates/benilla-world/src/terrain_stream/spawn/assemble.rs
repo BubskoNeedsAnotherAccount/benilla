@@ -54,7 +54,8 @@ pub struct SpawnedModel {
 
 /// Spawns a model's submeshes at `transform`. A transport's props pass a doodad-local `transform`
 /// and parent the result under the moving gameobject, as every reader uses `GlobalTransform`.
-pub fn spawn_model_entities(
+/// `extra` joins every batch entity's spawn bundle (cards too), never the anim host or the fx.
+pub fn spawn_model_entities<B: Bundle + Clone>(
     commands: &mut Commands,
     mat_cache: &mut MaterialCache,
     materials: &mut Assets<WowModelMaterial>,
@@ -100,6 +101,10 @@ pub fn spawn_model_entities(
         &mut crate::static_gx::StaticGx,
         crate::static_gx::GxSite<'_>,
     )>,
+    // The caller's per-placement tags for each batch entity, in the spawn bundle rather than an
+    // `insert` after it: every insert moves the entity to a new archetype, and a city has
+    // thousands of batch entities. `()` for none.
+    extra: B,
 ) -> SpawnedModel {
     // The caller's gate, else the bare sphere; every radius or centre read below goes through it.
     let fade = match fade {
@@ -474,9 +479,18 @@ pub fn spawn_model_entities(
             Some(slot) => MeshTag(crate::mesh_tag::probe_bits(slot)),
             None => MeshTag(alpha_bits(1.0)),
         };
-        // A billboard card's transform is the billboard system's; it still fades with its doodad,
-        // from its pivot, where the mesh is centred (`ZERO`).
-        let (entity, fade_center) = if let Some(info) = &sub.billboard {
+        // `DoodadFade` lets the fade system drive the tag; a steady interior prop never fades. A
+        // card fades from its pivot, where its mesh is centred (`ZERO`).
+        let doodad_fade = |center: Vec3| {
+            (!steady_interior_prop).then(|| DoodadFade {
+                radius: fade.radius,
+                local_center: center,
+                cutout: cutout.clone(),
+                blend: blend.clone(),
+            })
+        };
+        // A billboard card's transform is the billboard system's; it still fades with its doodad.
+        let entity = if let Some(info) = &sub.billboard {
             // An animated doodad's card follows its billboard bone's anchor; a static one keeps
             // the baked pivot.
             let card = match host.as_mut().and_then(|h| h.anchor(commands, info.bone)) {
@@ -486,69 +500,90 @@ pub fn spawn_model_entities(
                     None => BillboardCard::new(info, transform),
                 },
             };
-            let mut card_entity = commands.spawn((
-                Mesh3d(stat_mesh.clone()),
-                MeshMaterial3d(cutout.clone()),
-                Transform::from_translation(transform.transform_point(info.pivot)),
-                ModelPart {
-                    kind,
-                    blend: sub.blend,
-                },
-                crate::model_render::EntityPathWhy(why),
-                // The picker's triangles, as the render forms are `RENDER_WORLD`-only.
-                crate::interact::PickMesh(sub.geometry.clone()),
-                mesh_tag,
-                card,
-            ));
-            // The build-time Aabb, inserted here: `calculate_bounds` can race extraction of a
-            // `RENDER_WORLD` form, and the exterior cull fails open without a bound.
-            if let Some(aabb) = stat_aabb {
-                card_entity.insert((*aabb, NoAutoAabb));
-            }
-            (card_entity.id(), Vec3::ZERO)
+            // With the build-time Aabb: `calculate_bounds` can race extraction of a `RENDER_WORLD`
+            // form, and the exterior cull fails open without a bound.
+            spawn_batch(
+                commands,
+                (
+                    Mesh3d(stat_mesh.clone()),
+                    MeshMaterial3d(cutout.clone()),
+                    Transform::from_translation(transform.transform_point(info.pivot)),
+                    ModelPart {
+                        kind,
+                        blend: sub.blend,
+                    },
+                    crate::model_render::EntityPathWhy(why),
+                    // The picker's triangles, as the render forms are `RENDER_WORLD`-only.
+                    crate::interact::PickMesh(sub.geometry.clone()),
+                    mesh_tag,
+                    card,
+                    extra.clone(),
+                ),
+                *stat_aabb,
+                doodad_fade(Vec3::ZERO),
+            )
         } else {
             // A part spawns static with its skinned twin beside it; the draw gate swaps the twin in
             // at the placement's first wake. A part without a twin never promotes.
             let skinned_mesh = animated
                 .then(|| forms.skin.and_then(|s| s.get(batch_idx)).cloned())
                 .flatten();
-            let mut part_entity = commands.spawn((
-                Mesh3d(stat_mesh.clone()),
-                MeshMaterial3d(cutout.clone()),
-                transform,
-                ModelPart {
-                    kind,
-                    blend: sub.blend,
-                },
-                crate::model_render::EntityPathWhy(why),
-                crate::interact::PickMesh(sub.geometry.clone()),
-                mesh_tag,
-            ));
             // An animated placement's joints move the vertices away from the bind-pose bound, so
             // it widens to the authored all-animation box; a card, which follows its joint, needs
             // none. `NoAutoAabb` keeps the bound: `calculate_bounds` recomputes it on
             // `Changed<Mesh3d>`, and the lazy rig swaps in a twin of bind-pose geometry.
-            if let Some(aabb) =
-                cull_bound(stat_aabb.as_ref(), animated.then_some(anim_bound).flatten())
-            {
-                part_entity.insert((aabb, NoAutoAabb));
+            let entity = spawn_batch(
+                commands,
+                (
+                    Mesh3d(stat_mesh.clone()),
+                    MeshMaterial3d(cutout.clone()),
+                    transform,
+                    ModelPart {
+                        kind,
+                        blend: sub.blend,
+                    },
+                    crate::model_render::EntityPathWhy(why),
+                    crate::interact::PickMesh(sub.geometry.clone()),
+                    mesh_tag,
+                    extra.clone(),
+                ),
+                cull_bound(stat_aabb.as_ref(), animated.then_some(anim_bound).flatten()),
+                doodad_fade(local_center),
+            );
+            if skinned_mesh.is_some() {
+                lazy_parts.push(entity);
             }
-            if let Some(sm) = skinned_mesh {
-                part_entity.insert(crate::doodad_anim::SkinnedTwin {
-                    skinned: sm,
-                    stat: stat_mesh.clone(),
-                });
-                lazy_parts.push(part_entity.id());
-            }
-            let entity = part_entity.id();
-            if let Some(root) = rig_root {
-                commands
-                    .entity(entity)
-                    .insert(crate::rig_palette::RigPart(root));
+            if rig_root.is_some() {
                 // The draw gate's list is about visibility, so a not-yet-skinned part counts.
                 skinned_meshes.push(entity);
             }
-            (entity, local_center)
+            // The rig's pair, only on an animated placement: one insert, not two.
+            match (skinned_mesh, rig_root) {
+                (Some(sm), Some(root)) => {
+                    commands.entity(entity).insert((
+                        crate::doodad_anim::SkinnedTwin {
+                            skinned: sm,
+                            stat: stat_mesh.clone(),
+                        },
+                        crate::rig_palette::RigPart(root),
+                    ));
+                }
+                (Some(sm), None) => {
+                    commands
+                        .entity(entity)
+                        .insert(crate::doodad_anim::SkinnedTwin {
+                            skinned: sm,
+                            stat: stat_mesh.clone(),
+                        });
+                }
+                (None, Some(root)) => {
+                    commands
+                        .entity(entity)
+                        .insert(crate::rig_palette::RigPart(root));
+                }
+                (None, None) => {}
+            }
+            entity
         };
         by_batch[batch_idx] = Some(entity);
         // Says the payload is a probe slot, so the exterior-payload writer passes it by; cards too,
@@ -584,15 +619,6 @@ pub fn spawn_model_entities(
                     m2.map(|(_, now)| now).unwrap_or_default(),
                     mat_frozen,
                 ));
-        }
-        // `DoodadFade` lets the fade system drive the tag; a steady interior prop never fades.
-        if !steady_interior_prop {
-            commands.entity(entity).insert(DoodadFade {
-                radius: fade.radius,
-                local_center: fade_center,
-                cutout,
-                blend,
-            });
         }
         // A following card despawns with its owner and must stay a world root: keep it out.
         if sub.billboard.is_none() || card_owner.is_none() {
@@ -662,6 +688,22 @@ fn cull_bound(stat: Option<&Aabb>, anim: Option<Aabb>) -> Option<Aabb> {
     }
 }
 
+/// Spawns one batch entity with its cull bound and fade in the same bundle as `base`: each later
+/// `insert` would move it to a new archetype.
+fn spawn_batch(
+    commands: &mut Commands,
+    base: impl Bundle,
+    aabb: Option<Aabb>,
+    fade: Option<DoodadFade>,
+) -> Entity {
+    match (aabb, fade) {
+        (Some(a), Some(f)) => commands.spawn((base, a, NoAutoAabb, f)).id(),
+        (Some(a), None) => commands.spawn((base, a, NoAutoAabb)).id(),
+        (None, Some(f)) => commands.spawn((base, f)).id(),
+        (None, None) => commands.spawn(base).id(),
+    }
+}
+
 /// Per batch, whether another batch of the model names the same skin section; a WMO batch (`None`)
 /// never shares. Quadratic, as a model has tens of batches at most.
 fn shared_geometry(sections: &[Option<u16>]) -> Vec<bool> {
@@ -712,6 +754,45 @@ mod tests {
         let b = cull_bound(Some(&bind), None).expect("a bound");
         assert!(Vec3::from(b.min()).abs_diff_eq(Vec3::splat(-1.0), 1e-4));
         assert!(Vec3::from(b.max()).abs_diff_eq(Vec3::splat(1.0), 1e-4));
+    }
+
+    #[derive(Component, Clone)]
+    struct Tag;
+
+    /// Every branch of the batch spawn carries the base, the bound pair and the fade together.
+    #[test]
+    fn a_batch_spawns_its_bound_fade_and_tags_in_one_bundle() {
+        let mut world = World::new();
+        let aabb = Aabb::from_min_max(Vec3::splat(-1.0), Vec3::splat(1.0));
+        let fade = || DoodadFade {
+            radius: 3.0,
+            local_center: Vec3::ZERO,
+            cutout: Handle::default(),
+            blend: Handle::default(),
+        };
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let (both, bound_only, fade_only, bare) = {
+            let mut commands = Commands::new(&mut queue, &world);
+            (
+                spawn_batch(&mut commands, Tag, Some(aabb), Some(fade())),
+                spawn_batch(&mut commands, Tag, Some(aabb), None),
+                spawn_batch(&mut commands, Tag, None, Some(fade())),
+                spawn_batch(&mut commands, Tag, None, None),
+            )
+        };
+        queue.apply(&mut world);
+        let has = |e: Entity| {
+            let r = world.entity(e);
+            (
+                r.contains::<Tag>(),
+                r.contains::<Aabb>() && r.contains::<NoAutoAabb>(),
+                r.contains::<DoodadFade>(),
+            )
+        };
+        assert_eq!(has(both), (true, true, true));
+        assert_eq!(has(bound_only), (true, true, false));
+        assert_eq!(has(fade_only), (true, false, true));
+        assert_eq!(has(bare), (true, false, false));
     }
 
     /// The ballista's shape: section 10 drawn twice (base and shine), section 4 once.

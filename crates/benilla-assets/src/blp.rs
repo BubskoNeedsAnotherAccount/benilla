@@ -56,39 +56,48 @@ impl AssetLoader for BlpImageLoader {
     ) -> Result<Image, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
-        Ok(match settings.variant {
-            BlpVariant::WorldArt => world_art_image(
-                for_upload(blp_bytes_to_native_chain(&bytes).map_err(to_io)?),
-                // The address mode rides the asset path (`crate::texture_url`): one `.blp` can be
-                // uploaded under two samplers.
-                crate::sampler_mode_of(&ctx.path().to_string()),
-            ),
-            BlpVariant::Sprite => {
-                let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
-                sprite_image(w, h, rgba)
-            }
-            BlpVariant::MapTile => {
-                let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
-                map_tile_image(w, h, rgba)
-            }
-            BlpVariant::Effect => {
-                let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
-                effect_image(w, h, rgba)
-            }
-            BlpVariant::PointSprite => point_sprite_image(for_upload(
-                blp_bytes_to_native_chain(&bytes).map_err(to_io)?,
-            )),
-            BlpVariant::Cursor => {
-                let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
-                cursor_image(w, h, rgba)
-            }
-        })
+        // The address mode rides the asset path (`crate::texture_url`): one `.blp` can be uploaded
+        // under two samplers.
+        let wrap = crate::sampler_mode_of(&ctx.path().to_string());
+        let variant = settings.variant;
+        // The decode is the CPU half of the load: off the main thread where the page has a pool,
+        // else after this frame's turn ([`crate::offload`]).
+        crate::offload::run(move || decode(variant, &bytes, wrap)).await
     }
 
     fn extensions(&self) -> &[&str] {
         &["blp"]
     }
+}
+
+/// Decode `bytes` into the `variant`'s image; `wrap` is the world-art address mode.
+fn decode(variant: BlpVariant, bytes: &[u8], wrap: (bool, bool)) -> Result<Image, std::io::Error> {
+    let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
+    Ok(match variant {
+        BlpVariant::WorldArt => world_art_image(
+            for_upload(blp_bytes_to_native_chain(bytes).map_err(to_io)?),
+            wrap,
+        ),
+        BlpVariant::Sprite => {
+            let (w, h, rgba) = blp_to_rgba(bytes).map_err(to_io)?;
+            sprite_image(w, h, rgba)
+        }
+        BlpVariant::MapTile => {
+            let (w, h, rgba) = blp_to_rgba(bytes).map_err(to_io)?;
+            map_tile_image(w, h, rgba)
+        }
+        BlpVariant::Effect => {
+            let (w, h, rgba) = blp_to_rgba(bytes).map_err(to_io)?;
+            effect_image(w, h, rgba)
+        }
+        BlpVariant::PointSprite => {
+            point_sprite_image(for_upload(blp_bytes_to_native_chain(bytes).map_err(to_io)?))
+        }
+        BlpVariant::Cursor => {
+            let (w, h, rgba) = blp_to_rgba(bytes).map_err(to_io)?;
+            cursor_image(w, h, rgba)
+        }
+    })
 }
 
 /// The gamma lanes' uncompressed format: non-sRGB, so the GPU does not linearize on sample.

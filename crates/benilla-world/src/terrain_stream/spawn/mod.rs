@@ -47,6 +47,12 @@ use prop_light::{fold_interior_probe, PropLight, PropLobeLight, WmoDoodadInst};
 /// cost each is about half a 60 Hz frame of render work.
 const SPAWN_COUNT_CAP: usize = 150;
 
+/// WMO prop model loads started per frame once paced. A city building resolves thousands of props
+/// at once, and each `AssetServer::load` takes the server's lock and may start a load task; this
+/// many (scaled by [`crate::stream_budget`]) keeps the burst near a millisecond and still runs ahead
+/// of the prop spawns, which [`SPAWN_COUNT_CAP`] holds lower.
+const PROP_LOAD_CAP: usize = 64;
+
 /// The nested resources of [`spawn_loaded_placements`], under Bevy's 16-parameter limit.
 type SpawnTables<'w> = (
     ResMut<'w, PropProbes>,
@@ -88,7 +94,9 @@ fn retire_failed_placements(placements: &mut Placements, asset_server: &AssetSer
             }
         }
         for d in p.doodads.iter_mut().filter(|d| !d.spawned) {
-            if let Some(path) = failed(d.handle.id().untyped()) {
+            // A prop whose load has not started yet is waiting, not failed.
+            let Some(handle) = &d.handle else { continue };
+            if let Some(path) = failed(handle.id().untyped()) {
                 warn!("WMO prop model {path} failed to load: nothing spawned");
                 d.spawned = true;
                 *pending_spawns -= 1;
@@ -133,6 +141,11 @@ pub(super) fn spawn_loaded_placements(
     // paced, as the loading cover absorbs the burst and a cap would only lengthen the reveal.
     let count_cap = if focus.paced {
         SPAWN_COUNT_CAP
+    } else {
+        usize::MAX
+    };
+    let mut prop_loads_left = if focus.paced {
+        crate::stream_budget::count(budget.as_deref(), PROP_LOAD_CAP)
     } else {
         usize::MAX
     };
@@ -231,18 +244,16 @@ pub(super) fn spawn_loaded_placements(
                         staticgx
                             .as_deref_mut()
                             .map(|gx| (gx, crate::static_gx::GxSite::Doodad { owner: p.owner })),
+                        // ADT doodads are exterior scene: from inside a WMO they draw only through
+                        // a portal window (`0x683700`, fed only by the per-window walk `0x682fa0`).
+                        // Deviation: tagged per submesh, where the reference tests the whole
+                        // object, because a placement has no root entity to carry the bound. The
+                        // anim-host root is not a batch: with no geometry it has no `Aabb`.
+                        (crate::exterior_cull::ExteriorScene, (*object).clone()),
                     );
-                    // ADT doodads are exterior scene: from inside a WMO they draw only through a
-                    // portal window (`0x683700`, fed only by the per-window walk `0x682fa0`).
-                    // Deviation: tagged per submesh, where the reference tests the whole object,
-                    // because a placement has no root entity to carry the bound. The anim-host root
-                    // is skipped: with no geometry it has no `Aabb`, and would only pad the counts.
+                    // The batch entities carry the identity already; the rest is tagged below.
+                    let batch_end = ents.len();
                     let anim_root = host.as_ref().map(|h| h.root);
-                    for e in ents.iter().filter(|e| Some(**e) != anim_root) {
-                        commands
-                            .entity(*e)
-                            .insert(crate::exterior_cull::ExteriorScene);
-                    }
                     // The collision hull, welded into the owner tile's batch, which carries the
                     // `PickOccluder` clamp. A hull-less model (a tree canopy) stays pick-through,
                     // as the reference's world trace tests only collision-flagged doodads.
@@ -284,7 +295,13 @@ pub(super) fn spawn_loaded_placements(
                         &fade,
                     );
                     spawn_lights_for(&mut commands, &m.lights, p.transform, None, &mut ents);
-                    tag_world_object(&mut commands, &ents, &object);
+                    tag_world_object(
+                        &mut commands,
+                        anim_root
+                            .into_iter()
+                            .chain(ents[batch_end..].iter().copied()),
+                        &object,
+                    );
                     if let Some((target, r)) = fade_near_target() {
                         let pos = p.transform.translation;
                         let d = bevy::math::Vec2::new(pos.x, pos.z).distance(target);
@@ -398,7 +415,14 @@ pub(super) fn spawn_loaded_placements(
                                 )
                             })
                         }),
+                        // A world WMO is exterior scene too (`0x6856c0`, fed by the same walk
+                        // `0x682fa0`): from inside one building, another draws only through a
+                        // portal window. The tag is unconditional; the camera's own building is
+                        // exempted per frame from `CameraInteriorClaim`.
+                        (crate::exterior_cull::ExteriorScene, (*object).clone()),
                     );
+                    // Every entity so far is a batch, already carrying the identity.
+                    let batch_end = ents.len();
                     if let Some((target, r)) = fade_near_target() {
                         let pos = p.transform.translation;
                         let d = bevy::math::Vec2::new(pos.x, pos.z).distance(target);
@@ -413,15 +437,6 @@ pub(super) fn spawn_loaded_placements(
                                 &by_batch,
                             );
                         }
-                    }
-                    // A world WMO is exterior scene too (`0x6856c0`, fed by the same walk
-                    // `0x682fa0`): from inside one building, another draws only through a portal
-                    // window. The tag is unconditional; the camera's own building is exempted per
-                    // frame from `CameraInteriorClaim`.
-                    for e in &ents {
-                        commands
-                            .entity(*e)
-                            .insert(crate::exterior_cull::ExteriorScene);
                     }
                     // Tie each group's submeshes (`by_batch` is index-parallel with them) to the
                     // instance. A portal-less building keeps every group visible but still gets an
@@ -528,8 +543,9 @@ pub(super) fn spawn_loaded_placements(
                         p.transform,
                         &mut ents,
                     );
-                    tag_world_object(&mut commands, &ents, &object);
-                    p.doodads = resolve_wmo_doodads(m, p.doodad_set, p.transform, &asset_server);
+                    tag_world_object(&mut commands, ents[batch_end..].iter().copied(), &object);
+                    p.doodads =
+                        resolve_wmo_doodads(m, p.doodad_set, p.transform, focus.body_bevy());
                     ents
                 }
             };
@@ -546,16 +562,27 @@ pub(super) fn spawn_loaded_placements(
             }
         }
 
-        // 2. Each WMO doodad prop as its M2 lands; its entities join `p.entities`.
+        // 2. Each WMO doodad prop as its M2 lands; its entities join `p.entities`. Its load starts
+        // here, nearest first, under the frame's load cap.
         let portal_instance = p.portal_instance;
         for d in &mut p.doodads {
             if d.spawned {
                 continue;
             }
-            let Some(m) = m2s.get(&d.handle) else {
+            if d.handle.is_none() {
+                if prop_loads_left == 0 {
+                    continue; // the frame's loads are spent: next frame
+                }
+                prop_loads_left -= 1;
+                d.handle = Some(asset_server.load(m2_url(&d.model)));
+            }
+            let Some(handle) = d.handle.as_ref() else {
+                continue;
+            };
+            let Some(m) = m2s.get(handle) else {
                 continue; // this prop's M2 still loading
             };
-            let key = ModelKey::from(&d.handle);
+            let key = ModelKey::from(handle);
             let kinds = WANT_STATIC | if wants_rig(m) { WANT_SKINNED } else { 0 };
             if !forms.require(
                 key,
@@ -613,7 +640,7 @@ pub(super) fn spawn_loaded_placements(
             };
             let object = Arc::new(WorldObject {
                 kind: ModelKind::Doodad,
-                label: handle_label(&d.handle),
+                label: handle_label(handle),
                 id: unique_id,
                 detail: format!(
                     "emitters: {} · WMO prop · {}",
@@ -674,7 +701,10 @@ pub(super) fn spawn_loaded_placements(
                     }
                     _ => None,
                 },
+                (*object).clone(),
             );
+            // The batch entities carry the identity already; the rest is tagged below.
+            let batch_end = ents.len();
             // A despawn hook returns the slot to the table. A prop whose every batch merged spawns
             // a bare carrier for it, since a blob cannot own one prop's slot.
             if let Some(slot) = interior_slot {
@@ -752,7 +782,13 @@ pub(super) fn spawn_loaded_placements(
                 fade.room.as_ref(), // the prop's glow rides its rooms like its mesh
                 &mut ents,
             );
-            tag_world_object(&mut commands, &ents, &object);
+            tag_world_object(
+                &mut commands,
+                anim_root
+                    .into_iter()
+                    .chain(ents[batch_end..].iter().copied()),
+                &object,
+            );
             p.entities.extend(ents);
             d.spawned = true;
             *pending_spawns -= 1;
@@ -766,12 +802,14 @@ pub(super) fn spawn_loaded_placements(
     activity.spawn_ms += t0.elapsed().as_secs_f32() * 1000.0;
 }
 
-/// A WMO placement's doodad props: set 0, always shown, plus its MODF-selected set.
+/// A WMO placement's doodad props: set 0, always shown, plus its MODF-selected set; nearest the
+/// viewer first when there is one, so the paced loads and spawns reach the room you stand in
+/// before the far side of the city. No load starts here: the prop loop starts each under its cap.
 fn resolve_wmo_doodads(
     wmo: &WmoModel,
     doodad_set: u16,
     wmo_world: Transform,
-    asset_server: &AssetServer,
+    viewer: Option<Vec3>,
 ) -> Vec<WmoDoodadInst> {
     let mut ranges: Vec<(u32, u32)> = wmo
         .doodad_sets
@@ -818,7 +856,8 @@ fn resolve_wmo_doodads(
                 _ => PropLight::Exterior,
             };
             out.push(WmoDoodadInst {
-                handle: asset_server.load(m2_url(&d.model)),
+                model: Arc::from(d.model.as_str()),
+                handle: None,
                 transform: wmo_world.mul_transform(local),
                 // Every group whose MODR names the prop, inverted at asset load.
                 groups: wmo.doodad_groups.get(di).cloned().unwrap_or_default(),
@@ -826,6 +865,15 @@ fn resolve_wmo_doodads(
                 spawned: false,
             });
         }
+    }
+    if let Some(v) = viewer {
+        // Stable, so equidistant props keep their file order.
+        out.sort_by(|a, b| {
+            a.transform
+                .translation
+                .distance_squared(v)
+                .total_cmp(&b.transform.translation.distance_squared(v))
+        });
     }
     out
 }
@@ -902,10 +950,15 @@ fn handle_label<A: Asset>(handle: &Handle<A>) -> String {
         .unwrap_or_default()
 }
 
-/// Tags a placement's spawned entities, fx included, with its [`WorldObject`] for the inspector; a
-/// diverted batch carries the same Arc in its lane instead.
-fn tag_world_object(commands: &mut Commands, ents: &[Entity], object: &Arc<WorldObject>) {
-    for &e in ents {
+/// Tags a placement's non-batch entities (anim host, fx, colliders) with its [`WorldObject`] for the
+/// inspector; a batch entity takes it in its spawn bundle, and a diverted batch carries the same Arc
+/// in its lane instead.
+fn tag_world_object(
+    commands: &mut Commands,
+    ents: impl IntoIterator<Item = Entity>,
+    object: &Arc<WorldObject>,
+) {
+    for e in ents {
         commands.entity(e).insert((**object).clone());
     }
 }
@@ -977,7 +1030,8 @@ mod retire_tests {
 
     fn prop(handle: Handle<M2Model>) -> WmoDoodadInst {
         WmoDoodadInst {
-            handle,
+            model: Arc::from("lamp.m2"),
+            handle: Some(handle),
             transform: Transform::IDENTITY,
             groups: Arc::from([]),
             light: PropLight::Exterior,
@@ -1003,6 +1057,56 @@ mod retire_tests {
             vec![2, 3, 1],
             "ascending distance, the spawned one left out"
         );
+    }
+
+    #[test]
+    fn wmo_props_resolve_unloaded_and_nearest_the_viewer_first() {
+        let doodad = |model: &str, x: f32| benilla_formats::WmoDoodad {
+            model: model.into(),
+            // WoW (x, y, z): the Bevy distance from the origin grows with |x|.
+            position: [x, 0.0, 0.0],
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            color: [0; 4],
+        };
+        let wmo = WmoModel {
+            doodads: vec![
+                doodad("far.m2", 90.0),
+                doodad("", 1.0), // an unresolved MODN name is skipped
+                doodad("near.m2", 5.0),
+                doodad("mid.m2", 40.0),
+            ],
+            doodad_sets: vec![benilla_formats::WmoDoodadSet { start: 0, count: 4 }],
+            ..Default::default()
+        };
+        let props = resolve_wmo_doodads(&wmo, 0, Transform::IDENTITY, Some(Vec3::ZERO));
+        let names: Vec<&str> = props.iter().map(|d| &*d.model).collect();
+        assert_eq!(names, vec!["near.m2", "mid.m2", "far.m2"]);
+        assert!(
+            props.iter().all(|d| d.handle.is_none() && !d.spawned),
+            "no load starts at resolve: the prop loop starts each under its cap"
+        );
+        let unsorted = resolve_wmo_doodads(&wmo, 0, Transform::IDENTITY, None);
+        let names: Vec<&str> = unsorted.iter().map(|d| &*d.model).collect();
+        assert_eq!(names, vec!["far.m2", "near.m2", "mid.m2"], "file order");
+    }
+
+    #[test]
+    fn a_prop_whose_load_has_not_started_is_not_retired() {
+        let mut app = app();
+        {
+            let mut pl = app.world_mut().resource_mut::<Placements>();
+            let mut waiting = prop(Handle::default());
+            waiting.handle = None;
+            let mut p = placement(ModelHandle::M2(Handle::default()), vec![waiting]);
+            p.spawned = true;
+            pl.by_id.insert(1, p);
+            pl.pending_spawns = 1;
+        }
+        app.update();
+        let pl = app.world().resource::<Placements>();
+        assert!(!pl.by_id[&1].doodads[0].spawned);
+        assert_eq!(pl.pending_spawns, 1);
     }
 
     /// Runs frames until every handle's load has failed (no loader is registered for the path).

@@ -130,6 +130,8 @@ pub(crate) fn gx_perf_guard(i: usize) -> GxPerfGuard {
 }
 
 /// One diverted batch, kept after its cell bakes so an unload or a later admission can re-bake.
+/// `Clone` for the snapshot a region's off-thread bake takes: Arcs and handles, no geometry copy.
+#[derive(Clone)]
 struct GxItem {
     geometry: Arc<RenderSubmesh>,
     transform: Transform,
@@ -159,6 +161,7 @@ struct GxItem {
 
 /// A WMO-prop item's referrer set (an index into [`GxCell::sets`]) and folded SH-probe slot;
 /// `None` takes exterior light, as on the entity path.
+#[derive(Clone)]
 struct GxItemProp {
     set: u16,
     slot: Option<u16>,
@@ -207,6 +210,7 @@ enum FaderState {
 }
 
 /// A WMO item's baked facts (see [`GxWmoBatch`]).
+#[derive(Clone)]
 struct GxItemWmo {
     group: u16,
     interior: bool,
@@ -238,6 +242,8 @@ struct GxCell {
     settled: Option<bool>,
     /// A prop region's distinct referrer sets, indexed by [`GxItemProp::set`].
     sets: Vec<Arc<[u16]>>,
+    /// A region's bake in flight on the compute pool, published by a later flush; never on a cell.
+    baking: Option<bevy::tasks::Task<bake::Baked>>,
 }
 
 /// The main-world collector and its published draw set.
@@ -355,23 +361,24 @@ pub struct GxWmoBatch {
 impl StaticGx {
     /// Regions whose first bake has not published: diverted geometry that nothing draws yet, which
     /// the reveal gate ([`crate::terrain_stream::WorldLoadProgress`]) waits on. A published region
-    /// re-baking still draws its previous bake and does not count.
+    /// re-baking still draws its previous bake and does not count; a first bake in flight does.
     pub(crate) fn undrawn_regions(&self) -> usize {
         let world = &self.world;
+        let pending = |s: &GxCell| (s.dirty || s.baking.is_some()) && !s.items.is_empty();
         let cells = self
             .cells
             .iter()
-            .filter(|(k, s)| s.dirty && !s.items.is_empty() && !world.cells.contains_key(*k))
+            .filter(|(k, s)| pending(s) && !world.cells.contains_key(*k))
             .count();
         let wmos = self
             .wmos
             .iter()
-            .filter(|(k, s)| s.dirty && !s.items.is_empty() && !world.wmos.contains_key(*k))
+            .filter(|(k, s)| pending(s) && !world.wmos.contains_key(*k))
             .count();
         let props = self
             .props
             .iter()
-            .filter(|(k, s)| s.dirty && !s.items.is_empty() && !world.props.contains_key(*k))
+            .filter(|(k, s)| pending(s) && !world.props.contains_key(*k))
             .count();
         cells + wmos + props
     }

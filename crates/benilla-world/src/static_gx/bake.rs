@@ -6,6 +6,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::camera::primitives::Aabb;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool};
 
 use super::{
     render, GxItem, StaticGx, ATTRIBUTE_GX_ANCHOR, ATTRIBUTE_GX_WORD, IDLE_FRAMES,
@@ -50,9 +51,24 @@ const CENSUS_MAX_HOLD_FRAMES: u32 = 600;
 /// Bake dirty-and-quiet cells into retained draw data; publish into [`render::GxWorld`].
 pub(super) fn flush_static_gx(mut gx: ResMut<StaticGx>, mut meshes: ResMut<Assets<Mesh>>) {
     let _t = super::gx_perf_guard(0);
+    flush(&mut gx, &mut meshes);
+}
+
+/// A region's bake from the compute pool: the mesh the flush adds, and the draw data whose
+/// `mesh` handle is a placeholder until then.
+pub(super) struct Baked {
+    mesh: Mesh,
+    draw: render::GxCellDraw,
+}
+
+/// [`flush_static_gx`]'s body. Cells bake here, as their fader indices must match the published
+/// bake in the frame it lands. WMO and prop regions bake on the compute pool: a city building is
+/// hundreds of thousands of vertices, tens of milliseconds in one frame, and its previous bake
+/// draws until the new one lands. A [`StaticGx::flush_now`] request bakes regions here too.
+fn flush(gx: &mut StaticGx, meshes: &mut Assets<Mesh>) {
     gx.frame = gx.frame.wrapping_add(1);
     let frame = gx.frame;
-    census_declines(&mut gx, frame);
+    census_declines(gx, frame);
     // A `StaticGx::flush_now` request bakes one flush's worth; the windows resume next frame.
     let now = std::mem::take(&mut gx.flush_now);
     let StaticGx {
@@ -76,7 +92,7 @@ pub(super) fn flush_static_gx(mut gx: ResMut<StaticGx>, mut meshes: ResMut<Asset
             .items
             .sort_by_key(|i| ((u8::from(i.cutout) << 1) | u8::from(i.two_sided), i.texture));
         remap_fader_items(state);
-        let baked = bake_cell(&state.items, &mut meshes);
+        let baked = bake_cell(&state.items, meshes);
         debug!(
             "static-gx: cell ({},{}) baked — {} item(s), {} vert(s)",
             cell.0,
@@ -86,59 +102,113 @@ pub(super) fn flush_static_gx(mut gx: ResMut<StaticGx>, mut meshes: ResMut<Asset
         );
         world.cells.insert(cell, std::sync::Arc::new(baked));
     }
+    // The group joins the key: the PVS selects per group, so a run must not cross one.
     for (&instance, state) in wmos.iter_mut() {
-        if !bake_due(state, world.wmos.contains_key(&instance), frame, now) {
-            continue;
-        }
-        state.dirty = false;
-        if state.items.is_empty() {
-            world.wmos.remove(&instance);
-            continue;
-        }
-        // The group joins the key: the PVS selects per group, so a run must not cross one.
-        state.items.sort_by_key(|i| {
-            (
-                (u8::from(i.cutout) << 1) | u8::from(i.two_sided),
-                i.texture,
-                i.wmo.as_ref().map_or(0, |w| w.group),
-            )
-        });
-        let baked = bake_cell(&state.items, &mut meshes);
-        debug!(
-            "static-gx: wmo {instance} baked — {} item(s), {} group(s), {} vert(s)",
-            state.items.len(),
-            baked.groups.len(),
-            baked.draws.last().map_or(0, |d| d.vertex_range.end),
+        let key = |i: &GxItem| i.wmo.as_ref().map_or(0, |w| w.group);
+        flush_region(
+            instance,
+            state,
+            &mut world.wmos,
+            (frame, now),
+            meshes,
+            key,
+            false,
         );
-        world.wmos.insert(instance, std::sync::Arc::new(baked));
     }
     // Prop regions: the referrer set is the selection key, and the draw carries the set list.
     for (&instance, state) in props.iter_mut() {
-        if !bake_due(state, world.props.contains_key(&instance), frame, now) {
-            continue;
-        }
-        state.dirty = false;
-        if state.items.is_empty() {
-            world.props.remove(&instance);
-            continue;
-        }
-        state.items.sort_by_key(|i| {
-            (
-                (u8::from(i.cutout) << 1) | u8::from(i.two_sided),
-                i.texture,
-                i.prop.as_ref().map_or(0, |p| p.set),
-            )
-        });
-        let mut baked = bake_cell(&state.items, &mut meshes);
-        baked.sets = state.sets.clone();
-        debug!(
-            "static-gx: props {instance} baked — {} item(s), {} set(s), {} vert(s)",
-            state.items.len(),
-            baked.sets.len(),
-            baked.draws.last().map_or(0, |d| d.vertex_range.end),
+        let key = |i: &GxItem| i.prop.as_ref().map_or(0, |p| p.set);
+        flush_region(
+            instance,
+            state,
+            &mut world.props,
+            (frame, now),
+            meshes,
+            key,
+            true,
         );
-        world.props.insert(instance, std::sync::Arc::new(baked));
     }
+}
+
+/// One WMO or prop region's turn of the flush: publish a finished bake, then start the next if one
+/// is due. One bake per region is in flight at a time; a divert meanwhile only marks it dirty, and
+/// the next bake takes it in once this one lands. A region whose instance dies is dropped with its
+/// task by the cull, which cancels it.
+fn flush_region(
+    instance: Entity,
+    state: &mut super::GxCell,
+    published: &mut bevy::platform::collections::HashMap<
+        Entity,
+        std::sync::Arc<render::GxCellDraw>,
+    >,
+    (frame, now): (u32, bool),
+    meshes: &mut Assets<Mesh>,
+    sel_key: impl Fn(&GxItem) -> u16,
+    with_sets: bool,
+) {
+    if let Some(task) = state.baking.as_mut() {
+        // Polled, never waited on: a browser build without threads runs the task on this thread.
+        let Some(baked) = block_on(future::poll_once(task)) else {
+            return;
+        };
+        state.baking = None;
+        publish(instance, baked, published, meshes);
+    }
+    if !bake_due(state, published.contains_key(&instance), frame, now) {
+        return;
+    }
+    state.dirty = false;
+    if state.items.is_empty() {
+        published.remove(&instance);
+        return;
+    }
+    state.items.sort_by_key(|i| {
+        (
+            (u8::from(i.cutout) << 1) | u8::from(i.two_sided),
+            i.texture,
+            sel_key(i),
+        )
+    });
+    let sets = with_sets.then(|| state.sets.clone());
+    if now {
+        publish(instance, bake_region(&state.items, sets), published, meshes);
+    } else {
+        // A snapshot of Arcs and handles; the sort above fixed its order, which the draws index.
+        let items = state.items.clone();
+        state.baking =
+            Some(AsyncComputeTaskPool::get().spawn(async move { bake_region(&items, sets) }));
+    }
+}
+
+/// The CPU half of a region's bake, safe off the main thread; `sets` for a prop region.
+fn bake_region(items: &[GxItem], sets: Option<Vec<std::sync::Arc<[u16]>>>) -> Baked {
+    let (mesh, mut draw) = bake_mesh(items);
+    if let Some(sets) = sets {
+        draw.sets = sets;
+    }
+    Baked { mesh, draw }
+}
+
+/// Add a finished bake's mesh and publish its draw data for `instance`.
+fn publish(
+    instance: Entity,
+    baked: Baked,
+    published: &mut bevy::platform::collections::HashMap<
+        Entity,
+        std::sync::Arc<render::GxCellDraw>,
+    >,
+    meshes: &mut Assets<Mesh>,
+) {
+    let Baked { mesh, mut draw } = baked;
+    draw.mesh = meshes.add(mesh);
+    debug!(
+        "static-gx: region {instance} baked — {} draw(s), {} group(s), {} set(s), {} vert(s)",
+        draw.draws.len(),
+        draw.groups.len(),
+        draw.sets.len(),
+        draw.draws.last().map_or(0, |d| d.vertex_range.end),
+    );
+    published.insert(instance, std::sync::Arc::new(draw));
 }
 
 /// Whether a dirty region bakes now: after the short quiet window first, the long one once
@@ -181,6 +251,14 @@ fn remap_fader_items(state: &mut super::GxCell) {
 
 /// Bake one cell's or region's recentred mesh, per-item draws and per-selection-key bounds.
 fn bake_cell(items: &[GxItem], meshes: &mut Assets<Mesh>) -> render::GxCellDraw {
+    let (mesh, mut draw) = bake_mesh(items);
+    draw.mesh = meshes.add(mesh);
+    draw
+}
+
+/// [`bake_cell`] without the asset store, so it can run on the compute pool: the mesh, and the
+/// draw data with a placeholder `mesh` handle for the caller to fill.
+fn bake_mesh(items: &[GxItem]) -> (Mesh, render::GxCellDraw) {
     use bevy::math::DVec3;
     // World positions stay f64 until recentred: an f32 coordinate near 9,000 yd rounds by up to
     // ~0.0005 yd, half an indoor pixel, which would shift every interpolant.
@@ -303,8 +381,8 @@ fn bake_cell(items: &[GxItem], meshes: &mut Assets<Mesh>) -> render::GxCellDraw 
     mesh.insert_indices(Indices::U32(indices));
     // All-zero; the flush marks a fader cell `bits_stale`, so the scan fills it before publish.
     let killed = vec![0u64; draws.len().div_ceil(64)];
-    render::GxCellDraw {
-        mesh: meshes.add(mesh),
+    let draw = render::GxCellDraw {
+        mesh: Handle::default(), // the caller's `Assets::add`
         origin,
         aabb: Aabb::from_min_max((mn - origin64).as_vec3(), (mx - origin64).as_vec3()),
         draws,
@@ -320,7 +398,8 @@ fn bake_cell(items: &[GxItem], meshes: &mut Assets<Mesh>) -> render::GxCellDraw 
         sets: Vec::new(), // filled by the flush for a prop region
         killed,
         killed_rev: 0,
-    }
+    };
+    (mesh, draw)
 }
 
 #[cfg(test)]
@@ -660,6 +739,104 @@ mod tests {
         assert_eq!(w_int & WORD_WMO, 0, "a prop item never takes the WMO lane");
         assert_eq!(w_ext & WORD_INTERIOR, 0);
         assert_ne!(w_ext & WORD_MATTE, 0);
+    }
+
+    fn wmo_batch_at<'a>(
+        g: &'a Arc<RenderSubmesh>,
+        at: Vec3,
+        instance: Entity,
+    ) -> super::super::GxBatch<'a> {
+        let mut b = batch(g, at, None, ModelBlend::Opaque);
+        b.shade = ShadeSel::Matte;
+        b.wmo = Some(GxWmoBatch {
+            instance,
+            group: 0,
+            interior: false,
+            class: None,
+            sidn: None,
+            window: false,
+            batch_order: 1,
+        });
+        b
+    }
+
+    /// Flush until `instance`'s region has published, or panic.
+    fn flush_until_published(gx: &mut StaticGx, meshes: &mut Assets<Mesh>, instance: Entity) {
+        for _ in 0..1000 {
+            flush(gx, meshes);
+            if gx.wmos[&instance].baking.is_none() && gx.world.wmos.contains_key(&instance) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the region's bake never landed");
+    }
+
+    #[test]
+    fn a_region_bakes_on_the_pool_and_stays_undrawn_until_it_lands() {
+        AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        let mut gx = StaticGx::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let g = tri([0.0; 3]);
+        let instance = Entity::PLACEHOLDER;
+        assert!(gx.divert(wmo_batch_at(&g, Vec3::ONE, instance)));
+        for _ in 0..IDLE_FRAMES {
+            flush(&mut gx, &mut meshes);
+        }
+        let state = &gx.wmos[&instance];
+        assert!(
+            state.baking.is_some() && !state.dirty,
+            "the quiet window started a bake"
+        );
+        assert!(
+            !gx.world.wmos.contains_key(&instance),
+            "a bake lands on a later flush"
+        );
+        assert_eq!(
+            gx.undrawn_regions(),
+            1,
+            "in flight is still a hole for the reveal"
+        );
+
+        flush_until_published(&mut gx, &mut meshes, instance);
+        assert_eq!(gx.undrawn_regions(), 0);
+        let draw = &gx.world.wmos[&instance];
+        assert!(
+            meshes.get(&draw.mesh).is_some(),
+            "the flush added the pool's mesh"
+        );
+        assert_eq!(draw.draws.len(), 1);
+
+        // A divert after publishing re-bakes off the pool too, and the old bake draws meanwhile.
+        assert!(gx.divert(wmo_batch_at(&g, Vec3::splat(2.0), instance)));
+        for _ in 0..REBAKE_FRAMES {
+            flush(&mut gx, &mut meshes);
+        }
+        assert_eq!(
+            gx.world.wmos[&instance].draws.len(),
+            1,
+            "the previous bake still draws"
+        );
+        assert_eq!(gx.undrawn_regions(), 0, "a re-bake is no hole");
+        flush_until_published(&mut gx, &mut meshes, instance);
+        assert_eq!(gx.world.wmos[&instance].draws.len(), 2);
+    }
+
+    #[test]
+    fn a_flush_now_bakes_a_region_on_the_spot() {
+        let mut gx = StaticGx::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let g = tri([0.0; 3]);
+        let instance = Entity::PLACEHOLDER;
+        assert!(gx.divert(wmo_batch_at(&g, Vec3::ONE, instance)));
+        gx.flush_now();
+        flush(&mut gx, &mut meshes);
+        assert!(
+            gx.wmos[&instance].baking.is_none(),
+            "no task: baked in the flush"
+        );
+        assert!(gx.world.wmos.contains_key(&instance));
+        assert_eq!(gx.undrawn_regions(), 0);
     }
 
     /// Raw, as `model.rs` inserts `vertex_colors` on the entity mesh.
