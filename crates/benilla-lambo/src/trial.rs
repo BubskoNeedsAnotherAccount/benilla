@@ -2070,9 +2070,15 @@ mod tests {
         assert!(trials[1].circuit && trials[1].end == trials[1].start);
         assert_eq!(trials[1].lap_count(), 3);
         assert_eq!(trials[1].checkpoints.len(), 6);
-        // The first two are versus courses; the rest are not.
-        assert!(trials[0].versus && trials[1].versus);
-        assert!(trials[2..].iter().all(|t| !t.versus));
+        // The first four are versus courses; the rest are not.
+        assert!(trials[..4].iter().all(|t| t.versus));
+        assert!(trials[4..].iter().all(|t| !t.versus));
+        assert_eq!(trials[2].name, "Redridge Highway");
+        assert_eq!(trials[2].checkpoints.len(), 5);
+        // A two-lap circuit finishing at its start.
+        assert_eq!(trials[3].name, "Around the Forge");
+        assert!(trials[3].circuit && trials[3].lap_count() == 2);
+        assert_eq!(trials[3].checkpoints.len(), 10);
     }
 
     fn parse(json: &str) -> TimeTrial {
