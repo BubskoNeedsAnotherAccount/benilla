@@ -1,5 +1,5 @@
-//! Player settings, edited in the ESC menu's Settings tab and applied live: master volume, view
-//! distance, tyre smoke and render resolution. In a browser they are remembered in the page's
+//! Player settings, edited in the ESC menu's Settings tab and applied live: master volume, engine
+//! sound, view distance, tyre smoke and render resolution. In a browser they are remembered in the page's
 //! local storage.
 
 use bevy::prelude::*;
@@ -21,6 +21,8 @@ pub const RENDER_SCALES: [f32; 4] = [0.5, 0.67, 0.85, 1.0];
 pub struct Settings {
     /// Master volume, 0 to 1.
     pub volume: f32,
+    /// The engine's simulated sound, the costliest thing the game runs besides drawing.
+    pub engine_sound: bool,
     /// View distance in yards, within [`FARCLIP_RANGE`].
     pub view_distance: f32,
     /// Puffs of tyre smoke from drifting and burnouts, on every car.
@@ -33,6 +35,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             volume: DEFAULT_VOLUME,
+            engine_sound: true,
             view_distance: DEFAULT_VIEW_DISTANCE,
             tire_smoke: true,
             render_scale: 1.0,
@@ -155,6 +158,7 @@ fn apply_settings(
     }
     if let Some(mut audio) = audio {
         audio.set_master_volume(settings.volume);
+        audio.set_engine_sound(settings.engine_sound);
     }
     if let Some(mut view) = view {
         view.farclip = settings.view_distance;

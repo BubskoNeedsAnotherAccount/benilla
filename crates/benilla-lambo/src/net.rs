@@ -29,8 +29,6 @@ extern "C" {
     fn net_send(msg: &str);
     #[wasm_bindgen(js_namespace = ["globalThis", "__benillaNet"], js_name = error)]
     fn net_error() -> String;
-    #[wasm_bindgen(js_namespace = ["globalThis", "__benillaNet"], js_name = room)]
-    fn net_room() -> String;
 }
 
 /// State messages per second.
@@ -90,20 +88,20 @@ struct State {
 /// A driver counting down this long ago or less is still on the grid.
 const GRID_FRESH: f32 = 2.0;
 
-/// The other drivers in the room.
+/// The other drivers on the server.
 #[derive(Resource, Default)]
 struct Roster {
     names: HashMap<u32, String>,
     cars: HashMap<u32, Entity>,
     /// Seconds since the last state went out.
     since_send: f32,
-    /// The socket was open on the previous frame, so a reopening starts from an empty room.
+    /// The socket was open on the previous frame, so a reopening starts from an empty roster.
     was_open: bool,
     /// This client's id, from the relay's welcome.
     my_id: Option<u32>,
 }
 
-/// Tells the race code who is in the room and who is counting down on the same versus course.
+/// Tells the race code who is online and who is counting down on the same versus course.
 fn fill_lobby(
     time: Res<Time>,
     roster: Res<Roster>,
@@ -437,7 +435,7 @@ fn collide_cars(
     }
 }
 
-/// Name tags over the other cars, and a line saying who is in the room.
+/// Name tags over the other cars, and a line saying how many are driving.
 fn hud(
     mut contexts: EguiContexts,
     roster: Res<Roster>,
@@ -452,7 +450,7 @@ fn hud(
 
     let line = match state {
         1 => "connecting…".to_string(),
-        2 => format!("room {} · {} driving", net_room(), roster.names.len() + 1),
+        2 => format!("online · {} driving", roster.names.len() + 1),
         4 => format!("not connected: {}", net_error()),
         _ => format!("reconnecting… {}", net_error()),
     };

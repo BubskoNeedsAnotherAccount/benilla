@@ -79,7 +79,7 @@ pub struct TimeTrial {
     pub circuit: bool,
     #[serde(default = "default_gate_radius")]
     pub checkpoint_radius: f32,
-    /// In a multiplayer room, the drivers on this course line up on a grid and start together.
+    /// Online, the drivers on this course line up on a grid and start together.
     #[serde(default)]
     pub versus: bool,
 }
@@ -302,7 +302,7 @@ const GRID_BACK: f32 = 4.0;
 /// offline and a versus course runs as a plain one.
 #[derive(Resource, Default)]
 pub struct VersusLobby {
-    /// Connected to a relay room.
+    /// Connected to a relay.
     pub online: bool,
     /// This client's relay id.
     pub my_id: Option<u32>,
@@ -312,7 +312,7 @@ pub struct VersusLobby {
 
 impl TimeTrialManager {
     /// The versus course this car is on, and whether its start is counting down. Only the
-    /// browser build has a room to tell.
+    /// browser build has a relay to tell.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn versus_tag(&self) -> Option<(&str, bool)> {
         let trial = self.current_trial().filter(|t| t.versus)?;
@@ -784,7 +784,7 @@ pub fn grid_spawn(trial: &TimeTrial, slot: usize) -> ([f32; 3], f32) {
     (wow, yaw)
 }
 
-/// Runs a versus start: in a multiplayer room a versus course counts down instead of waiting for
+/// Runs a versus start: online, a versus course counts down instead of waiting for
 /// the throttle, puts the car on its grid place, and restarts the count whenever a driver joins
 /// the grid.
 pub fn update_versus(
@@ -808,7 +808,7 @@ pub fn update_versus(
         return;
     };
     if !lobby.online {
-        // Left the room: an ordinary start.
+        // Went offline: an ordinary start.
         manager.state = TrialState::WaitingToStart;
         return;
     }
@@ -1182,6 +1182,12 @@ fn settings_page(ui: &mut egui::Ui, s: &mut Settings) {
             .text("Master volume"),
     );
     s.volume = percent / 100.0;
+    ui.checkbox(&mut s.engine_sound, "Engine sound");
+    ui.label(
+        egui::RichText::new("Untick if the game stutters: the engine is simulated live.")
+            .color(egui::Color32::GRAY)
+            .size(12.0),
+    );
 
     ui.add_space(12.0);
     heading(ui, "GRAPHICS");
@@ -1334,7 +1340,7 @@ pub fn render_trial_ui(
                                     if trial.versus {
                                         ui.label(
                                             egui::RichText::new(
-                                                "Versus course — join a multiplayer room to race others",
+                                                "Versus course — drive with friends to race others",
                                             )
                                             .color(egui::Color32::from_rgb(255, 120, 90))
                                             .size(13.0),

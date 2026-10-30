@@ -169,7 +169,7 @@ impl EngineSoundHandle {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
     }

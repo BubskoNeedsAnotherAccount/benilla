@@ -78,6 +78,28 @@ impl CarAudio {
         crate::web::set_synth_master(volume.clamp(0.0, 1.0));
     }
 
+    /// Turns the engine sound on or off. Off, nothing renders it: the page stops its worker, and
+    /// natively the synth is stopped and a fresh one started when it comes back.
+    pub fn set_engine_sound(&mut self, on: bool) {
+        #[cfg(target_arch = "wasm32")]
+        crate::web::set_synth_enabled(on);
+        #[cfg(not(target_arch = "wasm32"))]
+        match (on, self.synth_handle.is_some()) {
+            (false, true) => {
+                if let Some(synth) = self.synth_handle.take() {
+                    synth.stop();
+                }
+            }
+            (true, false) => match self.manager.play(EngineSoundData::new(48000)) {
+                Ok(h) => self.synth_handle = Some(h),
+                Err(e) => {
+                    eprintln!("benilla-lambo audio: failed to start procedural synthesizer: {e}")
+                }
+            },
+            _ => {}
+        }
+    }
+
     /// Attempts to locate `assets/sounds/` and load all sound effects.
     pub fn new() -> Option<Self> {
         // A browser has no directory to find; `load_effect` asks the page.

@@ -38,6 +38,14 @@ extern "C" {
     /// Set the engine's master volume, 0 to 1.
     #[wasm_bindgen(js_namespace = ["globalThis", "__benillaSynth"], js_name = master)]
     fn synth_master(volume: f32);
+    /// Start or stop the engine sound's worker and audio.
+    #[wasm_bindgen(js_namespace = ["globalThis", "__benillaSynth"], js_name = enable)]
+    fn synth_enable(on: bool);
+}
+
+/// Start or stop the engine sound: off, its worker is stopped and costs nothing.
+pub fn set_synth_enabled(on: bool) {
+    synth_enable(on);
 }
 
 /// Send the engine sound the car's state. An audio worklet plays what the worker renders from it,

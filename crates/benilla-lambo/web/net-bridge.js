@@ -1,15 +1,15 @@
 // The multiplayer socket. The engine's wasm calls `globalThis.__benillaNet` (see `src/net.rs`) once a
 // frame: it polls for the messages that have arrived and sends its own car's state. The relay is a
-// separate server (`server/server.mjs`); with no server or room this installs an inert stub and the
-// game is single player.
+// separate server (`server/server.mjs`), and everyone connected to it shares one world; with no
+// server this installs an inert stub and the game is single player.
 
 const RETRY_MS = 3000;
 
-/** state(): 0 off, 1 connecting, 2 open, 3 closed (retrying), 4 refused (room or server full). */
-export function installNet({ server, room, name }) {
-  const stub = { state: () => 0, poll: () => undefined, send() {}, error: () => "", room: () => "" };
+/** state(): 0 off, 1 connecting, 2 open, 3 closed (retrying), 4 refused (server full). */
+export function installNet({ server, name }) {
+  const stub = { state: () => 0, poll: () => undefined, send() {}, error: () => "" };
   globalThis.__benillaNet = stub;
-  if (!server || !room) return;
+  if (!server) return;
 
   /** @type {WebSocket | null} */
   let ws = null;
@@ -21,7 +21,6 @@ export function installNet({ server, room, name }) {
   const connect = () => {
     state = 1;
     const url = new URL(server);
-    url.searchParams.set("room", room);
     url.searchParams.set("name", name);
     ws = new WebSocket(url);
     ws.onopen = () => { state = 2; error = ""; wasOpen = true; };
@@ -49,12 +48,11 @@ export function installNet({ server, room, name }) {
     poll: () => inbox.shift(),
     send(msg) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg); },
     error: () => error,
-    room: () => room,
   };
 }
 
 /** The first connection, awaited, so the lobby can say why it failed instead of dropping into the game alone. */
-export function checkServer({ server, room, name }, timeoutMs = 6000) {
+export function checkServer({ server, name }, timeoutMs = 6000) {
   return new Promise((resolve) => {
     let done = false;
     const finish = (ok, why) => { if (!done) { done = true; try { ws.close(); } catch {} resolve({ ok, why }); } };
@@ -66,7 +64,6 @@ export function checkServer({ server, room, name }, timeoutMs = 6000) {
       if (location.protocol === "https:" && url.protocol === "ws:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
         return resolve({ ok: false, why: "this page is https, so the server must be wss:// (or localhost)" });
       }
-      url.searchParams.set("room", room);
       url.searchParams.set("name", name);
       url.searchParams.set("probe", "1");
       ws = new WebSocket(url);
