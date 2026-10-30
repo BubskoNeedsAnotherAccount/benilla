@@ -113,6 +113,7 @@ fn main() -> AppExit {
 
     // Initialize time trial manager.
     app.init_resource::<trial::TimeTrialManager>();
+    app.init_resource::<trial::VersusLobby>();
 
     // The world is always live: there is no session to say otherwise.
     app.insert_resource(WorldLive(true));
@@ -137,13 +138,12 @@ fn main() -> AppExit {
         Update,
         (
             trial::handle_trial_input,
+            trial::update_versus,
             car::drive,
             camera::chase,
             car::animate_wheels,
             trial::update_trial_progress,
-            trial::update_marker_positions,
-            trial::update_checkpoint_markers,
-            trial::animate_markers,
+            trial::update_course_markers,
         )
             .chain()
             .in_set(WorldStage::Input),

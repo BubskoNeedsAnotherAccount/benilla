@@ -15,6 +15,7 @@ use benilla_world::view::WorldCamera;
 use crate::car::{orientation, smooth, spawn_model, wheel_rotation, Car, CarAssets, Wheels};
 use crate::model::WHEEL_RADIUS;
 use crate::smoke::{puff, smoke_interval, smoke_level, TireSmokeAssets};
+use crate::trial::{TimeTrialManager, VersusLobby};
 
 #[wasm_bindgen]
 extern "C" {
@@ -45,7 +46,11 @@ const STALE_AFTER: f32 = 15.0;
 #[serde(tag = "t")]
 enum Incoming {
     #[serde(rename = "welcome")]
-    Welcome { players: Vec<Peer> },
+    Welcome {
+        #[serde(default)]
+        id: Option<u32>,
+        players: Vec<Peer>,
+    },
     #[serde(rename = "join")]
     Join { id: u32, name: String },
     #[serde(rename = "leave")]
@@ -74,7 +79,16 @@ struct State {
     /// Tyre smoke level (smoke::smoke_level); older clients send none.
     #[serde(default)]
     d: u8,
+    /// The versus course the driver is on, if any.
+    #[serde(default)]
+    r: Option<String>,
+    /// 1 while that course's start is counting down.
+    #[serde(default)]
+    c: u8,
 }
+
+/// A driver counting down this long ago or less is still on the grid.
+const GRID_FRESH: f32 = 2.0;
 
 /// The other drivers in the room.
 #[derive(Resource, Default)]
@@ -85,6 +99,29 @@ struct Roster {
     since_send: f32,
     /// The socket was open on the previous frame, so a reopening starts from an empty room.
     was_open: bool,
+    /// This client's id, from the relay's welcome.
+    my_id: Option<u32>,
+}
+
+/// Tells the race code who is in the room and who is counting down on the same versus course.
+fn fill_lobby(
+    time: Res<Time>,
+    roster: Res<Roster>,
+    manager: Res<TimeTrialManager>,
+    mut lobby: ResMut<VersusLobby>,
+    cars: Query<&RemoteCar>,
+) {
+    let now = time.elapsed_secs();
+    lobby.online = net_state() == 2;
+    lobby.my_id = roster.my_id;
+    lobby.rivals.clear();
+    if let Some((course, _)) = manager.versus_tag() {
+        lobby.rivals.extend(cars.iter().filter_map(|car| {
+            let (r, said) = car.grid.as_ref()?;
+            (r == course && now - said <= GRID_FRESH).then_some(car.id)
+        }));
+    }
+    lobby.rivals.sort_unstable();
 }
 
 /// A car driven by another player.
@@ -105,6 +142,8 @@ struct RemoteCar {
     smoke_wait: f32,
     /// Wheel roll angle, from the speed along the car's heading.
     spin: f32,
+    /// The versus course this driver is counting down on, and when that was last said.
+    grid: Option<(String, f32)>,
 }
 
 pub struct NetPlugin;
@@ -116,6 +155,7 @@ impl Plugin for NetPlugin {
                 Update,
                 (
                     receive,
+                    fill_lobby,
                     send_state,
                     ease_remote_cars,
                     roll_remote_wheels,
@@ -157,9 +197,10 @@ fn receive(
             continue;
         };
         match msg {
-            Incoming::Welcome { players } => {
+            Incoming::Welcome { id, players } => {
                 drop_all(&mut commands, &mut roster);
                 roster.names = players.into_iter().map(|p| (p.id, p.name)).collect();
+                roster.my_id = id;
             }
             Incoming::Join { id, name } => {
                 roster.names.insert(id, name);
@@ -177,6 +218,7 @@ fn receive(
                 }
                 let up = up.normalize_or(Vec3::Y);
                 let seen = time.elapsed_secs();
+                let grid = s.r.filter(|_| s.c != 0).map(|r| (r, seen));
                 if let Some(&e) = roster.cars.get(&s.id) {
                     if let Ok(mut car) = cars.get_mut(e) {
                         car.pos = pos;
@@ -186,6 +228,7 @@ fn receive(
                         car.nitro = s.n != 0;
                         car.smoke = s.d.min(3);
                         car.seen = seen;
+                        car.grid = grid;
                     }
                     continue;
                 }
@@ -208,6 +251,7 @@ fn receive(
                         spin: 0.0,
                         smoke: s.d.min(3),
                         smoke_wait: 0.0,
+                        grid,
                     },
                 );
                 roster.cars.insert(s.id, e);
@@ -279,7 +323,12 @@ fn roll_remote_wheels(
     }
 }
 /// Sends the local car's state, if the socket is open and the car has found the ground.
-fn send_state(time: Res<Time>, mut roster: ResMut<Roster>, car: Query<&Car>) {
+fn send_state(
+    time: Res<Time>,
+    mut roster: ResMut<Roster>,
+    manager: Res<TimeTrialManager>,
+    car: Query<&Car>,
+) {
     roster.since_send += time.delta_secs();
     if roster.since_send < 1.0 / SEND_HZ || net_state() != 2 {
         return;
@@ -289,7 +338,10 @@ fn send_state(time: Res<Time>, mut roster: ResMut<Roster>, car: Query<&Car>) {
         return;
     }
     roster.since_send = 0.0;
+    let grid = manager.versus_tag();
     let msg = serde_json::json!({
+        "r": grid.map(|(course, _)| course),
+        "c": u8::from(grid.is_some_and(|(_, counting)| counting)),
         "t": "s",
         "p": [car.pos.x, car.pos.y, car.pos.z],
         "v": [car.vel.x, car.vel.y, car.vel.z],

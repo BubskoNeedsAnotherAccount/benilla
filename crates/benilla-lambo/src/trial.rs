@@ -9,7 +9,10 @@ use std::collections::HashMap;
 
 use crate::settings::{MenuTab, Settings, RENDER_SCALES};
 use benilla_world::view::FARCLIP_RANGE;
+use bevy::asset::RenderAssetUsages;
+use bevy::image::ImageSampler;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_egui::{egui, EguiContexts};
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +79,9 @@ pub struct TimeTrial {
     pub circuit: bool,
     #[serde(default = "default_gate_radius")]
     pub checkpoint_radius: f32,
+    /// In a multiplayer room, the drivers on this course line up on a grid and start together.
+    #[serde(default)]
+    pub versus: bool,
 }
 
 impl TimeTrial {
@@ -97,6 +103,7 @@ impl TimeTrial {
             laps: 1,
             circuit: false,
             checkpoint_radius: DEFAULT_GATE_RADIUS,
+            versus: false,
         }
     }
 
@@ -133,6 +140,23 @@ pub struct RaceProgress {
 fn in_gate(pos: Vec3, gate: [f32; 3], radius: f32) -> bool {
     let g = wow_to_bevy(gate);
     Vec2::new(pos.x - g.x, pos.z - g.z).length() <= radius && (pos.y - g.y).abs() <= GATE_HEIGHT
+}
+
+/// Takes the gates a car at `pos` is in, and says whether a lap just ended. Checkpoints count
+/// only in order, and the finish only once every checkpoint of the lap is passed. A circuit
+/// starts inside its finish gate, so the car must leave it once per lap.
+fn pass_gates(trial: &TimeTrial, progress: &mut RaceProgress, pos: Vec3) -> bool {
+    let radius = trial.checkpoint_radius;
+    if let Some(gate) = trial.checkpoints.get(progress.next_checkpoint) {
+        if in_gate(pos, *gate, radius) {
+            progress.next_checkpoint += 1;
+        }
+    }
+    let at_finish = in_gate(pos, trial.end, radius);
+    if !at_finish {
+        progress.armed = true;
+    }
+    at_finish && progress.armed && progress.next_checkpoint >= trial.checkpoints.len()
 }
 
 /// Flexible JSON coordinate definition that accepts either `[x, y, z]` or `{"x": .., "y": .., "z": ..}`.
@@ -192,6 +216,8 @@ pub struct TimeTrialDef {
         alias = "start_rotation"
     )]
     pub rotation: Option<f32>,
+    #[serde(default, alias = "vs")]
+    pub versus: bool,
 }
 
 impl From<TimeTrialDef> for TimeTrial {
@@ -224,6 +250,7 @@ impl From<TimeTrialDef> for TimeTrial {
                 .checkpoint_radius
                 .filter(|r| *r > 0.0)
                 .unwrap_or(DEFAULT_GATE_RADIUS),
+            versus: def.versus,
         }
     }
 }
@@ -233,8 +260,17 @@ impl From<TimeTrialDef> for TimeTrial {
 pub enum TrialState {
     FreeDriving,
     WaitingToStart,
-    Racing { elapsed: f32 },
-    Finished { final_time: f32, is_best: bool },
+    /// A versus start: every car on the grid is held until the count runs out.
+    Countdown {
+        remaining: f32,
+    },
+    Racing {
+        elapsed: f32,
+    },
+    Finished {
+        final_time: f32,
+        is_best: bool,
+    },
 }
 
 /// Global resource managing all time trials, race progress, records, and menu state.
@@ -250,6 +286,47 @@ pub struct TimeTrialManager {
     pub selected_menu_idx: usize,
     pub free_drive_loc: usize, // 0 = Lakeshire, 1 = Crossroads, 2 = Goldshire
     pub debug_open: bool,
+    /// The rivals already on this countdown's grid; a new one restarts the count.
+    pub versus_known: Vec<u32>,
+    /// Our place on the grid and the grid's size when the car was last put there.
+    pub grid_slot: Option<(usize, usize)>,
+}
+
+/// Seconds a versus start counts down, from the last driver to join the grid.
+pub const VERSUS_COUNTDOWN: f32 = 10.0;
+/// Grid spacing: across the road, and back per place.
+const GRID_SIDE: f32 = 2.6;
+const GRID_BACK: f32 = 4.0;
+
+/// Multiplayer as the race code sees it. The browser build's `net` fills it; elsewhere it stays
+/// offline and a versus course runs as a plain one.
+#[derive(Resource, Default)]
+pub struct VersusLobby {
+    /// Connected to a relay room.
+    pub online: bool,
+    /// This client's relay id.
+    pub my_id: Option<u32>,
+    /// The other drivers counting down on the same course, sorted by id.
+    pub rivals: Vec<u32>,
+}
+
+impl TimeTrialManager {
+    /// The versus course this car is on, and whether its start is counting down. Only the
+    /// browser build has a room to tell.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn versus_tag(&self) -> Option<(&str, bool)> {
+        let trial = self.current_trial().filter(|t| t.versus)?;
+        match self.state {
+            TrialState::Countdown { .. } => Some((&trial.name, true)),
+            TrialState::Racing { .. } | TrialState::WaitingToStart => Some((&trial.name, false)),
+            _ => None,
+        }
+    }
+
+    /// The car is held still: a versus countdown is running.
+    pub fn frozen(&self) -> bool {
+        matches!(self.state, TrialState::Countdown { .. })
+    }
 }
 
 impl Default for TimeTrialManager {
@@ -268,6 +345,8 @@ impl Default for TimeTrialManager {
             selected_menu_idx: 0,
             free_drive_loc,
             debug_open: false,
+            versus_known: Vec::new(),
+            grid_slot: None,
         }
     }
 }
@@ -396,233 +475,233 @@ pub fn load_time_trials() -> Vec<TimeTrial> {
     ]
 }
 
-/// Component tagging the root entity for the Start marker.
+/// Root of a gate built for the current course: a checkpoint by index, or `None` the finish.
 #[derive(Component)]
-pub struct StartMarker;
-
-/// Component tagging the root entity for the Finish marker.
-#[derive(Component)]
-pub struct FinishMarker;
-
-/// Root entity of one checkpoint gate; only the next one is shown.
-#[derive(Component)]
-pub struct CheckpointMarker {
-    pub index: usize,
+pub struct GateRoot {
+    index: Option<usize>,
 }
 
-/// Shared look of the checkpoint gates.
+/// A part of a checkpoint gate, lit while its gate is the next one and dim while it is the one after.
+#[derive(Component)]
+pub struct GatePart {
+    index: usize,
+    beam: bool,
+}
+
+/// Shared look of the course gates.
 #[derive(Resource)]
-pub struct CheckpointAssets {
-    ring_mat: Handle<StandardMaterial>,
-    beam_mat: Handle<StandardMaterial>,
-    beam_mesh: Handle<Mesh>,
+pub struct GateAssets {
+    hot: Handle<StandardMaterial>,
+    dim: Handle<StandardMaterial>,
+    beam_hot: Handle<StandardMaterial>,
+    beam_dim: Handle<StandardMaterial>,
+    finish_post: Handle<StandardMaterial>,
+    checker: Handle<StandardMaterial>,
+    finish_beam: Handle<StandardMaterial>,
+    post: Handle<Mesh>,
+    beam: Handle<Mesh>,
 }
 
-/// Component tagging rotating/animated visual parts on markers.
-#[derive(Component)]
-pub struct RotatingMarker {
-    pub speed: f32,
-    pub bob_speed: f32,
-    pub base_y: f32,
+/// A gate's posts, yards; their feet sink below the gate point to meet sloped ground.
+const POST_HEIGHT: f32 = 10.0;
+const POST_SINK: f32 = 1.5;
+/// The light column over a gate, seen from far off.
+const BEAM_HEIGHT: f32 = 220.0;
+
+/// A black and white checker, 16 squares by 2, for the finish banner and line.
+fn checker_image() -> Image {
+    const W: u32 = 16;
+    const H: u32 = 2;
+    let mut data = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let v = if (x + y) % 2 == 0 { 240 } else { 18 };
+            data.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::nearest();
+    image
 }
 
-/// Spawns the in-world 3D visual markers for Start and Finish lines.
+/// Builds the materials and meshes every course's gates share.
 pub fn setup_markers(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
-    commands.insert_resource(CheckpointAssets {
-        ring_mat: materials.add(StandardMaterial {
-            base_color: Color::srgba(0.1, 0.8, 1.0, 0.7),
+    let mut glow = |color: Color, blend: bool| {
+        materials.add(StandardMaterial {
+            base_color: color,
             unlit: true,
             cull_mode: None,
+            alpha_mode: if blend {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            },
             ..default()
-        }),
-        beam_mat: materials.add(StandardMaterial {
-            base_color: Color::srgba(0.1, 0.8, 1.0, 0.35),
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        }),
-        beam_mesh: meshes.add(Cylinder::new(2.5, 300.0)),
-    });
-
-    // START MARKER: Bright green rings and floating crystal
-    let start_ring_mesh = meshes.add(Cylinder::new(12.0, 0.4));
-    let start_crystal_mesh = meshes.add(Cylinder::new(2.0, 4.0));
-    let start_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.05, 1.0, 0.35, 0.75),
-        unlit: true,
-        cull_mode: None,
-        ..default()
-    });
-
-    commands
-        .spawn((
-            StartMarker,
-            Transform::from_translation(Vec3::new(0.0, -9999.0, 0.0)),
-            Visibility::Hidden,
-        ))
-        .with_children(|parent| {
-            // Base ground ring
-            parent.spawn((
-                Mesh3d(start_ring_mesh),
-                MeshMaterial3d(start_mat.clone()),
-                Transform::from_xyz(0.0, 0.2, 0.0),
-            ));
-            // Floating rotating indicator
-            parent.spawn((
-                RotatingMarker {
-                    speed: 2.0,
-                    bob_speed: 3.0,
-                    base_y: 4.5,
-                },
-                Mesh3d(start_crystal_mesh),
-                MeshMaterial3d(start_mat),
-                Transform::from_xyz(0.0, 4.5, 0.0),
-            ));
-        });
-
-    // FINISH MARKER: Checkered golden beacon beam shooting into the sky, plus large ground ring
-    let finish_ring_mesh = meshes.add(Cylinder::new(14.0, 0.5));
-    let finish_beam_mesh = meshes.add(Cylinder::new(3.5, 600.0));
-    let finish_crystal_mesh = meshes.add(Cylinder::new(2.8, 5.0));
-
-    let finish_ring_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 0.85, 0.05, 0.85),
-        unlit: true,
-        cull_mode: None,
-        ..default()
-    });
-    let finish_beam_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 0.8, 0.1, 0.45),
-        unlit: true,
-        cull_mode: None,
-        ..default()
-    });
-
-    commands
-        .spawn((
-            FinishMarker,
-            Transform::from_translation(Vec3::new(0.0, -9999.0, 0.0)),
-            Visibility::Hidden,
-        ))
-        .with_children(|parent| {
-            // Ground ring
-            parent.spawn((
-                Mesh3d(finish_ring_mesh),
-                MeshMaterial3d(finish_ring_mat.clone()),
-                Transform::from_xyz(0.0, 0.25, 0.0),
-            ));
-            // High visibility vertical beacon beam
-            parent.spawn((
-                Mesh3d(finish_beam_mesh),
-                MeshMaterial3d(finish_beam_mat),
-                Transform::from_xyz(0.0, 300.0, 0.0),
-            ));
-            // Floating rotating top beacon
-            parent.spawn((
-                RotatingMarker {
-                    speed: 2.5,
-                    bob_speed: 2.5,
-                    base_y: 6.0,
-                },
-                Mesh3d(finish_crystal_mesh),
-                MeshMaterial3d(finish_ring_mat),
-                Transform::from_xyz(0.0, 6.0, 0.0),
-            ));
-        });
-}
-
-/// Animates the rotating crystals and bobbing parts of in-world markers.
-pub fn animate_markers(time: Res<Time>, mut query: Query<(&RotatingMarker, &mut Transform)>) {
-    let t = time.elapsed_secs();
-    let dt = time.delta_secs();
-    for (rot, mut tf) in &mut query {
-        tf.rotate_y(rot.speed * dt);
-        tf.translation.y = rot.base_y + (t * rot.bob_speed).sin() * 0.8;
-    }
-}
-
-/// Updates position and visibility of Start and Finish markers based on active time trial.
-#[allow(clippy::type_complexity)]
-pub fn update_marker_positions(
-    manager: Res<TimeTrialManager>,
-    mut start_q: Query<
-        (&mut Transform, &mut Visibility),
-        (With<StartMarker>, Without<FinishMarker>),
-    >,
-    mut finish_q: Query<
-        (&mut Transform, &mut Visibility),
-        (With<FinishMarker>, Without<StartMarker>),
-    >,
-) {
-    let (Ok((mut start_tf, mut start_vis)), Ok((mut finish_tf, mut finish_vis))) =
-        (start_q.single_mut(), finish_q.single_mut())
-    else {
-        return;
+        })
     };
-
-    if let Some(trial) = manager.current_trial() {
-        let start_pos = wow_to_bevy(trial.start);
-        let end_pos = wow_to_bevy(trial.end);
-
-        start_tf.translation = start_pos;
-        finish_tf.translation = end_pos;
-
-        // A circuit's start and finish are one gate: show only the finish beacon.
-        *start_vis = match manager.state {
-            TrialState::WaitingToStart | TrialState::Racing { .. } if !trial.circuit => {
-                Visibility::Visible
-            }
-            _ => Visibility::Hidden,
-        };
-        *finish_vis = Visibility::Visible;
-    } else {
-        *start_vis = Visibility::Hidden;
-        *finish_vis = Visibility::Hidden;
-    }
+    let hot = glow(Color::srgb(0.15, 0.9, 1.0), false);
+    let dim = glow(Color::srgba(0.15, 0.9, 1.0, 0.35), true);
+    let beam_hot = glow(Color::srgba(0.15, 0.9, 1.0, 0.22), true);
+    let beam_dim = glow(Color::srgba(0.15, 0.9, 1.0, 0.07), true);
+    let finish_post = glow(Color::srgb(1.0, 0.78, 0.1), false);
+    let finish_beam = glow(Color::srgba(1.0, 0.8, 0.1, 0.25), true);
+    let checker = materials.add(StandardMaterial {
+        base_color_texture: Some(images.add(checker_image())),
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
+    commands.insert_resource(GateAssets {
+        hot,
+        dim,
+        beam_hot,
+        beam_dim,
+        finish_post,
+        checker,
+        finish_beam,
+        post: meshes.add(Cylinder::new(0.8, POST_HEIGHT)),
+        beam: meshes.add(Cylinder::new(1.2, BEAM_HEIGHT)),
+    });
 }
 
-/// Rebuilds the checkpoint gates when the course changes, and shows only the next one.
-pub fn update_checkpoint_markers(
+/// The flat direction a car crosses gate `index` (`None` the finish) in, Bevy space: from the
+/// gate before it.
+fn gate_heading(trial: &TimeTrial, index: Option<usize>) -> Vec3 {
+    let to = index.map_or(trial.end, |i| trial.checkpoints[i]);
+    let from = match index {
+        Some(0) => trial.start,
+        Some(i) => trial.checkpoints[i - 1],
+        None => trial.checkpoints.last().copied().unwrap_or(trial.start),
+    };
+    let d = wow_to_bevy(to) - wow_to_bevy(from);
+    Vec3::new(d.x, 0.0, d.z).try_normalize().unwrap_or_else(|| {
+        let yaw = start_yaw(trial);
+        Vec3::new(-yaw.sin(), 0.0, -yaw.cos())
+    })
+}
+
+/// A gate at WoW point `gate`, its posts across the way a car arrives.
+fn gate_transform(gate: [f32; 3], heading: Vec3) -> Transform {
+    Transform::from_translation(wow_to_bevy(gate)).looking_to(heading, Vec3::Y)
+}
+
+/// Spawns the checkpoint arches and the finish line of a course.
+fn build_course(
+    commands: &mut Commands,
+    assets: &GateAssets,
+    meshes: &mut Assets<Mesh>,
+    trial: &TimeTrial,
+) {
+    let r = trial.checkpoint_radius;
+    let top = POST_HEIGHT - POST_SINK;
+    let bar = meshes.add(Cuboid::new(2.0 * r + 1.6, 1.1, 1.1));
+    let ring = meshes.add(Torus::new(r - 0.35, r + 0.35));
+    let banner_h = r / 4.0;
+    let banner = meshes.add(Cuboid::new(2.0 * r, banner_h, 0.3));
+    let line = meshes.add(Cuboid::new(2.0 * r, 0.08, banner_h));
+
+    for (i, gate) in trial.checkpoints.iter().enumerate() {
+        let at = gate_transform(*gate, gate_heading(trial, Some(i)));
+        commands
+            .spawn((GateRoot { index: Some(i) }, at, Visibility::Hidden))
+            .with_children(|p| {
+                let solid = |mesh: &Handle<Mesh>, at: Transform| {
+                    (
+                        GatePart {
+                            index: i,
+                            beam: false,
+                        },
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(assets.dim.clone()),
+                        at,
+                    )
+                };
+                for side in [-r, r] {
+                    p.spawn(solid(
+                        &assets.post,
+                        Transform::from_xyz(side, POST_HEIGHT / 2.0 - POST_SINK, 0.0),
+                    ));
+                }
+                p.spawn(solid(&bar, Transform::from_xyz(0.0, top, 0.0)));
+                // The ring on the ground is the gate's reach: drive through it.
+                p.spawn(solid(&ring, Transform::from_xyz(0.0, -0.3, 0.0)));
+                p.spawn((
+                    GatePart {
+                        index: i,
+                        beam: true,
+                    },
+                    Mesh3d(assets.beam.clone()),
+                    MeshMaterial3d(assets.beam_dim.clone()),
+                    Transform::from_xyz(0.0, top + BEAM_HEIGHT / 2.0, 0.0),
+                ));
+            });
+    }
+
+    let at = gate_transform(trial.end, gate_heading(trial, None));
+    commands
+        .spawn((GateRoot { index: None }, at, Visibility::Visible))
+        .with_children(|p| {
+            for side in [-r, r] {
+                p.spawn((
+                    Mesh3d(assets.post.clone()),
+                    MeshMaterial3d(assets.finish_post.clone()),
+                    Transform::from_xyz(side, POST_HEIGHT / 2.0 - POST_SINK, 0.0),
+                ));
+            }
+            p.spawn((
+                Mesh3d(banner),
+                MeshMaterial3d(assets.checker.clone()),
+                Transform::from_xyz(0.0, top - banner_h / 2.0, 0.0),
+            ));
+            p.spawn((
+                Mesh3d(line),
+                MeshMaterial3d(assets.checker.clone()),
+                Transform::from_xyz(0.0, -0.4, 0.0),
+            ));
+            p.spawn((
+                Mesh3d(assets.beam.clone()),
+                MeshMaterial3d(assets.finish_beam.clone()),
+                Transform::from_xyz(0.0, top + BEAM_HEIGHT / 2.0, 0.0),
+            ));
+        });
+}
+
+/// Rebuilds the gates when the course changes. The next checkpoint is lit and the one after it
+/// shown dim; the finish is always up.
+#[allow(clippy::type_complexity)]
+pub fn update_course_markers(
     mut commands: Commands,
     manager: Res<TimeTrialManager>,
-    assets: Option<Res<CheckpointAssets>>,
+    assets: Option<Res<GateAssets>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut markers: Query<(Entity, &CheckpointMarker, &mut Visibility)>,
+    mut roots: Query<(Entity, &GateRoot, &mut Visibility)>,
+    mut parts: Query<(&GatePart, &mut MeshMaterial3d<StandardMaterial>)>,
     mut built_for: Local<Option<usize>>,
 ) {
     let Some(assets) = assets else { return };
     let course = manager.current_trial_idx;
     if *built_for != course {
-        for (entity, _, _) in &markers {
+        for (entity, _, _) in &roots {
             commands.entity(entity).despawn();
         }
         *built_for = course;
         if let Some(trial) = manager.current_trial() {
-            let ring = meshes.add(Cylinder::new(trial.checkpoint_radius, 0.5));
-            for (index, gate) in trial.checkpoints.iter().enumerate() {
-                commands
-                    .spawn((
-                        CheckpointMarker { index },
-                        Transform::from_translation(wow_to_bevy(*gate)),
-                        Visibility::Hidden,
-                    ))
-                    .with_children(|parent| {
-                        parent.spawn((
-                            Mesh3d(ring.clone()),
-                            MeshMaterial3d(assets.ring_mat.clone()),
-                            Transform::from_xyz(0.0, 0.25, 0.0),
-                        ));
-                        parent.spawn((
-                            Mesh3d(assets.beam_mesh.clone()),
-                            MeshMaterial3d(assets.beam_mat.clone()),
-                            Transform::from_xyz(0.0, 150.0, 0.0),
-                        ));
-                    });
-            }
+            build_course(&mut commands, &assets, &mut meshes, trial);
         }
         // The new gates exist next frame; their visibility is set then.
         return;
@@ -630,19 +709,127 @@ pub fn update_checkpoint_markers(
 
     let live = matches!(
         manager.state,
-        TrialState::WaitingToStart | TrialState::Racing { .. }
+        TrialState::WaitingToStart | TrialState::Countdown { .. } | TrialState::Racing { .. }
     );
-    for (_, marker, mut vis) in &mut markers {
-        let show = live && marker.index == manager.progress.next_checkpoint;
-        let want = if show {
+    let next = manager.progress.next_checkpoint;
+    for (_, root, mut vis) in &mut roots {
+        let show = match root.index {
+            None => true,
+            Some(i) => live && (i == next || i == next + 1),
+        };
+        vis.set_if_neq(if show {
             Visibility::Visible
         } else {
             Visibility::Hidden
+        });
+    }
+    for (part, mut mat) in &mut parts {
+        let want = match (part.beam, part.index == next) {
+            (false, true) => &assets.hot,
+            (false, false) => &assets.dim,
+            (true, true) => &assets.beam_hot,
+            (true, false) => &assets.beam_dim,
         };
-        if *vis != want {
-            *vis = want;
+        if mat.0 != *want {
+            mat.0 = want.clone();
         }
     }
+}
+
+/// The heading a car starts a course at: its `rotation`, else toward the first gate.
+fn start_yaw(trial: &TimeTrial) -> f32 {
+    trial.rotation.map(f32::to_radians).unwrap_or_else(|| {
+        let d = wow_to_bevy(trial.first_target()) - wow_to_bevy(trial.start);
+        (-d.x).atan2(-d.z)
+    })
+}
+
+/// Where versus grid place `slot` starts (WoW coordinates, raised for the drop) and its heading:
+/// a staggered two-wide grid behind the start, every car facing the course's start heading.
+pub fn grid_spawn(trial: &TimeTrial, slot: usize) -> ([f32; 3], f32) {
+    let yaw = start_yaw(trial);
+    let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    let right = fwd.cross(Vec3::Y);
+    let side = if slot % 2 == 0 { -GRID_SIDE } else { GRID_SIDE };
+    let at = wow_to_bevy(trial.start) - fwd * (slot as f32 * GRID_BACK) + right * side;
+    let mut wow = bevy_to_wow(at);
+    wow[2] = trial.start[2] + 40.0;
+    (wow, yaw)
+}
+
+/// Runs a versus start: in a multiplayer room a versus course counts down instead of waiting for
+/// the throttle, puts the car on its grid place, and restarts the count whenever a driver joins
+/// the grid.
+pub fn update_versus(
+    time: Res<Time>,
+    mut manager: ResMut<TimeTrialManager>,
+    lobby: Res<VersusLobby>,
+    mut car: Query<&mut Car>,
+    mut chase_cam: Query<&mut ChaseCam>,
+) {
+    let Some(trial) = manager.current_trial().filter(|t| t.versus).cloned() else {
+        return;
+    };
+    if manager.state == TrialState::WaitingToStart && lobby.online {
+        manager.state = TrialState::Countdown {
+            remaining: VERSUS_COUNTDOWN,
+        };
+        manager.versus_known.clear();
+        manager.grid_slot = None;
+    }
+    let TrialState::Countdown { mut remaining } = manager.state else {
+        return;
+    };
+    if !lobby.online {
+        // Left the room: an ordinary start.
+        manager.state = TrialState::WaitingToStart;
+        return;
+    }
+
+    let joined = lobby
+        .rivals
+        .iter()
+        .any(|id| !manager.versus_known.contains(id));
+    if joined {
+        remaining = VERSUS_COUNTDOWN;
+    }
+    manager.versus_known = lobby.rivals.clone();
+
+    // Places go by relay id, so a driver who joins later lines up behind. A car is moved only
+    // when someone joins: one leaving the grid (because their count ran out first) moves no one.
+    if joined || manager.grid_slot.is_none() {
+        let mut grid = lobby.rivals.clone();
+        grid.extend(lobby.my_id);
+        grid.sort_unstable();
+        grid.dedup();
+        let slot = lobby
+            .my_id
+            .and_then(|me| grid.iter().position(|&id| id == me))
+            .unwrap_or(0);
+        let place = (slot, grid.len());
+        if manager.grid_slot.map(|(s, _)| s) != Some(slot) {
+            let (at, yaw) = grid_spawn(&trial, slot);
+            if let Ok(mut c) = car.single_mut() {
+                c.set_spawn(at, yaw);
+            }
+            if let Ok(mut cam) = chase_cam.single_mut() {
+                cam.yaw = yaw;
+                cam.snapped = false;
+            }
+        }
+        manager.grid_slot = Some(place);
+    }
+
+    // The count holds until the car is on the ground.
+    if car.single().is_ok_and(|c| c.placed) {
+        remaining -= time.delta_secs();
+    }
+    manager.state = if remaining <= 0.0 {
+        manager.progress = RaceProgress::default();
+        TrialState::Racing { elapsed: 0.0 }
+    } else {
+        TrialState::Countdown { remaining }
+    };
 }
 
 /// Handles ESC menu toggle, keyboard navigation, and restarts with 'R'.
@@ -828,6 +1015,8 @@ pub fn start_trial_by_index(
     manager.current_trial_idx = Some(trial_idx);
     manager.state = TrialState::WaitingToStart;
     manager.progress = RaceProgress::default();
+    manager.versus_known.clear();
+    manager.grid_slot = None;
 
     // Switch map if trial is on another continent
     if current_map.0 != trial.map_id {
@@ -840,13 +1029,7 @@ pub fn start_trial_by_index(
 
     // Position car at start, facing towards finish or using the user's finetuned rotation
     let start_coords = [trial.start[0], trial.start[1], trial.start[2] + 40.0];
-    let start_bevy = wow_to_bevy(start_coords);
-    let end_bevy = wow_to_bevy(trial.first_target());
-    let fwd_vec = end_bevy - start_bevy;
-    let initial_yaw = trial
-        .rotation
-        .map(|deg| deg.to_radians())
-        .unwrap_or_else(|| (-fwd_vec.x).atan2(-fwd_vec.z));
+    let initial_yaw = start_yaw(&trial);
 
     if let Ok(mut car_inst) = car.single_mut() {
         car_inst.nitro_timer = 0.0;
@@ -893,23 +1076,8 @@ pub fn update_trial_progress(
             manager.state = TrialState::Racing {
                 elapsed: current_time,
             };
-            let radius = trial.checkpoint_radius;
             let mut progress = std::mem::take(&mut manager.progress);
-
-            // Checkpoints are taken in order; the finish only counts once they all are.
-            if let Some(gate) = trial.checkpoints.get(progress.next_checkpoint) {
-                if in_gate(car.pos, *gate, radius) {
-                    progress.next_checkpoint += 1;
-                }
-            }
-
-            // A circuit starts inside its finish gate, so the car must leave it once per lap.
-            let at_finish = in_gate(car.pos, trial.end, radius);
-            if !at_finish {
-                progress.armed = true;
-            }
-            let lap_done =
-                at_finish && progress.armed && progress.next_checkpoint >= trial.checkpoints.len();
+            let lap_done = pass_gates(&trial, &mut progress, car.pos);
 
             let mut race_over = false;
             if lap_done {
@@ -1038,6 +1206,7 @@ pub fn render_trial_ui(
     mut current_map: ResMut<CurrentMap>,
     mut settings: ResMut<Settings>,
     mut tab: ResMut<MenuTab>,
+    lobby: Res<VersusLobby>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -1067,6 +1236,7 @@ pub fn render_trial_ui(
         let race_label = manager.race_label();
         let lap_times = manager.progress.lap_times.clone();
         let best_lap = manager.best_laps.get(&trial.name).copied();
+        let drivers = lobby.rivals.len() + 1;
 
         egui::Area::new(egui::Id::new("race_hud"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 16.0))
@@ -1097,8 +1267,51 @@ pub fn render_trial_ui(
                                 );
                             }
 
+                            if trial.versus && lobby.online {
+                                let text = if manager.frozen() {
+                                    format!(
+                                        "VERSUS — {} driver{} on the grid",
+                                        drivers,
+                                        if drivers == 1 { "" } else { "s" }
+                                    )
+                                } else {
+                                    "VERSUS".to_string()
+                                };
+                                ui.label(
+                                    egui::RichText::new(text)
+                                    .color(egui::Color32::from_rgb(255, 90, 60))
+                                    .size(15.0)
+                                    .strong(),
+                                );
+                            }
+
                             match manager.state {
+                                TrialState::Countdown { remaining } => {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", remaining.ceil() as u32))
+                                            .color(egui::Color32::from_rgb(255, 230, 80))
+                                            .size(52.0)
+                                            .monospace()
+                                            .strong(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Cars are held until the count ends — a driver joining restarts it",
+                                        )
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                        .size(13.0),
+                                    );
+                                }
                                 TrialState::WaitingToStart => {
+                                    if trial.versus {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "Versus course — join a multiplayer room to race others",
+                                            )
+                                            .color(egui::Color32::from_rgb(255, 120, 90))
+                                            .size(13.0),
+                                        );
+                                    }
                                     ui.label(
                                         egui::RichText::new(
                                             "READY — PRESS 'W' / ACCELERATE TO START",
@@ -1423,9 +1636,10 @@ pub fn render_trial_ui(
                         };
 
                         let label_text = format!(
-                            "{} [{}] {} ({}){}{}",
+                            "{} [{}] {}{} ({}){}{}",
                             if is_sel { "▶ " } else { "   " },
                             option_idx + 1,
+                            if trial.versus { "[VERSUS] " } else { "" },
                             trial.name,
                             map_name,
                             race_str,
@@ -1540,7 +1754,14 @@ pub fn render_trial_ui(
 
                         // Mode tag and status badges
                         ui.horizontal(|ui| {
-                            if manager.current_trial_idx.is_some() {
+                            if manager.current_trial().is_some_and(|t| t.versus) && lobby.online {
+                                ui.label(
+                                    egui::RichText::new("VERSUS")
+                                        .color(egui::Color32::from_rgb(255, 90, 60))
+                                        .size(11.0)
+                                        .strong(),
+                                );
+                            } else if manager.current_trial_idx.is_some() {
                                 ui.label(
                                     egui::RichText::new("🏁 TRIAL")
                                         .color(egui::Color32::from_rgb(255, 180, 0))
@@ -1849,11 +2070,58 @@ mod tests {
         assert!(trials[1].circuit && trials[1].end == trials[1].start);
         assert_eq!(trials[1].lap_count(), 3);
         assert_eq!(trials[1].checkpoints.len(), 6);
+        // The first two are versus courses; the rest are not.
+        assert!(trials[0].versus && trials[1].versus);
+        assert!(trials[2..].iter().all(|t| !t.versus));
     }
 
     fn parse(json: &str) -> TimeTrial {
         let defs: Vec<TimeTrialDef> = serde_json::from_str(json).unwrap();
         defs.into_iter().next().unwrap().into()
+    }
+
+    #[test]
+    fn the_finish_counts_only_after_every_checkpoint_in_order() {
+        let race = parse(
+            r#"[{"name": "T", "map": 0, "start": [0,0,0],
+                 "checkpoints": [[100,0,0], [200,0,0]], "end": [300,0,0]}]"#,
+        );
+        let at = |x: f32| wow_to_bevy([x, 0.0, 0.0]);
+        let mut progress = RaceProgress::default();
+        pass_gates(&race, &mut progress, at(50.0));
+        // Straight to the finish: no finish.
+        assert!(!pass_gates(&race, &mut progress, at(300.0)));
+        // The second checkpoint before the first is not taken.
+        pass_gates(&race, &mut progress, at(200.0));
+        assert_eq!(progress.next_checkpoint, 0);
+        pass_gates(&race, &mut progress, at(100.0));
+        pass_gates(&race, &mut progress, at(200.0));
+        assert_eq!(progress.next_checkpoint, 2);
+        assert!(pass_gates(&race, &mut progress, at(300.0)));
+    }
+
+    #[test]
+    fn grid_places_line_up_behind_the_start_facing_one_way() {
+        let race = parse(
+            r#"[{"name": "G", "map": 0, "start": [0,0,0], "rotation": 90, "end": [500,0,0]}]"#,
+        );
+        let places: Vec<_> = (0..4).map(|slot| grid_spawn(&race, slot)).collect();
+        let start = wow_to_bevy(race.start);
+        let yaw = 90f32.to_radians();
+        let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+        for (slot, (at, heading)) in places.iter().enumerate() {
+            assert!((heading - yaw).abs() < 1e-5);
+            let back = (start - wow_to_bevy(*at)).dot(fwd);
+            assert!((back - slot as f32 * GRID_BACK).abs() < 1e-3, "slot {slot}");
+            // Dropped from above the start.
+            assert_eq!(at[2], 40.0);
+        }
+        for a in 0..places.len() {
+            for b in a + 1..places.len() {
+                let d = wow_to_bevy(places[a].0) - wow_to_bevy(places[b].0);
+                assert!(Vec2::new(d.x, d.z).length() > 4.0, "{a} and {b} overlap");
+            }
+        }
     }
 
     #[test]

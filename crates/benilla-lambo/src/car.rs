@@ -471,9 +471,20 @@ pub fn drive(
     } else {
         Input::read(&keys)
     };
+    // A versus countdown holds the car where it stands: the suspension still settles and the
+    // engine still revs, but it neither rolls, slides down a slope nor turns.
+    let frozen = manager.as_ref().is_some_and(|m| m.frozen());
     let sub_dt = dt / SUBSTEPS as f32;
     for _ in 0..SUBSTEPS {
+        let (held_at, held_yaw) = (car.pos, car.yaw);
         step(&mut car, &input, sub_dt, &world);
+        if frozen {
+            car.pos.x = held_at.x;
+            car.pos.z = held_at.z;
+            car.yaw = held_yaw;
+            car.vel.x = 0.0;
+            car.vel.z = 0.0;
+        }
     }
     // Driven off the edge of the world into the void: wait in the air for ground to arrive.
     if car.lost > 6.0 {

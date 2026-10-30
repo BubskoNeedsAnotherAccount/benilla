@@ -183,6 +183,13 @@ pub fn speedometer(
                         trial.name
                     );
                 }
+                crate::trial::TrialState::Countdown { remaining } => {
+                    window.title = format!(
+                        "benilla lambo — [{}] VERSUS — starting in {:.0}",
+                        trial.name,
+                        remaining.ceil()
+                    );
+                }
                 crate::trial::TrialState::Racing { elapsed } => {
                     window.title = format!(
                         "benilla lambo — [{}]{race} TIME: {elapsed:.2}s | Next: {dist:.0}yd — {kmh:.0} km/h{nitro_str} — ESC menu, R restart",
