@@ -49,7 +49,13 @@ fn quality_named(name: &str) -> Quality {
 impl Synth {
     /// `engine_id`, `muffler` and `quality` are the names in `lambo_v10.json`; `burble` is its
     /// overrun burble, 0 to 1.
-    pub fn new(engine_id: &str, muffler: &str, quality: &str, burble: f32, sample_rate: u32) -> Self {
+    pub fn new(
+        engine_id: &str,
+        muffler: &str,
+        quality: &str,
+        burble: f32,
+        sample_rate: u32,
+    ) -> Self {
         let cfg = engine_by_id(engine_id).unwrap_or_else(|| engine_by_id("v8").expect("stock v8"));
         let tuning = Tuning {
             header: Header::LongTube,

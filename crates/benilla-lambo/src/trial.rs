@@ -908,9 +908,8 @@ pub fn update_trial_progress(
             if !at_finish {
                 progress.armed = true;
             }
-            let lap_done = at_finish
-                && progress.armed
-                && progress.next_checkpoint >= trial.checkpoints.len();
+            let lap_done =
+                at_finish && progress.armed && progress.next_checkpoint >= trial.checkpoints.len();
 
             let mut race_over = false;
             if lap_done {
@@ -1413,7 +1412,11 @@ pub fn render_trial_ui(
                                 trial.lap_count(),
                                 if trial.lap_count() == 1 { "" } else { "s" },
                                 trial.checkpoints.len(),
-                                if trial.checkpoints.len() == 1 { "" } else { "s" },
+                                if trial.checkpoints.len() == 1 {
+                                    ""
+                                } else {
+                                    "s"
+                                },
                             )
                         } else {
                             String::new()

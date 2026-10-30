@@ -13,7 +13,13 @@ pub struct WebSynth {
 #[wasm_bindgen]
 impl WebSynth {
     #[wasm_bindgen(constructor)]
-    pub fn new(engine_id: &str, muffler: &str, quality: &str, burble: f32, sample_rate: u32) -> WebSynth {
+    pub fn new(
+        engine_id: &str,
+        muffler: &str,
+        quality: &str,
+        burble: f32,
+        sample_rate: u32,
+    ) -> WebSynth {
         console_error_panic_hook::set_once();
         WebSynth {
             synth: Synth::new(engine_id, muffler, quality, burble, sample_rate),
@@ -25,7 +31,15 @@ impl WebSynth {
     }
 
     /// Fill `out` with samples for the given state.
-    pub fn render(&mut self, rpm: f32, throttle: f32, volume: f32, speed: f32, shifting: bool, out: &mut [f32]) {
+    pub fn render(
+        &mut self,
+        rpm: f32,
+        throttle: f32,
+        volume: f32,
+        speed: f32,
+        shifting: bool,
+        out: &mut [f32],
+    ) {
         self.synth.render(
             &Params {
                 rpm,
