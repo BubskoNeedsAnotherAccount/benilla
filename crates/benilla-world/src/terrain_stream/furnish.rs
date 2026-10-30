@@ -32,12 +32,13 @@ pub(super) fn furnish_tile_cells(
     mut meshes: ResMut<Assets<Mesh>>,
     mut activity: ResMut<crate::terrain_stream::StreamActivity>,
     focus: Res<crate::terrain_stream::ViewFocus>,
+    budget: Option<Res<crate::stream_budget::StreamBudget>>,
 ) {
     let t0 = Instant::now();
     let live = focus.paced;
     // The cap was measured in chunks; a cell is sixteen of them.
     let cap = if live {
-        CELL_SPAWN_CAP / CHUNKS_PER_CELL
+        crate::stream_budget::count(budget.as_deref(), CELL_SPAWN_CAP / CHUNKS_PER_CELL)
     } else {
         usize::MAX
     };

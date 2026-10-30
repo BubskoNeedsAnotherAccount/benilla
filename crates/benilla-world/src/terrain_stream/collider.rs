@@ -112,9 +112,15 @@ pub(super) fn finish_colliders(world: &mut World, state: &mut PendingColliders) 
 
     // Pass 2: attach. The deadline is checked after each attach, so an oversized one still lands.
     let mut attached = 0u32;
-    let budget = world
-        .get_resource::<AttachBudget>()
-        .map_or(ATTACH_BUDGET, |b| b.0);
+    let budget = world.get_resource::<AttachBudget>().map_or_else(
+        || {
+            crate::stream_budget::duration(
+                world.get_resource::<crate::stream_budget::StreamBudget>(),
+                ATTACH_BUDGET,
+            )
+        },
+        |b| b.0,
+    );
     let deadline = Instant::now() + budget;
     for entity in ready {
         // The entity may have streamed out while its collider was building.

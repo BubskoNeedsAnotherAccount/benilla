@@ -308,6 +308,11 @@ pub struct ViewFocus {
 }
 
 impl ViewFocus {
+    /// The avatar's position in Bevy space, when one is live.
+    pub(crate) fn body_bevy(&self) -> Option<Vec3> {
+        self.body.map(wow_to_bevy)
+    }
+
     /// No viewer: follow the camera, or the spawn point without one.
     pub fn camera() -> Self {
         Self::default()
@@ -923,6 +928,7 @@ fn spawn_streamed_tiles(
     mut load_progress: Option<ResMut<WorldLoadProgress>>,
     // `None` only under `WOW_STATIC_GX=0`.
     mut staticgx: Option<ResMut<crate::static_gx::StaticGx>>,
+    budget: Option<Res<crate::stream_budget::StreamBudget>>,
 ) {
     let (mut materials, mut meshes, wdts, mut activity) = asset_stores;
     let Some(shared_light) = shared_light else {
@@ -953,7 +959,8 @@ fn spawn_streamed_tiles(
         })
         .collect();
     landed.sort_unstable();
-    let tile_deadline = Instant::now() + SPAWN_BUDGET;
+    let tile_deadline =
+        Instant::now() + crate::stream_budget::duration(budget.as_deref(), SPAWN_BUDGET);
     for (outer, _, (tx, ty)) in landed {
         // Past the budget the outer ring waits a frame; the `entity` guard makes this re-entrant.
         if outer && Instant::now() >= tile_deadline {
