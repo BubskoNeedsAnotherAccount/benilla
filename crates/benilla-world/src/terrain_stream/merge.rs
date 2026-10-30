@@ -490,7 +490,9 @@ pub(super) fn flush_static_merge(
         merge.reported = false;
     }
     if let Some(progress) = progress.as_mut() {
-        progress.merge_pending = merge.unflushed();
+        // Blobs still baking on the pool (and this frame's, not yet in the query) gate the reveal
+        // like unflushed accumulators, so it never lifts on a world missing its merged doodads.
+        progress.merge_pending = merge.unflushed() + pending.iter().count() + blobs as usize;
     }
     // The drain report, once per settled wave: what baking duplicates against the shared assets.
     if !merge.reported && merge.doodads.is_empty() && merge.props.is_empty() {
