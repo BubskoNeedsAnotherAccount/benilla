@@ -143,6 +143,7 @@ fn main() -> AppExit {
             trial::handle_trial_input,
             trial::update_versus,
             car::drive,
+            camera::mouse_look,
             camera::chase,
             car::animate_wheels,
             trial::update_trial_progress,
