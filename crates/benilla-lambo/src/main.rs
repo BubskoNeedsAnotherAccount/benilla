@@ -161,7 +161,7 @@ fn main() -> AppExit {
             sound::update_car_audio,
             smoke::spawn_tire_smoke,
             smoke::update_tire_smoke,
-            shadow::update_car_shadow,
+            shadow::update_car_shadow.after(WorldStage::Input),
             preload::preload_course.after(trial::handle_trial_input),
         ),
     )

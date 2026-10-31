@@ -270,6 +270,22 @@ pub fn load_car_assets(
     mut painted: ResMut<CarMaterials>,
 ) {
     let (parts, texture) = model::load();
+    // Every vertex in car space, as `spawn_model` places the model, for the shadow's outline.
+    let root = model_root();
+    let points: Vec<Vec3> = parts
+        .iter()
+        .filter_map(|p| {
+            Some((
+                p.pivot,
+                p.mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?,
+            ))
+        })
+        .flat_map(|(pivot, pos)| {
+            pos.iter()
+                .map(move |v| root.transform_point(pivot + Vec3::from(*v)))
+        })
+        .collect();
+    commands.insert_resource(crate::shadow::CarSilhouette::from_points(&points));
     let texture = images.add(texture);
     let mut made: HashMap<(bool, Finish), Handle<CarMaterial>> = HashMap::new();
     let parts = parts
@@ -305,17 +321,18 @@ pub fn load_car_assets(
     commands.insert_resource(CarAssets { parts });
 }
 
+/// The model's place in the car: it faces +Z and the car −Z, so it is turned half way round, scaled
+/// to yards and set on the wheels' ground.
+fn model_root() -> Transform {
+    Transform::from_xyz(0.0, -RIDE, model::AXLE_MID * model::CAR_SCALE)
+        .with_rotation(Quat::from_rotation_y(PI))
+        .with_scale(Vec3::splat(model::CAR_SCALE))
+}
+
 /// Spawns the car's model as a child of `parent`: the body and four wheels, which `Wheels` names.
-/// The model faces +Z; the car faces -Z, so it is turned half way round and set on the wheels' ground.
 pub fn spawn_model(commands: &mut Commands, assets: &CarAssets, parent: Entity) -> Wheels {
     let root = commands
-        .spawn((
-            Transform::from_xyz(0.0, -RIDE, model::AXLE_MID * model::CAR_SCALE)
-                .with_rotation(Quat::from_rotation_y(PI))
-                .with_scale(Vec3::splat(model::CAR_SCALE)),
-            Visibility::default(),
-            ChildOf(parent),
-        ))
+        .spawn((model_root(), Visibility::default(), ChildOf(parent)))
         .id();
     let mut wheels = Wheels {
         back: Entity::PLACEHOLDER,

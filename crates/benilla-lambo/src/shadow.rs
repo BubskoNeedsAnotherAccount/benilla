@@ -1,98 +1,185 @@
+//! The car's shadow: the car's own outline cast along the world sun onto the ground under it,
+//! soft at the edge, over a small contact blob where the body sits closest to the road.
+//!
+//! The car's model is reduced once to a cloud of outline points; each frame they are projected along
+//! `WowLighting::sun_dir` onto the ground plane, and the 2D convex hull of the projection becomes a
+//! fan with a feathered rim. Its darkness follows the time of day: a shadow takes away the sun's
+//! diffuse share of the light, so it fades as the diffuse colour dims toward night.
+
 use std::f32::consts::TAU;
 
 use benilla_world::collision::WorldCollision;
+use benilla_world::lighting::WowLighting;
 use bevy::asset::RenderAssetUsages;
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use crate::car::{Car, RIDE};
 
-#[derive(Component)]
-pub struct CarShadow;
+/// The shadow's colour; its alpha comes from the light.
+const SHADE: [f32; 3] = [0.015, 0.015, 0.02];
+/// Height of the shadow over the ground plane, against depth fighting with the terrain.
+const LIFT: f32 = 0.08;
+/// Height slices the model's outline is taken in.
+const SLICES: usize = 14;
+/// The darkest the cast shadow and the contact blob get.
+const CAST_MAX: f32 = 0.62;
+const CONTACT_MAX: f32 = 0.42;
+/// Rim softness: a base width, and a widening per yard the light travels from the car to the ground.
+const PENUMBRA_BASE: f32 = 0.14;
+const PENUMBRA_PER_YARD: f32 = 0.07;
+/// The sun when the world's lighting has not resolved yet: its 225° bearing, 30° up.
+const FALLBACK_SUN: Vec3 = Vec3::new(0.612, -0.5, 0.612);
+/// Points around the contact blob's rim.
+const BLOB_SEGMENTS: usize = 28;
 
+/// The car's outline points in its own space (+Y up, −Z forward, yards, the body centre at the origin),
+/// and the half extents of its footprint.
 #[derive(Resource)]
-pub struct CarShadowAssets {
-    pub mesh: Handle<Mesh>,
-    pub materials: [Handle<StandardMaterial>; 8],
+pub struct CarSilhouette {
+    pub points: Vec<Vec3>,
+    pub half: Vec2,
 }
 
-/// Builds a soft-edged radial oval mesh for ambient occlusion contact shadow.
-/// Center has high alpha, middle ring has medium alpha, and outer perimeter fades to 0.
-fn build_car_shadow_mesh() -> Mesh {
-    const SEGMENTS: usize = 32;
-    const HX: f32 = 2.15; // Half width
-    const HZ: f32 = 4.40; // Half length
+impl CarSilhouette {
+    /// Reduces the model's vertices, already in car space, to the outline of each height slice: the
+    /// points the shadow's outline can come from.
+    pub fn from_points(all: &[Vec3]) -> Self {
+        let (lo, hi) = all.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+            (lo.min(p.y), hi.max(p.y))
+        });
+        let step = ((hi - lo) / SLICES as f32).max(1e-3);
+        let mut slices: Vec<Vec<Vec3>> = vec![Vec::new(); SLICES];
+        for p in all {
+            let i = (((p.y - lo) / step) as usize).min(SLICES - 1);
+            slices[i].push(*p);
+        }
+        let mut points = Vec::new();
+        for slice in &slices {
+            let flat: Vec<Vec2> = slice.iter().map(|p| Vec2::new(p.x, p.z)).collect();
+            points.extend(convex_hull(&flat).into_iter().map(|i| slice[i]));
+        }
+        let half = points
+            .iter()
+            .fold(Vec2::ZERO, |h, p| h.max(Vec2::new(p.x.abs(), p.z.abs())));
+        Self { points, half }
+    }
+}
 
-    let mut positions = Vec::with_capacity(1 + SEGMENTS * 2);
-    let mut normals = Vec::with_capacity(1 + SEGMENTS * 2);
-    let mut uvs = Vec::with_capacity(1 + SEGMENTS * 2);
-    let mut colors = Vec::with_capacity(1 + SEGMENTS * 2);
+/// The shadow entity, with the ground plane it last lay on.
+#[derive(Component, Default)]
+pub struct CarShadow {
+    plane: Option<(Vec3, Vec3)>,
+}
 
-    // Center vertex (index 0)
-    positions.push([0.0, 0.0, 0.0]);
-    normals.push([0.0, 1.0, 0.0]);
-    uvs.push([0.5, 0.5]);
-    colors.push([0.015, 0.015, 0.02, 0.68]);
+/// Indices of the convex hull of `pts`, counter-clockwise in (x, y), by the monotone chain.
+pub fn convex_hull(pts: &[Vec2]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..pts.len()).collect();
+    order.sort_by(|&a, &b| {
+        pts[a]
+            .x
+            .total_cmp(&pts[b].x)
+            .then(pts[a].y.total_cmp(&pts[b].y))
+    });
+    order.dedup_by(|a, b| pts[*a] == pts[*b]);
+    if order.len() < 3 {
+        return order;
+    }
+    let cross = |o: Vec2, a: Vec2, b: Vec2| (a - o).perp_dot(b - o);
+    let mut hull: Vec<usize> = Vec::with_capacity(order.len() + 1);
+    for pass in [false, true] {
+        let start = hull.len();
+        let iter: Box<dyn Iterator<Item = &usize>> = if pass {
+            Box::new(order.iter().rev())
+        } else {
+            Box::new(order.iter())
+        };
+        for &i in iter {
+            while hull.len() >= start + 2
+                && cross(pts[hull[hull.len() - 2]], pts[hull[hull.len() - 1]], pts[i]) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(i);
+        }
+        hull.pop();
+    }
+    hull
+}
 
-    // Inner ring (indices 1..=32)
-    for i in 0..SEGMENTS {
-        let theta = TAU * (i as f32) / (SEGMENTS as f32);
-        let x = 0.58 * HX * theta.cos();
-        let z = 0.58 * HZ * theta.sin();
-        positions.push([x, 0.0, z]);
-        normals.push([0.0, 1.0, 0.0]);
-        uvs.push([x / (2.0 * HX) + 0.5, z / (2.0 * HZ) + 0.5]);
-        colors.push([0.015, 0.015, 0.02, 0.45]);
+/// The ground's share of light the shadow takes away: the sun's diffuse term over the whole, from
+/// the world's ambient and diffuse colours, the ground normal and the sun's travel direction.
+fn cast_strength(ambient: [f32; 3], diffuse: [f32; 3], sun: Vec3, normal: Vec3) -> f32 {
+    let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let lit = luma(diffuse) * (-sun.dot(normal)).max(0.0);
+    (lit / (luma(ambient) + lit + 1e-4)).clamp(0.0, 1.0)
+}
+
+/// The sun direction to cast along, kept at least this steep against the ground so a grazing sun on
+/// a slope does not stretch the shadow out to the horizon.
+fn cast_direction(sun: Vec3, normal: Vec3) -> Vec3 {
+    const MIN_DOT: f32 = 0.3;
+    let d = sun.dot(normal);
+    if d > -MIN_DOT {
+        (sun - normal * (d + MIN_DOT)).normalize_or(-normal)
+    } else {
+        sun
+    }
+}
+
+/// Mesh buffers for one frame of the shadow.
+#[derive(Default)]
+struct Shape {
+    pos: Vec<[f32; 3]>,
+    col: Vec<[f32; 4]>,
+    idx: Vec<u32>,
+}
+
+impl Shape {
+    fn vertex(&mut self, p: Vec2, alpha: f32) -> u32 {
+        self.pos.push([p.x, 0.0, p.y]);
+        self.col.push([SHADE[0], SHADE[1], SHADE[2], alpha]);
+        self.pos.len() as u32 - 1
     }
 
-    // Outer perimeter ring (indices 33..=64) - 0 alpha for soft feathered falloff
-    for i in 0..SEGMENTS {
-        let theta = TAU * (i as f32) / (SEGMENTS as f32);
-        let x = HX * theta.cos();
-        let z = HZ * theta.sin();
-        positions.push([x, 0.0, z]);
-        normals.push([0.0, 1.0, 0.0]);
-        uvs.push([x / (2.0 * HX) + 0.5, z / (2.0 * HZ) + 0.5]);
-        colors.push([0.015, 0.015, 0.02, 0.0]);
+    /// A convex ring with a solid core and a rim fading out over `widths`, one per point.
+    fn soft_polygon(&mut self, ring: &[Vec2], widths: &[f32], alpha: f32) {
+        let n = ring.len();
+        if n < 3 || alpha <= 0.0 {
+            return;
+        }
+        let centre = ring.iter().copied().sum::<Vec2>() / n as f32;
+        let c = self.vertex(centre, alpha);
+        let base = self.pos.len() as u32;
+        for i in 0..n {
+            let prev = ring[(i + n - 1) % n];
+            let next = ring[(i + 1) % n];
+            let out_a = (ring[i] - prev).perp().normalize_or_zero();
+            let out_b = (next - ring[i]).perp().normalize_or_zero();
+            // A counter-clockwise ring's outward normal is the edge's clockwise perpendicular.
+            let out = -(out_a + out_b).normalize_or_zero();
+            let half = widths[i] * 0.5;
+            let inner = ring[i] - out * half.min((ring[i] - centre).length() * 0.5);
+            self.vertex(inner, alpha);
+            self.vertex(ring[i] + out * half, 0.0);
+        }
+        for i in 0..n as u32 {
+            let j = (i + 1) % n as u32;
+            let (in_i, out_i) = (base + 2 * i, base + 2 * i + 1);
+            let (in_j, out_j) = (base + 2 * j, base + 2 * j + 1);
+            self.idx.extend([c, in_j, in_i]);
+            self.idx.extend([in_i, in_j, out_i, out_i, in_j, out_j]);
+        }
     }
 
-    let mut indices = Vec::with_capacity(SEGMENTS * 3 + SEGMENTS * 6);
-
-    // Center to inner ring
-    for i in 0..SEGMENTS {
-        let next = (i + 1) % SEGMENTS;
-        indices.push(0u32);
-        indices.push((1 + i) as u32);
-        indices.push((1 + next) as u32);
+    fn into_mesh(self, mesh: &mut Mesh) {
+        let normals = vec![[0.0, 1.0, 0.0]; self.pos.len()];
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.pos);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.col);
+        mesh.insert_indices(Indices::U32(self.idx));
     }
-
-    // Inner ring to outer ring
-    for i in 0..SEGMENTS {
-        let next = (i + 1) % SEGMENTS;
-        let inner_curr = (1 + i) as u32;
-        let inner_next = (1 + next) as u32;
-        let outer_curr = (1 + SEGMENTS + i) as u32;
-        let outer_next = (1 + SEGMENTS + next) as u32;
-
-        indices.push(inner_curr);
-        indices.push(outer_curr);
-        indices.push(inner_next);
-
-        indices.push(inner_next);
-        indices.push(outer_curr);
-        indices.push(outer_next);
-    }
-
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    mesh.insert_indices(Indices::U32(indices));
-    mesh
 }
 
 pub fn setup_car_shadow(
@@ -100,123 +187,196 @@ pub fn setup_car_shadow(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mesh = meshes.add(build_car_shadow_mesh());
-
-    const FADES: [f32; 8] = [1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.12, 0.0];
-    let shadow_mats = FADES.map(|f| {
-        materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 1.0, 1.0, f),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        })
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    Shape::default().into_mesh(&mut mesh);
+    let material = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        ..default()
     });
-
-    let initial_mat = shadow_mats[0].clone();
-
-    commands.insert_resource(CarShadowAssets {
-        mesh: mesh.clone(),
-        materials: shadow_mats,
-    });
-
     commands.spawn((
-        CarShadow,
-        Mesh3d(mesh),
-        MeshMaterial3d(initial_mat),
+        CarShadow::default(),
+        Mesh3d(meshes.add(mesh)),
+        MeshMaterial3d(material),
         Transform::from_translation(Vec3::new(0.0, -9999.0, 0.0)),
         Visibility::Hidden,
+        // The mesh is rebuilt every frame and its bounds are not.
+        NoFrustumCulling,
     ));
 }
 
+#[allow(clippy::type_complexity)]
 pub fn update_car_shadow(
     time: Res<Time>,
     world: WorldCollision,
-    car_q: Query<(&Car, &Transform)>,
-    mut shadow_q: Query<
-        (
-            &mut Transform,
-            &mut MeshMaterial3d<StandardMaterial>,
-            &mut Visibility,
-        ),
-        (With<CarShadow>, Without<Car>),
-    >,
-    shadow_assets: Option<Res<CarShadowAssets>>,
+    lighting: Option<Res<WowLighting>>,
+    silhouette: Option<Res<CarSilhouette>>,
+    car_q: Query<&Car>,
+    mut shadow_q: Query<(&mut CarShadow, &mut Transform, &mut Visibility, &Mesh3d), Without<Car>>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let (Ok((car, _car_tf)), Ok((mut shadow_tf, mut shadow_mat, mut shadow_vis))) =
+    let (Ok(car), Ok((mut shadow, mut tf, mut vis, mesh))) =
         (car_q.single(), shadow_q.single_mut())
     else {
         return;
     };
-    let Some(assets) = shadow_assets else {
+    let Some(silhouette) = silhouette else {
         return;
     };
-
-    // Visibility and material are written only when they change: a changed material re-specialises
-    // the mesh, and a changed visibility re-runs its propagation.
     if !car.placed {
-        shadow_vis.set_if_neq(Visibility::Hidden);
+        shadow.plane = None;
+        vis.set_if_neq(Visibility::Hidden);
         return;
     }
 
-    let (target_pos, ground_norm, altitude) = if car.grounded {
-        // When grounded, use the car's smoothed 4-wheel contact normal and chassis height directly.
-        // This eliminates single-ray triangle stepping and elevation jitter over bumpy terrain.
-        let pos = car.pos - car.up * (RIDE - 0.09);
-        (pos, car.up, 0.0)
+    // The ground plane: under the wheels when they touch it, else the ground below the car.
+    let (ground, normal, altitude) = if car.grounded {
+        (car.pos - car.up * RIDE, car.up, 0.0)
     } else {
-        // When airborne, probe directly below the flying car
-        let probe_origin = car.pos + Vec3::Y * 1.5;
-        let Some(hit) = world.ray_body(probe_origin, Dir3::NEG_Y, 70.0) else {
-            shadow_vis.set_if_neq(Visibility::Hidden);
+        let probe = car.pos + Vec3::Y * 1.5;
+        let Some(hit) = world.ray_body(probe, Dir3::NEG_Y, 70.0) else {
+            shadow.plane = None;
+            vis.set_if_neq(Visibility::Hidden);
             return;
         };
-        let ground_point = probe_origin + Dir3::NEG_Y.as_vec3() * hit.distance;
-        let alt = (car.pos.y - ground_point.y).max(0.0);
-        let norm = if hit.normal.y > 0.15 {
+        let point = probe - Vec3::Y * hit.distance;
+        let normal = if hit.normal.y > 0.15 {
             hit.normal.normalize_or(Vec3::Y)
         } else {
             Vec3::Y
         };
-        (ground_point + norm * 0.09, norm, alt)
+        (point, normal, (car.pos.y - point.y).max(0.0))
     };
+    // In the air the probe steps across triangles, so the plane is eased; on the wheels it is exact.
+    let (ground, normal) = match shadow.plane {
+        Some((g, n)) if !car.grounded => {
+            let t = 1.0 - (-20.0 * time.delta_secs()).exp();
+            (g.lerp(ground, t), n.lerp(normal, t).normalize_or(normal))
+        }
+        _ => (ground, normal),
+    };
+    shadow.plane = Some((ground, normal));
 
-    if altitude > 35.0 {
-        shadow_vis.set_if_neq(Visibility::Hidden);
+    let fade = (1.0 - altitude / 30.0).clamp(0.0, 1.0);
+    if fade <= 0.0 {
+        vis.set_if_neq(Visibility::Hidden);
         return;
     }
 
-    shadow_vis.set_if_neq(Visibility::Visible);
+    let (sun, ambient, diffuse) = match lighting.as_deref() {
+        Some(l) if l.sun_dir.length_squared() > 0.5 => (l.sun_dir, l.ambient, l.diffuse),
+        _ => (FALLBACK_SUN.normalize(), [0.4; 3], [0.6; 3]),
+    };
+    let ray = cast_direction(sun, normal);
 
-    // Orient shadow to ground normal and car heading
+    // The plane's frame, aligned with the car's heading: x right, z back.
     let (fwd, _) = car.basis();
-    let flat_fwd = (fwd - ground_norm * fwd.dot(ground_norm)).normalize_or(fwd);
-    let shadow_right = flat_fwd.cross(ground_norm).normalize_or(Vec3::X);
-    let target_rot = Quat::from_mat3(&Mat3::from_cols(shadow_right, ground_norm, -flat_fwd));
+    let flat_fwd = (fwd - normal * fwd.dot(normal)).normalize_or(fwd);
+    let right = flat_fwd.cross(normal).normalize_or(Vec3::X);
+    let origin = ground + normal * LIFT;
+    tf.translation = origin;
+    tf.rotation = Quat::from_mat3(&Mat3::from_cols(right, normal, -flat_fwd));
+    tf.scale = Vec3::ONE;
+    let to_plane = |p: Vec3| Vec2::new((p - origin).dot(right), -(p - origin).dot(flat_fwd));
 
-    // Smooth position and rotation to prevent micro-stutter
-    let dt = time.delta_secs();
-    let t = if car.grounded {
-        1.0
-    } else {
-        (dt * 20.0).clamp(0.0, 1.0)
-    };
-    shadow_tf.translation = shadow_tf.translation.lerp(target_pos, t);
-    shadow_tf.rotation = shadow_tf.rotation.slerp(target_rot, t);
+    // Each outline point carried along the light to the plane, with how far it travelled.
+    let rot = car.rotation();
+    let down = -ray.dot(normal);
+    let (cast, travel): (Vec<Vec2>, Vec<f32>) = silhouette
+        .points
+        .iter()
+        .map(|&local| {
+            let p = car.pos + rot * local;
+            let t = ((p - origin).dot(normal) / down).max(0.0);
+            (to_plane(p + ray * t), t)
+        })
+        .unzip();
 
-    // Penumbra expansion
-    let penumbra = 1.0 + (altitude / 25.0).clamp(0.0, 0.6);
-    shadow_tf.scale = Vec3::new(penumbra, 1.0, penumbra);
+    let mut shape = Shape::default();
 
-    // Fading: fixed at 100% while grounded so materials never swap back and forth while driving
-    let stage = if car.grounded || altitude < 1.0 {
-        0
-    } else {
-        let fade = (1.0 - (altitude / 30.0)).clamp(0.0, 1.0);
-        let s = ((1.0 - fade) * 7.99) as usize;
-        s.min(7)
-    };
-    if shadow_mat.0 != assets.materials[stage] {
-        shadow_mat.0 = assets.materials[stage].clone();
+    // The contact blob: the car's footprint, darkest at its centre, spreading as the car climbs.
+    let spread = 1.0 + (altitude / 25.0).min(0.6);
+    let centre = to_plane(car.pos);
+    let half = silhouette.half * Vec2::new(0.95, 0.9) * spread;
+    let blob: Vec<Vec2> = (0..BLOB_SEGMENTS)
+        .map(|i| {
+            let a = TAU * i as f32 / BLOB_SEGMENTS as f32;
+            centre + Vec2::new(a.cos(), a.sin()) * half
+        })
+        .collect();
+    let blob_rim = vec![half.x * 0.9; BLOB_SEGMENTS];
+    shape.soft_polygon(&blob, &blob_rim, CONTACT_MAX * fade * fade);
+
+    // The cast shadow, softer where the light travelled further from the car.
+    let hull = convex_hull(&cast);
+    let ring: Vec<Vec2> = hull.iter().map(|&i| cast[i]).collect();
+    let widths: Vec<f32> = hull
+        .iter()
+        .map(|&i| (PENUMBRA_BASE + PENUMBRA_PER_YARD * travel[i]) * spread)
+        .collect();
+    let strength = cast_strength(ambient, diffuse, sun, normal);
+    shape.soft_polygon(&ring, &widths, CAST_MAX * strength * fade);
+
+    if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
+        shape.into_mesh(&mut mesh);
+    }
+    vis.set_if_neq(Visibility::Visible);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hull_of_a_square_with_inner_points() {
+        let pts = [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.5, 0.5),
+            Vec2::new(1.0, 1.0),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(0.2, 0.7),
+        ];
+        let hull = convex_hull(&pts);
+        assert_eq!(hull.len(), 4);
+        assert!(!hull.contains(&2) && !hull.contains(&5));
+        // Counter-clockwise: positive signed area.
+        let area: f32 = (0..hull.len())
+            .map(|i| pts[hull[i]].perp_dot(pts[hull[(i + 1) % hull.len()]]))
+            .sum();
+        assert!(area > 0.0);
+    }
+
+    #[test]
+    fn silhouette_keeps_the_outline() {
+        // A 2 × 1 × 4 box of points, plus points inside it.
+        let mut pts = Vec::new();
+        for x in [-1.0, 1.0] {
+            for y in [0.0, 1.0] {
+                for z in [-2.0, 2.0] {
+                    pts.push(Vec3::new(x, y, z));
+                }
+            }
+        }
+        pts.push(Vec3::new(0.0, 0.5, 0.0));
+        let s = CarSilhouette::from_points(&pts);
+        assert_eq!(s.half, Vec2::new(1.0, 2.0));
+        assert!(!s.points.contains(&Vec3::new(0.0, 0.5, 0.0)));
+    }
+
+    #[test]
+    fn shadow_follows_the_light() {
+        let normal = Vec3::Y;
+        let overhead = cast_strength([0.4; 3], [0.6; 3], Vec3::NEG_Y, normal);
+        let night = cast_strength([0.4; 3], [0.05; 3], Vec3::NEG_Y, normal);
+        assert!(overhead > 0.5 && night < 0.15);
+        // A grazing sun is steepened, never cast along the ground.
+        let ray = cast_direction(Vec3::new(1.0, -0.01, 0.0).normalize(), normal);
+        assert!(-ray.dot(normal) >= 0.29);
     }
 }
