@@ -319,6 +319,9 @@ struct Eval {
     dp: f32,
 }
 
+/// A valve at or under this effective area (m^2) is shut: it passes no flow.
+const CLOSED_AREA: f32 = 2.0e-6;
+
 fn area_guard(a: f32) -> f32 {
     a.max(1.0e-9)
 }
@@ -633,7 +636,31 @@ impl Node {
         grid.set_end(leg.duct, leg.end, fx, e.rho, ux, e.p);
     }
 
+    /// A port whose valves are all shut: one pipe leg and no flow, so the face is a wall. The
+    /// Newton solve below converges to this same zero-velocity state; ports spend most of the cycle
+    /// here, so it is taken directly.
+    fn solve_closed_port(&mut self, grid: &mut Grid, dt: f32) {
+        let leg = &mut self.legs[0];
+        let e = LegW::new(grid, leg, dt).eval(0.0);
+        // The stagnation pressure the Newton would leave, the warm start for the valve opening.
+        self.p0 = e.pt;
+        leg.u = 0.0;
+        leg.mdot = 0.0;
+        leg.p_face = e.p;
+        for v in self.valves.iter_mut() {
+            v.mdot = 0.0;
+        }
+        grid.set_end(leg.duct, leg.end, [0.0, e.p, 0.0], e.rho, 0.0, e.p);
+    }
+
     fn solve_junction(&mut self, grid: &mut Grid, res: &mut [Reservoir], dt: f32, env: &Env) {
+        if self.legs.len() == 1
+            && self.slugs.is_empty()
+            && !self.valves.is_empty()
+            && self.valves.iter().all(|v| v.area <= CLOSED_AREA)
+        {
+            return self.solve_closed_port(grid, dt);
+        }
         let np = self.legs.len();
         let ns = self.slugs.len();
         let nl = np + ns;
@@ -662,7 +689,7 @@ impl Node {
         let gas_pipe = if np > 0 { grid.gas } else { env.gas };
         // flow from the reservoir into the node and its derivative with respect to the node pressure
         let valve_eval = |res: &[Reservoir], v: &ValveLeg, p0: f32| -> (f32, f32) {
-            if v.area <= 2.0e-6 {
+            if v.area <= CLOSED_AREA {
                 return (0.0, 0.0);
             }
             let r = &res[v.res];
@@ -690,7 +717,7 @@ impl Node {
                 let (m, d) = valve_eval(res, v, p0);
                 g += m;
                 scale += m.abs();
-                denom += d.min(-1.0e-12) * (v.area > 2.0e-6) as u8 as f32;
+                denom += d.min(-1.0e-12) * (v.area > CLOSED_AREA) as u8 as f32;
             }
             let mut numer = 0.0f32;
             let mut fk = [0.0f32; MAX_LEGS];
@@ -704,10 +731,18 @@ impl Node {
                 scale += m.abs();
                 fk[k] = f;
                 dpk[k] = e.dpt;
-                let r = lw[k].a * e.dq / e.dpt;
-                denom += r;
-                numer += r * f;
-                worst = worst.max(f.abs());
+                // A leg held at its sonic limit and pushing past it is choked: its flow is fixed
+                // and its face pressure cannot match the node's, so it drops out of the pressure
+                // match. The bisection fallback ends at this same state, ~30x slower.
+                let want = -f / e.dpt;
+                let choked =
+                    (lw[k].u >= lw[k].u_hi && want > 0.0) || (lw[k].u <= lw[k].u_lo && want < 0.0);
+                if !choked {
+                    let r = lw[k].a * e.dq / e.dpt;
+                    denom += r;
+                    numer += r * f;
+                    worst = worst.max(f.abs());
+                }
                 ev[k] = e;
             }
             if g.abs() < (5.0e-4 * scale + 4.0e-6) * env.tol
@@ -716,7 +751,8 @@ impl Node {
                 converged = true;
                 break;
             }
-            let dp0 = ((-g + numer) / denom).clamp(-0.5 * p0, 0.5 * p0);
+            // Every leg choked and no valve: no slope to step along, so take the clamped step.
+            let dp0 = ((-g + numer) / denom.min(-1.0e-12)).clamp(-0.5 * p0, 0.5 * p0);
             p0 = (p0 + dp0).max(5.0e3);
             for k in 0..nl {
                 let du = (dp0 - fk[k]) / dpk[k];
@@ -753,8 +789,11 @@ impl Node {
                     for _ in 0..14 {
                         let e = lw[k].eval(u);
                         let du = ((p - e.pt) / e.dpt).clamp(-lw[k].dmax, lw[k].dmax);
-                        u = (u + du).clamp(lw[k].u_lo, lw[k].u_hi);
-                        if du.abs() < 2.0e-3 {
+                        let next = (u + du).clamp(lw[k].u_lo, lw[k].u_hi);
+                        // A leg held at its limit does not move again: it is choked.
+                        let stuck = next == u;
+                        u = next;
+                        if du.abs() < 2.0e-3 || stuck {
                             break;
                         }
                     }

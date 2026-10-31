@@ -1,13 +1,14 @@
 # Builds the browser page of benilla-lambo (crates/benilla-lambo/web) and deploys it to GitHub
 # Pages. The page carries no game data: the visitor picks their own Data folder. Pages cannot set
 # response headers, so the page relies on web/coi-sw.js for cross-origin isolation.
-# One-time setup: Settings > Pages > Source: "GitHub Actions".
+# One-time setup: Settings > Pages > Source: "GitHub Actions"; the github-pages environment must
+# allow deployments from the production branch.
 name: Pages
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [production]
     paths:
       - "crates/**"
       - "Cargo.toml"

@@ -50,6 +50,12 @@ pub struct Combustion {
     ambient: f32,
     /// Torque per cylinder per Pa of its gas pressure, Nm/Pa: dV/dtheta, every `STEP_DEG`.
     dv: Vec<f32>,
+    /// What the tables need of the geometry and the burn timing, which a charge does not change, every
+    /// `STEP_DEG`: the volume, the polytropic pressure ratio of the step that ends there, and the Wiebe
+    /// fraction burned inside the burn.
+    vol: Vec<f32>,
+    compress: Vec<f32>,
+    burned: Vec<Option<f32>>,
     /// Peak rate of pressure rise the burn adds, bar per degree (set with the tables).
     peak_rise: f32,
 }
@@ -65,16 +71,40 @@ impl Combustion {
         let dv = (0..N)
             .map(|k| geom.dv_dtheta(k as f32 * STEP_DEG))
             .collect();
+        let start_deg = 360.0 - cfg.ignition_advance_deg as f32;
+        let duration_deg = cfg.combustion_duration_deg as f32;
+        let n = POLYTROPIC_INDEX as f32;
+        let vol: Vec<f32> = (0..N).map(|k| geom.volume(k as f32 * STEP_DEG)).collect();
+        let compress = (0..N)
+            .map(|k| {
+                let v_prev = if k == 0 {
+                    geom.volume(180.0)
+                } else {
+                    vol[k - 1]
+                };
+                (v_prev / vol[k]).powf(n)
+            })
+            .collect();
+        let burned = (0..N)
+            .map(|k| {
+                let th = k as f32 * STEP_DEG;
+                (th >= start_deg && th <= start_deg + duration_deg)
+                    .then(|| wiebe(th - start_deg, duration_deg))
+            })
+            .collect();
         let mut c = Combustion {
             geom,
             diesel: cfg.ignition_type == IgnitionType::Compression,
-            start_deg: 360.0 - cfg.ignition_advance_deg as f32,
-            duration_deg: cfg.combustion_duration_deg as f32,
+            start_deg,
+            duration_deg,
             evo_deg,
             motor: vec![0.0; N],
             burn: vec![0.0; N],
             ambient: 101_325.0,
             dv,
+            vol,
+            compress,
+            burned,
             peak_rise: 0.0,
         };
         c.set_charge(&Charge {
@@ -107,23 +137,20 @@ impl Combustion {
         let _ = steps;
         let mut p_m = c.map_pa;
         let mut p_b = 0.0f32;
-        let mut v_prev = g.volume(180.0);
         let mut x_prev = 0.0f32;
         self.peak_rise = 0.0;
         for k in 0..N {
             let th = k as f32 * STEP_DEG;
-            let v = g.volume(th);
+            let v = self.vol[k];
             if th < 180.0 {
                 // intake: the cylinder sits at manifold pressure
                 self.motor[k] = c.map_pa;
                 self.burn[k] = 0.0;
             } else if th < self.evo_deg {
-                let r = (v_prev / v).powf(n);
+                let r = self.compress[k];
                 p_m *= r;
                 p_b *= r;
-                let t0 = self.start_deg;
-                if th >= t0 && th <= t0 + self.duration_deg {
-                    let x = wiebe(th - t0, self.duration_deg);
+                if let Some(x) = self.burned[k] {
                     p_b += (n - 1.0) * heat * (x - x_prev).max(0.0) / v;
                     x_prev = x;
                 }
@@ -145,7 +172,6 @@ impl Combustion {
                 p_m = c.map_pa;
                 p_b = 0.0;
             }
-            v_prev = v;
         }
         // the engine model's cylinder takes the manifold pressure again over the intake stroke: nothing more to do
         // peak rate of pressure rise of a complete burn (bar per degree)

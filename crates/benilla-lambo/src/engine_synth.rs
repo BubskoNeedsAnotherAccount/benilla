@@ -160,13 +160,15 @@ impl EngineSoundHandle {
         );
     }
 
-    pub fn set_drivetrain(&self, speed: f32, gear: usize, is_shifting: bool) {
+    pub fn set_drivetrain(&self, speed: f32, gear: usize) {
         self.speed
             .store((speed.max(0.0) * 100.0).round() as u32, Ordering::Relaxed);
         self.gear.store(gear.clamp(1, 7) as u32, Ordering::Relaxed);
-        if is_shifting {
-            self.shift_pop.store(true, Ordering::Relaxed);
-        }
+    }
+
+    /// One backfire pop, at the next block the synth renders.
+    pub fn pop(&self) {
+        self.shift_pop.store(true, Ordering::Relaxed);
     }
 
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -259,7 +261,7 @@ mod tests {
 
         handle.set_rpm(4500.0);
         handle.set_throttle(0.8);
-        handle.set_drivetrain(25.0, 2, false);
+        handle.set_drivetrain(25.0, 2);
 
         let mut frames = vec![Frame::ZERO; 512];
         let dt = 1.0 / 48000.0;
@@ -280,5 +282,17 @@ mod tests {
 
         handle.stop();
         assert!(sound.finished());
+    }
+
+    #[test]
+    fn a_pop_reaches_the_synth_once() {
+        let handle = EngineSoundData::new(48000).handle();
+        assert!(!handle.params().shifting);
+        handle.pop();
+        assert!(handle.params().shifting);
+        assert!(
+            !handle.params().shifting,
+            "a pop is consumed by the block that plays it"
+        );
     }
 }

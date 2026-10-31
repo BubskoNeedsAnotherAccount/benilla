@@ -20,7 +20,7 @@ pub struct Params {
     pub volume: f32,
     /// Vehicle speed, m/s.
     pub speed: f32,
-    /// True once for a gear change: a backfire pop.
+    /// True once for an upshift: the ignition cut lights unburnt charge in the exhaust, a pop.
     pub shifting: bool,
 }
 

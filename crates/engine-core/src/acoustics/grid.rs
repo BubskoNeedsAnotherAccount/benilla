@@ -781,6 +781,9 @@ impl Grid {
     fn slow_update_range(&mut self, lo: usize, hi: usize, dt: f32) {
         let g = self.gas;
         let omega_ref = std::f32::consts::TAU * 250.0;
+        // Prandtl-number factors, the same for every cell.
+        let pr_04 = g.pr.powf(0.4);
+        let pr_sqrt = g.pr.sqrt();
         let alpha = if dt > 0.0 {
             1.0 - (-dt / 0.01).exp()
         } else {
@@ -797,7 +800,7 @@ impl Grid {
             let kcond = g.conductivity(t);
             // Dittus-Boelter for turbulent flow, fully developed laminar Nu = 3.66 otherwise
             let nu = if re > 3000.0 {
-                0.023 * re.powf(0.8) * g.pr.powf(0.4)
+                0.023 * re.powf(0.8) * pr_04
             } else {
                 3.66
             };
@@ -814,7 +817,7 @@ impl Grid {
             let gam = g.gamma(t);
             let att = (2.0 / d) / self.c[k]
                 * (omega_ref * (mu / rho) * 0.5).sqrt()
-                * (1.0 + (gam - 1.0) / g.pr.sqrt());
+                * (1.0 + (gam - 1.0) / pr_sqrt);
             self.k_ac[k] = self.c[k] * att * self.fscale[k].min(1.0);
             if dt > 0.0 {
                 // wall: gas-side h, outer natural / forced convection + radiation, optional wrap
