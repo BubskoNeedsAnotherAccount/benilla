@@ -31,6 +31,27 @@ pub const CROSSROADS_YAW_DEG: f32 = 0.0;
 pub const GOLDSHIRE_WOW: [f32; 3] = [-9465.0, 60.0, 110.0];
 pub const GOLDSHIRE_YAW_DEG: f32 = 0.0;
 
+/// Sentinel Hill, Westfall in Eastern Kingdoms.
+pub const SENTINEL_HILL_WOW: [f32; 3] = [-10513.0, 1034.0, 200.0];
+
+/// Kharanos, Dun Morogh in Eastern Kingdoms.
+pub const KHARANOS_WOW: [f32; 3] = [-5582.0, -525.0, 500.0];
+
+/// Darkshire, Duskwood in Eastern Kingdoms.
+pub const DARKSHIRE_WOW: [f32; 3] = [-10560.0, -1180.0, 150.0];
+
+/// Razor Hill, Durotar in Kalimdor.
+pub const RAZOR_HILL_WOW: [f32; 3] = [340.0, -4686.0, 150.0];
+
+/// Bloodhoof Village, Mulgore in Kalimdor.
+pub const BLOODHOOF_WOW: [f32; 3] = [-2354.0, -380.0, 150.0];
+
+/// Gadgetzan, Tanaris in Kalimdor.
+pub const GADGETZAN_WOW: [f32; 3] = [-7176.0, -3785.0, 150.0];
+
+/// Southshore, Hillsbrad Foothills in Eastern Kingdoms.
+pub const SOUTHSHORE_WOW: [f32; 3] = [-850.0, -540.0, 150.0];
+
 /// Default spawn point in WoW coordinates: Lakeshire in Redridge Mountains.
 pub const SPAWN_WOW: [f32; 3] = LAKESHIRE_WOW;
 pub const SPAWN_YAW_DEG: f32 = LAKESHIRE_YAW_DEG;

@@ -74,7 +74,8 @@ impl Settings {
 #[derive(Resource, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MenuTab {
     #[default]
-    Drive,
+    FreeDrive,
+    Race,
     Settings,
 }
 

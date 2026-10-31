@@ -380,15 +380,13 @@ mod tests {
         assert!(tight.iter().all(|t| wide.contains(t)));
     }
 
-    /// At the longest view distance the shipped courses want more than the hold, so it rolls:
+    /// At the longest view distance a long course wants more than the hold, so it rolls:
     /// from the start it holds the opening stretch, and nearer the finish the finish's tiles.
     #[test]
     fn the_hold_rolls_with_the_car_at_full_view_distance() {
-        let courses = crate::trial::load_time_trials();
-        let long = courses
-            .iter()
-            .find(|t| course_tiles(t, 777.0, ROUTE_MARGIN_YD).len() > MAX_TILES)
-            .expect("a course longer than the hold at 777");
+        // A straight run of twelve tiles: longer than the hold at 777, finish far from the start.
+        let long = &sprint([0.0, 0.0, 0.0], [0.0, 12.0 * TILE_SIZE, 0.0]);
+        assert!(course_tiles(long, 777.0, ROUTE_MARGIN_YD).len() > MAX_TILES);
         let samples = course_samples(long, 777.0, ROUTE_MARGIN_YD);
         let finish = StreamWindow::at(777.0, long.end[0], long.end[1]).focus_tile();
 

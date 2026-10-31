@@ -22,7 +22,10 @@ use benilla_world::world_map::CurrentMap;
 use crate::camera::ChaseCam;
 use crate::car::Car;
 
-use crate::car::{CROSSROADS_WOW, GOLDSHIRE_WOW, LAKESHIRE_WOW};
+use crate::car::{
+    BLOODHOOF_WOW, CROSSROADS_WOW, DARKSHIRE_WOW, GADGETZAN_WOW, GOLDSHIRE_WOW, KHARANOS_WOW,
+    LAKESHIRE_WOW, RAZOR_HILL_WOW, SENTINEL_HILL_WOW, SOUTHSHORE_WOW,
+};
 
 /// Horizontal radius, in yards, of a checkpoint or finish gate unless a course says otherwise.
 pub const DEFAULT_GATE_RADIUS: f32 = 16.0;
@@ -284,7 +287,8 @@ pub struct TimeTrialManager {
     pub best_laps: HashMap<String, f32>,
     pub menu_open: bool,
     pub selected_menu_idx: usize,
-    pub free_drive_loc: usize, // 0 = Lakeshire, 1 = Crossroads, 2 = Goldshire
+    /// Index into `FREE_DRIVES`.
+    pub free_drive_loc: usize,
     pub debug_open: bool,
     /// The rivals already on this countdown's grid; a new one restarts the count.
     pub versus_known: Vec<u32>,
@@ -890,9 +894,13 @@ pub fn handle_trial_input(
     // Tab flips between the menu's pages.
     if manager.menu_open && keys.just_pressed(KeyCode::Tab) {
         *tab = match *tab {
-            MenuTab::Drive => MenuTab::Settings,
-            MenuTab::Settings => MenuTab::Drive,
+            MenuTab::FreeDrive => MenuTab::Race,
+            MenuTab::Race => MenuTab::Settings,
+            MenuTab::Settings => MenuTab::FreeDrive,
         };
+        if let Some(range) = menu_range(*tab, manager.trials.len()) {
+            manager.selected_menu_idx = range.start;
+        }
     }
 
     // 'G' toggles the debug telemetry overlay
@@ -903,19 +911,29 @@ pub fn handle_trial_input(
     // When menu is open, handle keyboard navigation
     if manager.menu_open {
         // The settings page is driven with the mouse; the keys would pick a course.
-        if *tab == MenuTab::Settings {
+        let Some(range) = menu_range(*tab, manager.trials.len()) else {
+            return;
+        };
+        if range.is_empty() {
             return;
         }
-        let total_items = manager.trials.len() + 3; // +3 for Lakeshire, Crossroads and Goldshire Free Driving
+        // The selection belongs to the page showing.
+        if !range.contains(&manager.selected_menu_idx) {
+            manager.selected_menu_idx = range.start;
+        }
         if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW) {
-            if manager.selected_menu_idx == 0 {
-                manager.selected_menu_idx = total_items.saturating_sub(1);
+            if manager.selected_menu_idx == range.start {
+                manager.selected_menu_idx = range.end - 1;
             } else {
                 manager.selected_menu_idx -= 1;
             }
         }
         if keys.just_pressed(KeyCode::ArrowDown) || keys.just_pressed(KeyCode::KeyS) {
-            manager.selected_menu_idx = (manager.selected_menu_idx + 1) % total_items;
+            manager.selected_menu_idx = if manager.selected_menu_idx + 1 >= range.end {
+                range.start
+            } else {
+                manager.selected_menu_idx + 1
+            };
         }
         if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
             let choice = manager.selected_menu_idx;
@@ -929,7 +947,7 @@ pub fn handle_trial_input(
             manager.menu_open = false;
         }
 
-        // Quick numeric selection (1 = Lakeshire, 2 = Crossroads, 3 = Goldshire, 4.. = Trials)
+        // Quick numeric selection: 1 is the first row of the page showing.
         for (i, key) in [
             KeyCode::Digit1,
             KeyCode::Digit2,
@@ -944,8 +962,14 @@ pub fn handle_trial_input(
         .iter()
         .enumerate()
         {
-            if keys.just_pressed(*key) && i < total_items {
-                apply_menu_choice(i, &mut manager, &mut car, &mut chase_cam, &mut current_map);
+            if keys.just_pressed(*key) && range.start + i < range.end {
+                apply_menu_choice(
+                    range.start + i,
+                    &mut manager,
+                    &mut car,
+                    &mut chase_cam,
+                    &mut current_map,
+                );
                 manager.menu_open = false;
                 break;
             }
@@ -991,10 +1015,8 @@ pub fn handle_trial_input(
 }
 
 /// Applies a menu choice by index:
-/// - 0 = Free Driving: Redridge Mountains (Lakeshire)
-/// - 1 = Free Driving: The Barrens (Crossroads)
-/// - 2 = Free Driving: Elwynn Forest (Goldshire)
-/// - 3..N = Time Trials
+/// - `0..FREE_DRIVES.len()` = Free Driving at that spot
+/// - after that = Time Trials
 pub fn apply_menu_choice(
     choice: usize,
     manager: &mut TimeTrialManager,
@@ -1002,58 +1024,37 @@ pub fn apply_menu_choice(
     chase_cam: &mut Query<&mut ChaseCam>,
     current_map: &mut ResMut<CurrentMap>,
 ) {
-    if choice == 0 {
-        // Free Driving: Lakeshire (Redridge Mountains, Eastern Kingdoms)
+    if let Some(spot) = FREE_DRIVES.get(choice) {
         manager.current_trial_idx = None;
-        manager.free_drive_loc = 0;
+        manager.free_drive_loc = choice;
         manager.state = TrialState::FreeDriving;
-        if current_map.0 != 0 {
-            current_map.0 = 0;
+        if current_map.0 != spot.map_id {
+            current_map.0 = spot.map_id;
         }
-        let yaw = (-90.0_f32).to_radians();
+        let yaw = spot.yaw_deg.to_radians();
         if let Ok(mut car_inst) = car.single_mut() {
-            car_inst.set_spawn(LAKESHIRE_WOW, yaw);
+            car_inst.set_spawn(spot.wow, yaw);
         }
         if let Ok(mut cam) = chase_cam.single_mut() {
             cam.yaw = yaw;
             cam.snapped = false;
         }
-        eprintln!("benilla-lambo: switched to Free Driving (Lakeshire - Redridge Mountains)");
-    } else if choice == 1 {
-        // Free Driving: Crossroads (The Barrens, Kalimdor)
-        manager.current_trial_idx = None;
-        manager.free_drive_loc = 1;
-        manager.state = TrialState::FreeDriving;
-        if current_map.0 != 1 {
-            current_map.0 = 1;
-        }
-        if let Ok(mut car_inst) = car.single_mut() {
-            car_inst.set_spawn(CROSSROADS_WOW, 0.0);
-        }
-        if let Ok(mut cam) = chase_cam.single_mut() {
-            cam.yaw = 0.0;
-            cam.snapped = false;
-        }
-        eprintln!("benilla-lambo: switched to Free Driving (Crossroads - The Barrens)");
-    } else if choice == 2 {
-        // Free Driving: Goldshire (Elwynn Forest, Eastern Kingdoms)
-        manager.current_trial_idx = None;
-        manager.free_drive_loc = 2;
-        manager.state = TrialState::FreeDriving;
-        if current_map.0 != 0 {
-            current_map.0 = 0;
-        }
-        if let Ok(mut car_inst) = car.single_mut() {
-            car_inst.set_spawn(GOLDSHIRE_WOW, 0.0);
-        }
-        if let Ok(mut cam) = chase_cam.single_mut() {
-            cam.yaw = 0.0;
-            cam.snapped = false;
-        }
-        eprintln!("benilla-lambo: switched to Free Driving (Goldshire - Elwynn Forest)");
+        eprintln!(
+            "benilla-lambo: switched to Free Driving ({} - {})",
+            spot.town, spot.zone
+        );
     } else {
-        let trial_idx = choice - 3;
+        let trial_idx = choice - FREE_DRIVES.len();
         start_trial_by_index(trial_idx, manager, car, chase_cam, current_map);
+    }
+}
+
+/// The menu rows a page lists, in `apply_menu_choice` indices; `None` for the settings page.
+fn menu_range(tab: MenuTab, trials: usize) -> Option<std::ops::Range<usize>> {
+    match tab {
+        MenuTab::FreeDrive => Some(0..FREE_DRIVES.len()),
+        MenuTab::Race => Some(FREE_DRIVES.len()..FREE_DRIVES.len() + trials),
+        MenuTab::Settings => None,
     }
 }
 
@@ -1264,11 +1265,98 @@ const MENU_ACCENT: egui::Color32 = egui::Color32::from_rgb(255, 140, 0);
 /// Highlight for the selected row's title.
 const MENU_GOLD: egui::Color32 = egui::Color32::from_rgb(255, 210, 60);
 
-/// The free-driving spots, in menu order (`apply_menu_choice` 0..=2): zone, town, continent.
-const FREE_DRIVES: [(&str, &str, &str); 3] = [
-    ("Redridge Mountains", "Lakeshire", "Eastern Kingdoms"),
-    ("The Barrens", "Crossroads", "Kalimdor"),
-    ("Elwynn Forest", "Goldshire", "Eastern Kingdoms"),
+/// A free-driving spawn point.
+struct FreeDrive {
+    zone: &'static str,
+    town: &'static str,
+    continent: &'static str,
+    map_id: u32,
+    wow: [f32; 3],
+    yaw_deg: f32,
+}
+
+/// The free-driving spots, in menu order (the first `apply_menu_choice` indices).
+const FREE_DRIVES: [FreeDrive; 10] = [
+    FreeDrive {
+        zone: "Redridge Mountains",
+        town: "Lakeshire",
+        continent: "Eastern Kingdoms",
+        map_id: 0,
+        wow: LAKESHIRE_WOW,
+        yaw_deg: -90.0,
+    },
+    FreeDrive {
+        zone: "The Barrens",
+        town: "Crossroads",
+        continent: "Kalimdor",
+        map_id: 1,
+        wow: CROSSROADS_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Elwynn Forest",
+        town: "Goldshire",
+        continent: "Eastern Kingdoms",
+        map_id: 0,
+        wow: GOLDSHIRE_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Westfall",
+        town: "Sentinel Hill",
+        continent: "Eastern Kingdoms",
+        map_id: 0,
+        wow: SENTINEL_HILL_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Duskwood",
+        town: "Darkshire",
+        continent: "Eastern Kingdoms",
+        map_id: 0,
+        wow: DARKSHIRE_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Hillsbrad Foothills",
+        town: "Southshore",
+        continent: "Eastern Kingdoms",
+        map_id: 0,
+        wow: SOUTHSHORE_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Dun Morogh",
+        town: "Kharanos",
+        continent: "Eastern Kingdoms",
+        map_id: 0,
+        wow: KHARANOS_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Durotar",
+        town: "Razor Hill",
+        continent: "Kalimdor",
+        map_id: 1,
+        wow: RAZOR_HILL_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Mulgore",
+        town: "Bloodhoof Village",
+        continent: "Kalimdor",
+        map_id: 1,
+        wow: BLOODHOOF_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Tanaris",
+        town: "Gadgetzan",
+        continent: "Kalimdor",
+        map_id: 1,
+        wow: GADGETZAN_WOW,
+        yaw_deg: 0.0,
+    },
 ];
 
 /// One entry of the menu's Drive page.
@@ -1696,6 +1784,7 @@ pub fn render_trial_ui(
         let selected = manager.selected_menu_idx;
         let mut edit = settings.clone();
         let mut new_tab = *tab;
+        let mut tab_selection: Option<usize> = None;
         let screen = ctx.content_rect();
 
         // Dim the world behind the menu so it reads as paused.
@@ -1708,9 +1797,8 @@ pub fn render_trial_ui(
         let now_driving = match manager.current_trial() {
             Some(trial) => trial.name.clone(),
             None => {
-                let (zone, town, _) =
-                    FREE_DRIVES[manager.free_drive_loc.min(FREE_DRIVES.len() - 1)];
-                format!("Free Driving — {zone}, {town}")
+                let spot = &FREE_DRIVES[manager.free_drive_loc.min(FREE_DRIVES.len() - 1)];
+                format!("Free Driving — {}, {}", spot.zone, spot.town)
             }
         };
 
@@ -1747,9 +1835,11 @@ pub fn render_trial_ui(
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        for (page, label) in
-                            [(MenuTab::Settings, "Settings"), (MenuTab::Drive, "Drive")]
-                        {
+                        for (page, label) in [
+                            (MenuTab::Settings, "Settings"),
+                            (MenuTab::Race, "Racing"),
+                            (MenuTab::FreeDrive, "Free Driving"),
+                        ] {
                             let on = new_tab == page;
                             let button = egui::Button::new(
                                 egui::RichText::new(label).size(15.0).strong().color(if on {
@@ -1767,6 +1857,11 @@ pub fn render_trial_ui(
                             .min_size(egui::vec2(92.0, 30.0));
                             if ui.add(button).clicked() {
                                 new_tab = page;
+                                if let Some(range) = menu_range(page, manager.trials.len()) {
+                                    if !range.contains(&selected) {
+                                        tab_selection = Some(range.start);
+                                    }
+                                }
                             }
                         }
                     });
@@ -1777,6 +1872,7 @@ pub fn render_trial_ui(
                 if new_tab == MenuTab::Settings {
                     settings_page(ui, &mut edit);
                 } else {
+                    let free_page = new_tab == MenuTab::FreeDrive;
                     // Scroll the list on a short window; follow the keyboard selection.
                     let last_scrolled = egui::Id::new("esc_menu_scrolled_to");
                     let scrolled_to = ui.ctx().data(|d| d.get_temp::<usize>(last_scrolled));
@@ -1801,24 +1897,29 @@ pub fn render_trial_ui(
                                 ui.add_space(4.0);
                             };
 
-                            section_heading(ui, "FREE DRIVING", None);
-                            for (idx, (zone, town, continent)) in FREE_DRIVES.iter().enumerate() {
-                                row_ui(
-                                    ui,
-                                    idx,
-                                    MenuRow {
-                                        title: zone,
-                                        subtitle: format!("{town} • {continent}"),
-                                        versus: false,
-                                        best: None,
-                                        active: manager.current_trial_idx.is_none()
-                                            && manager.free_drive_loc == idx,
-                                        selected: selected == idx,
-                                    },
-                                );
+                            if free_page {
+                                section_heading(ui, "FREE DRIVING", None);
+                                for (idx, spot) in FREE_DRIVES.iter().enumerate() {
+                                    row_ui(
+                                        ui,
+                                        idx,
+                                        MenuRow {
+                                            title: spot.zone,
+                                            subtitle: format!(
+                                                "{} • {}",
+                                                spot.town, spot.continent
+                                            ),
+                                            versus: false,
+                                            best: None,
+                                            active: manager.current_trial_idx.is_none()
+                                                && manager.free_drive_loc == idx,
+                                            selected: selected == idx,
+                                        },
+                                    );
+                                }
+                                return;
                             }
 
-                            ui.add_space(8.0);
                             section_heading(ui, "TIME TRIALS & RACES", Some("Nitro off"));
                             for (i, trial) in manager.trials.iter().enumerate() {
                                 let idx = i + FREE_DRIVES.len();
@@ -1863,15 +1964,15 @@ pub fn render_trial_ui(
 
                 // Footer: the keys, and a mouse way out.
                 ui.horizontal(|ui| {
-                    let hints: &[(&str, &str)] = if new_tab == MenuTab::Drive {
+                    let hints: &[(&str, &str)] = if new_tab == MenuTab::Settings {
+                        &[("Tab", "Free Driving")]
+                    } else {
                         &[
                             ("↑↓", "Select"),
                             ("Enter", "Drive"),
                             ("1-9", "Quick pick"),
-                            ("Tab", "Settings"),
+                            ("Tab", "Next page"),
                         ]
-                    } else {
-                        &[("Tab", "Drive")]
                     };
                     for (key, action) in hints {
                         key_hint(ui, key, action);
@@ -1897,6 +1998,9 @@ pub fn render_trial_ui(
 
         if close {
             manager.menu_open = false;
+        }
+        if let Some(idx) = tab_selection {
+            manager.selected_menu_idx = idx;
         }
         if let Some(idx) = hovered_idx {
             manager.selected_menu_idx = idx;
@@ -2264,27 +2368,35 @@ mod tests {
         assert!(!defs.is_empty());
         let trials: Vec<TimeTrial> = defs.into_iter().map(Into::into).collect();
         // A point-to-point race with checkpoints.
-        assert_eq!(trials[0].name, "Gold Road");
+        assert_eq!(trials[0].name, "Tauren's Track");
         assert_eq!(trials[0].map_id, 1);
-        assert_eq!(trials[0].start, [-412.30, -1398.25, 92.19]);
-        assert_eq!(trials[0].end, [-4663.41, -1851.79, 85.81]);
-        assert_eq!(trials[0].rotation, Some(224.0));
-        assert_eq!(trials[0].checkpoints.len(), 12);
+        assert_eq!(trials[0].start, [-2916.76, -254.16, 53.46]);
+        assert_eq!(trials[0].end, [-2351.45, -1672.22, 84.56]);
+        assert_eq!(trials[0].rotation, Some(181.9));
+        assert_eq!(trials[0].checkpoints.len(), 6);
         assert!(!trials[0].circuit && trials[0].lap_count() == 1);
-        // A three-lap circuit finishing at its start.
-        assert_eq!(trials[1].name, "Mirage Raceway");
-        assert!(trials[1].circuit && trials[1].end == trials[1].start);
-        assert_eq!(trials[1].lap_count(), 3);
+        assert_eq!(trials[1].name, "Foothills Run");
+        assert_eq!(trials[1].map_id, 0);
         assert_eq!(trials[1].checkpoints.len(), 6);
-        // The first four are versus courses; the rest are not.
-        assert!(trials[..4].iter().all(|t| t.versus));
-        assert!(trials[4..].iter().all(|t| !t.versus));
-        assert_eq!(trials[2].name, "Redridge Highway");
-        assert_eq!(trials[2].checkpoints.len(), 5);
+        assert!(!trials[1].circuit && trials[1].lap_count() == 1);
+        assert_eq!(trials[2].name, "Dusty Dunes");
+        assert_eq!(trials[2].map_id, 1);
+        assert_eq!(trials[2].checkpoints.len(), 9);
+        assert!(!trials[2].circuit && trials[2].lap_count() == 1);
+        // A three-lap circuit finishing at its start.
+        assert_eq!(trials[3].name, "Mirage Raceway");
+        assert!(trials[3].circuit && trials[3].end == trials[3].start);
+        assert_eq!(trials[3].lap_count(), 3);
+        assert_eq!(trials[3].checkpoints.len(), 6);
+        // The first six are versus courses; the rest are not.
+        assert!(trials[..6].iter().all(|t| t.versus));
+        assert!(trials[6..].iter().all(|t| !t.versus));
+        assert_eq!(trials[4].name, "Redridge Highway");
+        assert_eq!(trials[4].checkpoints.len(), 5);
         // A two-lap circuit finishing at its start.
-        assert_eq!(trials[3].name, "Around the Forge");
-        assert!(trials[3].circuit && trials[3].lap_count() == 2);
-        assert_eq!(trials[3].checkpoints.len(), 10);
+        assert_eq!(trials[5].name, "Around the Forge");
+        assert!(trials[5].circuit && trials[5].lap_count() == 2);
+        assert_eq!(trials[5].checkpoints.len(), 10);
     }
 
     /// A three-checkpoint circuit: the line is an arch (index 3) until the last lap, then the
