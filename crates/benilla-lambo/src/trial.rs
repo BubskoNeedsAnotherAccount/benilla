@@ -771,6 +771,21 @@ fn start_yaw(trial: &TimeTrial) -> f32 {
     })
 }
 
+/// Where R puts the car mid-race: the last checkpoint passed this lap (raised for the drop, as the
+/// start is), facing the gate after it. `None` before the first checkpoint, where R restarts.
+fn checkpoint_respawn(trial: &TimeTrial, progress: &RaceProgress) -> Option<([f32; 3], f32)> {
+    let last = *trial
+        .checkpoints
+        .get(progress.next_checkpoint.checked_sub(1)?)?;
+    let next = trial
+        .checkpoints
+        .get(progress.next_checkpoint)
+        .copied()
+        .unwrap_or(trial.end);
+    let d = wow_to_bevy(next) - wow_to_bevy(last);
+    Some(([last[0], last[1], last[2] + 40.0], (-d.x).atan2(-d.z)))
+}
+
 /// Where versus grid place `slot` starts (WoW coordinates, raised for the drop) and its heading:
 /// a staggered two-wide grid behind the start, every car facing the course's start heading.
 pub fn grid_spawn(trial: &TimeTrial, slot: usize) -> ([f32; 3], f32) {
@@ -938,9 +953,23 @@ pub fn handle_trial_input(
         return;
     }
 
-    // 'R' key restarts current mode at its designated spawn point
+    // 'R' returns to the last checkpoint of a race in progress, else restarts the current mode
     if keys.just_pressed(KeyCode::KeyR) {
-        if let Some(idx) = manager.current_trial_idx {
+        let respawn = match (manager.current_trial(), &manager.state) {
+            (Some(trial), TrialState::Racing { .. }) => {
+                checkpoint_respawn(trial, &manager.progress)
+            }
+            _ => None,
+        };
+        if let Some((at, yaw)) = respawn {
+            if let Ok(mut car_inst) = car.single_mut() {
+                car_inst.set_spawn(at, yaw);
+            }
+            if let Ok(mut cam) = chase_cam.single_mut() {
+                cam.yaw = yaw;
+                cam.snapped = false;
+            }
+        } else if let Some(idx) = manager.current_trial_idx {
             start_trial_by_index(
                 idx,
                 &mut manager,
@@ -2303,6 +2332,26 @@ mod tests {
         pass_gates(&race, &mut progress, at(200.0));
         assert_eq!(progress.next_checkpoint, 2);
         assert!(pass_gates(&race, &mut progress, at(300.0)));
+    }
+
+    #[test]
+    fn respawn_returns_to_the_last_checkpoint_facing_the_next_gate() {
+        let race = parse(
+            r#"[{"name": "T", "map": 0, "start": [0,0,0],
+                 "checkpoints": [[100,0,0], [200,0,0]], "end": [300,0,0]}]"#,
+        );
+        let mut progress = RaceProgress::default();
+        // Before the first checkpoint R restarts.
+        assert!(checkpoint_respawn(&race, &progress).is_none());
+        progress.next_checkpoint = 1;
+        let (at, yaw) = checkpoint_respawn(&race, &progress).unwrap();
+        assert_eq!(at, [100.0, 0.0, 40.0]);
+        let d = wow_to_bevy([200.0, 0.0, 0.0]) - wow_to_bevy([100.0, 0.0, 0.0]);
+        assert!((yaw - (-d.x).atan2(-d.z)).abs() < 1e-5);
+        // After the last checkpoint it faces the finish.
+        progress.next_checkpoint = 2;
+        let (at, _) = checkpoint_respawn(&race, &progress).unwrap();
+        assert_eq!(at, [200.0, 0.0, 40.0]);
     }
 
     #[test]
