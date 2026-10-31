@@ -268,18 +268,29 @@ fn spawn_remote_car(commands: &mut Commands, assets: &CarAssets, mut car: Remote
     e
 }
 
-/// Puffs tyre smoke from the remote cars that report drifting, braking hard or a burnout.
+/// Remote cars puff at this multiple of the local car's interval.
+const REMOTE_SMOKE_SLOWDOWN: f32 = 2.0;
+/// A remote car this far from the camera, yards, puffs nothing: its smoke is a speck.
+const REMOTE_SMOKE_RANGE: f32 = 150.0;
+/// Puffs showing at once, past which remote cars add none.
+const REMOTE_SMOKE_CAP: usize = 120;
+
+/// Puffs tyre smoke from the remote cars that report drifting, braking hard, a burnout or
+/// 200 km/h, thinner than the local car's and only near the camera.
 fn smoke_remote_cars(
     mut commands: Commands,
     time: Res<Time>,
     smoke: Option<ResMut<TireSmokeAssets>>,
     settings: Res<crate::settings::Settings>,
+    camera: Query<&GlobalTransform, With<WorldCamera>>,
     mut cars: Query<(&mut RemoteCar, &Transform)>,
 ) {
     let Some(mut smoke) = smoke else { return };
     if !settings.tire_smoke {
         return;
     }
+    let Ok(camera) = camera.single() else { return };
+    let eye = camera.translation();
     let dt = time.delta_secs();
     for (mut car, tf) in &mut cars {
         if car.smoke == 0 {
@@ -290,7 +301,12 @@ fn smoke_remote_cars(
         if car.smoke_wait > 0.0 {
             continue;
         }
-        car.smoke_wait = smoke_interval(car.smoke);
+        car.smoke_wait = smoke_interval(car.smoke) * REMOTE_SMOKE_SLOWDOWN;
+        if smoke.live() >= REMOTE_SMOKE_CAP
+            || tf.translation.distance_squared(eye) > REMOTE_SMOKE_RANGE * REMOTE_SMOKE_RANGE
+        {
+            continue;
+        }
         puff(
             &mut commands,
             &mut smoke,

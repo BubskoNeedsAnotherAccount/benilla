@@ -25,9 +25,16 @@ pub struct TireSmokeAssets {
     rng_state: u64,
     /// Finished puffs, ready to be reused.
     free: Vec<Entity>,
+    /// Every puff ever spawned, in the pool or showing.
+    total: usize,
 }
 
 impl TireSmokeAssets {
+    /// Puffs showing now.
+    pub fn live(&self) -> usize {
+        self.total - self.free.len()
+    }
+
     fn next_f32(&mut self) -> f32 {
         self.rng_state ^= self.rng_state << 13;
         self.rng_state ^= self.rng_state >> 7;
@@ -68,8 +75,12 @@ pub fn setup_tire_smoke(
         spawn_timer: 0.0,
         rng_state: 0x853c49e6748fea9b,
         free: Vec::new(),
+        total: 0,
     });
 }
+
+/// 200 km/h in yd/s: the rear tyres smoke from here up.
+const FAST_SPEED: f32 = 200.0 / 3.6 / 0.9144;
 
 /// How hard a car is smoking its tyres: 0 not at all, 1 drifting or braking hard (rear tyres), 2 a violent
 /// drift or a fast handbrake turn (all four), 3 a burnout.
@@ -84,6 +95,7 @@ pub fn smoke_level(car: &Car) -> u8 {
     } else if car.lateral_speed > 6.5 || (car.handbrake_input && speed > 16.0) {
         2
     } else if car.lateral_speed > 3.2
+        || speed >= FAST_SPEED
         || (car.handbrake_input && speed > 5.0)
         || (car.brake_input > 0.0 && speed > 14.0)
     {
@@ -200,6 +212,7 @@ pub fn puff(
                 commands.entity(e).try_insert(bundle);
             }
             None => {
+                smoke_assets.total += 1;
                 commands.spawn((bundle, Mesh3d(smoke_assets.mesh.clone())));
             }
         }

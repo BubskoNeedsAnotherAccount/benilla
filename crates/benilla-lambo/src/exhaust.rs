@@ -111,9 +111,63 @@ pub fn setup_exhaust_flames(
     });
 }
 
-/// Lights the flames as the car shifts up and shoots them out and fades them over the pop.
+/// Chance that an upshift pops a second time.
+const DOUBLE_POP_CHANCE: f32 = 1.0 / 3.0;
+/// Seconds from the first pop to the second.
+const SECOND_POP_DELAY: f32 = 0.12;
+
+/// When the exhaust pops: the frame of an upshift, and a third of the time once more shortly
+/// after. The flames and the engine sound both follow `now`.
+#[derive(Resource)]
+pub struct Pop {
+    /// A pop goes off this frame.
+    pub now: bool,
+    /// Seconds until the shift's second pop.
+    second_in: Option<f32>,
+    rng: u32,
+}
+
+impl Default for Pop {
+    fn default() -> Self {
+        Self {
+            now: false,
+            second_in: None,
+            rng: 0x2545_F491,
+        }
+    }
+}
+
+impl Pop {
+    fn next_f32(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        (self.rng >> 8) as f32 / 16_777_216.0
+    }
+
+    /// Advances by `dt` seconds; `shifted` is an upshift this frame.
+    fn step(&mut self, dt: f32, shifted: bool) {
+        self.now = shifted;
+        if shifted {
+            self.second_in = (self.next_f32() < DOUBLE_POP_CHANCE).then_some(SECOND_POP_DELAY);
+        } else if let Some(left) = self.second_in {
+            let left = left - dt;
+            self.now = left <= 0.0;
+            self.second_in = (!self.now).then_some(left);
+        }
+    }
+}
+
+/// Decides this frame's pop, before the flames and the sound read it.
+pub fn time_pops(time: Res<Time>, car: Query<&Car>, mut pop: ResMut<Pop>) {
+    let shifted = car.single().is_ok_and(|car| car.just_upshifted);
+    pop.step(time.delta_secs(), shifted);
+}
+
+/// Lights the flames as the exhaust pops and shoots them out and fades them over the pop.
 pub fn pop_exhaust_flames(
     time: Res<Time>,
+    pop: Res<Pop>,
     car: Query<&Car>,
     flames: Option<ResMut<ExhaustFlames>>,
     mut layers: Query<(
@@ -123,10 +177,10 @@ pub fn pop_exhaust_flames(
         &mut MeshMaterial3d<StandardMaterial>,
     )>,
 ) {
-    let (Ok(car), Some(mut flames)) = (car.single(), flames) else {
+    let (Ok(_), Some(mut flames)) = (car.single(), flames) else {
         return;
     };
-    if car.just_upshifted {
+    if pop.now {
         flames.age = 0.0;
         flames.reach = 0.8 + 0.4 * flames.next_f32();
     } else if flames.age < FLAME_LIFE {
@@ -177,6 +231,23 @@ mod tests {
         assert!(full > 0.9, "full length {full}");
         assert!(at(0.5 * FLAME_LIFE).unwrap() < full);
         assert!(at(FLAME_LIFE).is_none() && at(-0.01).is_none());
+    }
+
+    #[test]
+    fn a_third_of_upshifts_pop_twice() {
+        let mut pop = Pop::default();
+        let (mut shifts, mut pops) = (0, 0);
+        for _ in 0..3000 {
+            pop.step(0.016, true);
+            shifts += 1;
+            pops += u32::from(pop.now);
+            for _ in 0..12 {
+                pop.step(0.016, false);
+                pops += u32::from(pop.now);
+            }
+        }
+        let extra = f64::from(pops - shifts) / f64::from(shifts);
+        assert!((extra - 1.0 / 3.0).abs() < 0.04, "{extra}");
     }
 
     #[test]

@@ -125,6 +125,7 @@ fn main() -> AppExit {
     // The world is always live: there is no session to say otherwise.
     app.insert_resource(WorldLive(true));
 
+    app.init_resource::<exhaust::Pop>();
     app.add_systems(Update, warmup::warm_pipelines);
 
     app.add_systems(
@@ -168,8 +169,9 @@ fn main() -> AppExit {
             camera::speedometer,
             car::prepare_car_materials,
             // After `drive`, so a one-frame flag such as an upshift is read once.
-            sound::update_car_audio.after(WorldStage::Input),
-            exhaust::pop_exhaust_flames.after(WorldStage::Input),
+            exhaust::time_pops.after(WorldStage::Input),
+            sound::update_car_audio.after(exhaust::time_pops),
+            exhaust::pop_exhaust_flames.after(exhaust::time_pops),
             smoke::spawn_tire_smoke,
             smoke::update_tire_smoke,
             shadow::update_car_shadow.after(WorldStage::Input),

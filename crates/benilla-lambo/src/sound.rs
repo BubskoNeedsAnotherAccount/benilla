@@ -196,7 +196,12 @@ impl CarAudio {
 }
 
 /// Updates engine pitch/volume and skid loop playback from car state, and plays nitro on trigger.
-pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<ResMut<CarAudio>>) {
+pub fn update_car_audio(
+    time: Res<Time>,
+    pop: Res<crate::exhaust::Pop>,
+    car: Query<&Car>,
+    mut audio: Option<ResMut<CarAudio>>,
+) {
     let (Ok(car), Some(audio)) = (car.single(), audio.as_deref_mut()) else {
         return;
     };
@@ -247,7 +252,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                     audio.current_gear = car.gear;
                     audio.gear_shift_timer = 0.08;
                 }
-                if car.just_upshifted {
+                if pop.now {
                     synth.pop();
                 }
 
