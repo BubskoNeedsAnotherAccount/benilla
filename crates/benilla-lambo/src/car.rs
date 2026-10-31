@@ -5,11 +5,13 @@
 //! a ground plane, a spring holds the body over it, and a bicycle model steers it. All lengths are
 //! yards, as in the world.
 
+use std::collections::HashMap;
 use std::f32::consts::PI;
 
 use bevy::prelude::*;
 
 use crate::model::{self, Finish, PartKind};
+use crate::paint::{self, CarMaterial, CarMaterials};
 
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_world::collision::WorldCollision;
@@ -248,7 +250,7 @@ impl Input {
 /// The car's meshes and materials, built once and shared by the local car and every remote one.
 #[derive(Resource)]
 pub struct CarAssets {
-    parts: Vec<(PartKind, Vec3, Handle<Mesh>, Handle<StandardMaterial>)>,
+    parts: Vec<(PartKind, Vec3, Handle<Mesh>, Handle<CarMaterial>)>,
 }
 
 /// The wheel entities of a spawned model: back pair, front left, front right.
@@ -258,38 +260,45 @@ pub struct Wheels {
     pub front: [Entity; 2],
 }
 
-/// Builds the car's parts from the embedded glb. Unlit and double-sided, as the engine's lighting
-/// does not reach glTF materials.
+/// Builds the car's parts from the embedded glb, one paint per finish, the body's apart from the
+/// wheels'. Double-sided, as the glb's interior shows through the glass.
 pub fn load_car_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<CarMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut painted: ResMut<CarMaterials>,
 ) {
     let (parts, texture) = model::load();
     let texture = images.add(texture);
-    let base = StandardMaterial {
-        unlit: true,
-        cull_mode: None,
-        ..default()
-    };
-    let solid = materials.add(base.clone());
-    let textured = materials.add(StandardMaterial {
-        base_color_texture: Some(texture),
-        ..base.clone()
-    });
-    let glass = materials.add(StandardMaterial {
-        alpha_mode: AlphaMode::Blend,
-        ..base
-    });
+    let mut made: HashMap<(bool, Finish), Handle<CarMaterial>> = HashMap::new();
     let parts = parts
         .into_iter()
         .map(|p| {
-            let material = match p.finish {
-                Finish::Plain => solid.clone(),
-                Finish::Textured => textured.clone(),
-                Finish::Glass => glass.clone(),
-            };
+            let body = p.kind == PartKind::Body;
+            let material = made
+                .entry((body, p.finish))
+                .or_insert_with(|| {
+                    let handle = materials.add(CarMaterial {
+                        base: StandardMaterial {
+                            unlit: true,
+                            cull_mode: None,
+                            alpha_mode: if p.finish == Finish::Glass {
+                                AlphaMode::Blend
+                            } else {
+                                AlphaMode::Opaque
+                            },
+                            ..default()
+                        },
+                        extension: paint::paint(
+                            paint::finish(p.kind, p.finish),
+                            (p.finish == Finish::Textured).then(|| texture.clone()),
+                        ),
+                    });
+                    painted.0.push(handle.clone());
+                    handle
+                })
+                .clone();
             (p.kind, p.pivot, meshes.add(p.mesh), material)
         })
         .collect();

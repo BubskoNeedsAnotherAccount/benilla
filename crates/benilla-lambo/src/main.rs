@@ -18,6 +18,7 @@ mod engine_synth;
 mod model;
 #[cfg(target_arch = "wasm32")]
 mod net;
+mod paint;
 mod preload;
 mod settings;
 mod shadow;
@@ -111,6 +112,7 @@ fn main() -> AppExit {
     }
 
     app.add_plugins(settings::SettingsPlugin);
+    app.add_plugins(paint::CarPaintPlugin);
 
     // Initialize time trial manager.
     app.init_resource::<trial::TimeTrialManager>();
