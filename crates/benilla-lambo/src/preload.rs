@@ -129,7 +129,10 @@ struct TileEntry {
     scanned: bool,
     /// Model URLs not yet requested.
     model_queue: VecDeque<String>,
+    /// Every model requested, held so it stays loaded.
     models: Vec<UntypedHandle>,
+    /// The requested models still loading: a settled load stays settled, so only these are asked.
+    waiting: Vec<UntypedHandle>,
 }
 
 /// The preloaded stretch of the current course: the handles that keep it resident.
@@ -271,6 +274,7 @@ pub fn preload_course(
                 scanned: false,
                 model_queue: VecDeque::new(),
                 models: Vec::new(),
+                waiting: Vec::new(),
             },
         );
         in_flight += 1;
@@ -297,12 +301,10 @@ pub fn preload_course(
     }
 
     // Models, in the same order, a bounded number in flight; a model two tiles share is one load.
-    let mut models_in_flight = pre
-        .tiles
-        .values()
-        .flat_map(|t| &t.models)
-        .filter(|h| !settled(&server, *h))
-        .count();
+    for entry in pre.tiles.values_mut() {
+        entry.waiting.retain(|h| !settled(&server, h));
+    }
+    let mut models_in_flight: usize = pre.tiles.values().map(|t| t.waiting.len()).sum();
     for t in &pre.ahead {
         let Some(entry) = pre.tiles.get_mut(t) else {
             continue;
@@ -318,6 +320,7 @@ pub fn preload_course(
             };
             if !settled(&server, &handle) {
                 models_in_flight += 1;
+                entry.waiting.push(handle.clone());
             }
             entry.models.push(handle);
         }
@@ -327,7 +330,7 @@ pub fn preload_course(
     for t in pre.tiles.values() {
         ready += usize::from(t.scanned);
         total += t.model_queue.len() + t.models.len();
-        ready += t.models.iter().filter(|h| settled(&server, *h)).count();
+        ready += t.models.len() - t.waiting.len();
     }
     pre.progress = (ready, total);
 }
