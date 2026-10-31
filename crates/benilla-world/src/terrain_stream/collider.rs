@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use web_time::Instant;
 
-use avian3d::prelude::{Collider, CollisionLayers, RigidBody};
+use avian3d::prelude::{Collider, ColliderDensity, CollisionLayers, RigidBody};
 use benilla_assets::coords::wow_to_bevy;
 use benilla_formats::CollisionMesh;
 use bevy::ecs::system::SystemState;
@@ -17,6 +17,11 @@ use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 /// Wall clock per frame for attaching finished colliders (one costs ~0.004 ms plus ~1.8e-5 ms per
 /// triangle); the rest wait, and the streamer loads far enough ahead that none is reachable yet.
 const ATTACH_BUDGET: Duration = Duration::from_millis(2);
+
+/// A static map collider's density: zero, so the forked avian (`third_party/avian3d/BENILLA.md`)
+/// skips the per-triangle mass walk a body that never moves does not read. It goes in before the
+/// collider, whose insert hook reads it.
+const STATIC_DENSITY: ColliderDensity = ColliderDensity(0.0);
 
 /// A test's override of [`ATTACH_BUDGET`]; `Duration::ZERO` attaches exactly one per call.
 #[derive(Resource)]
@@ -133,6 +138,9 @@ pub(super) fn finish_colliders(world: &mut World, state: &mut PendingColliders) 
         let Some(collider) = pc.built.take() else {
             continue;
         };
+        if pc.static_body {
+            entity_mut.insert(STATIC_DENSITY);
+        }
         entity_mut.insert(collider);
         if pc.static_body {
             entity_mut.insert(RigidBody::Static);
@@ -202,7 +210,11 @@ pub(super) fn attach_inner_colliders(
         };
         // In `finish_colliders`' order, so avian's observers see what they see there.
         let mut e = commands.entity(entity);
-        e.remove::<PendingCollider>().insert(collider);
+        e.remove::<PendingCollider>();
+        if pc.static_body {
+            e.insert(STATIC_DENSITY);
+        }
+        e.insert(collider);
         if pc.static_body {
             e.insert(RigidBody::Static);
         }

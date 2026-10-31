@@ -42,6 +42,9 @@ kira = { path = "third_party/kira" }
 # A lock-only stand-in: bevy_audio's unbuilt cpal 0.15 would otherwise hold `alsa-sys` 0.3 against
 # cpal 0.17's 0.4, and a lock holds one `links = "alsa"` (`third_party/alsa-0.9/BENILLA.md`).
 alsa = { path = "third_party/alsa-0.9" }
+# avian3d 0.6.1, patched to skip the mass-properties walk of a collider whose density is zero
+# (`third_party/avian3d/BENILLA.md`).
+avian3d = { path = "third_party/avian3d" }
 
 # Dependencies at opt-level 3 in dev: at opt-level 0, avian/parry collision drops a run to <1 fps.
 [profile.dev.package."*"]
