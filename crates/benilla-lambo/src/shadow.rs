@@ -1,26 +1,31 @@
-//! The car's shadow: the car's own outline cast along the world sun onto the ground under it,
-//! soft at the edge, over a small contact blob where the body sits closest to the road.
+//! The car's shadow: the car's own outline cast along the world sun, laid on the ground under it
+//! through the engine's ground-decal projector, over a soft contact blob under the body.
 //!
-//! The car's model is reduced once to a cloud of outline points; each frame they are projected along
-//! `WowLighting::sun_dir` onto the ground plane, and the 2D convex hull of the projection becomes a
-//! fan with a feathered rim. Its darkness follows the time of day: a shadow takes away the sun's
-//! diffuse share of the light, so it fades as the diffuse colour dims toward night.
-
-use std::f32::consts::TAU;
+//! The car's model is reduced once to a cloud of outline points. Each frame they are carried along
+//! `WowLighting::sun_dir` onto the ground plane under the car, the convex hull of where they land is
+//! drawn with a soft rim into a small texture, and [`WorldDecal`] clips the terrain and WMO
+//! triangles under it, so the shadow lies on the ground itself, slopes and bumps included, as the
+//! unit blob shadow does. It multiplies into the ground on the blob shadow's rung. Its darkness
+//! follows the time of day: a shadow takes away the sun's diffuse share of the light, so it fades
+//! as the diffuse colour dims toward night.
 
 use benilla_world::collision::WorldCollision;
+use benilla_world::decal::{DecalFrame, WorldDecal};
 use benilla_world::lighting::WowLighting;
+use benilla_world::particles::buffer::{EffectVertex, WorldEffectDraw};
+use benilla_world::sky_order::Rung;
+use benilla_world::view::WorldCamera;
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::NoFrustumCulling;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::car::{Car, RIDE};
 
-/// The shadow's colour; its alpha comes from the light.
-const SHADE: [f32; 3] = [0.015, 0.015, 0.02];
-/// Height of the shadow over the ground plane, against depth fighting with the terrain.
-const LIFT: f32 = 0.08;
+/// The shadow's colour, raw bytes: the multiply takes the ground toward it by the texel's alpha.
+const SHADE: [u8; 3] = [4, 4, 5];
+/// The shadow texture's side in texels; the decal box is stretched over it.
+const TEX: usize = 128;
 /// Height slices the model's outline is taken in.
 const SLICES: usize = 14;
 /// The darkest the cast shadow and the contact blob get.
@@ -29,10 +34,12 @@ const CONTACT_MAX: f32 = 0.42;
 /// Rim softness: a base width, and a widening per yard the light travels from the car to the ground.
 const PENUMBRA_BASE: f32 = 0.14;
 const PENUMBRA_PER_YARD: f32 = 0.07;
+/// How far off the ground plane a receiving surface still takes the full shadow, and over how much
+/// more it fades out: the ground under a bump keeps it, a terrace far below a ledge does not.
+const PLANE_HOLD: f32 = 1.0;
+const PLANE_FADE: f32 = 1.5;
 /// The sun when the world's lighting has not resolved yet: its 225° bearing, 30° up.
 const FALLBACK_SUN: Vec3 = Vec3::new(0.612, -0.5, 0.612);
-/// Points around the contact blob's rim.
-const BLOB_SEGMENTS: usize = 28;
 
 /// The car's outline points in its own space (+Y up, −Z forward, yards, the body centre at the origin),
 /// and its footprint's centre and half extents on (x, z).
@@ -73,10 +80,16 @@ impl CarSilhouette {
     }
 }
 
-/// The shadow entity, with the ground plane it last lay on.
-#[derive(Component, Default)]
+/// The shadow's state: the ground plane it last lay on, its texture, and this frame's projected
+/// triangles (empty when hidden).
+#[derive(Resource)]
 pub struct CarShadow {
     plane: Option<(Vec3, Vec3)>,
+    texture: Handle<Image>,
+    verts: Vec<EffectVertex>,
+    anchor: Vec3,
+    /// The draw's owner, for the render world's bookkeeping.
+    owner: Entity,
 }
 
 /// Indices of the convex hull of `pts`, counter-clockwise in (x, y), by the monotone chain.
@@ -142,137 +155,132 @@ fn project(p: Vec3, origin: Vec3, normal: Vec3, ray: Vec3) -> (Vec3, f32) {
     (p + ray * t, t)
 }
 
-/// Mesh buffers for one frame of the shadow.
-#[derive(Default)]
-struct Shape {
-    pos: Vec<[f32; 3]>,
-    col: Vec<[f32; 4]>,
-    idx: Vec<u32>,
+/// One frame's shadow in the decal frame's horizontal coordinates: the cast hull with a rim width
+/// per point, and the contact blob.
+struct Footprint {
+    ring: Vec<Vec2>,
+    widths: Vec<f32>,
+    cast_alpha: f32,
+    blob_centre: Vec2,
+    blob_half: Vec2,
 }
 
-impl Shape {
-    fn vertex(&mut self, p: Vec2, alpha: f32) -> u32 {
-        self.pos.push([p.x, 0.0, p.y]);
-        self.col.push([SHADE[0], SHADE[1], SHADE[2], alpha]);
-        self.pos.len() as u32 - 1
+impl Footprint {
+    /// The box the shadow fits in, with room for the rim to fade out before the texture's edge.
+    fn bounds(&self) -> (Vec2, Vec2) {
+        let reach = self.blob_half * 1.1;
+        let (mut lo, mut hi) = (self.blob_centre - reach, self.blob_centre + reach);
+        for p in &self.ring {
+            (lo, hi) = (lo.min(*p), hi.max(*p));
+        }
+        let margin = self.widths.iter().copied().fold(0.0, f32::max) * 0.6 + 0.2;
+        (lo - margin, hi + margin)
     }
 
-    /// A convex ring with a solid core and a rim fading out over `widths`, one per point.
-    fn soft_polygon(&mut self, ring: &[Vec2], widths: &[f32], alpha: f32) {
-        let n = ring.len();
-        if n < 3 || alpha <= 0.0 {
-            return;
-        }
-        let centre = ring.iter().copied().sum::<Vec2>() / n as f32;
-        let c = self.vertex(centre, alpha);
-        let base = self.pos.len() as u32;
-        // Each point moves along its own ray from the centre: the rays of a convex ring never cross,
-        // so no two pieces overlap and draw twice, a darker seam. The step is lengthened by how far
-        // the ray leans off the edge normal, to keep the rim its width across the edge.
-        for i in 0..n {
-            let prev = ring[(i + n - 1) % n];
-            let next = ring[(i + 1) % n];
-            let radial = ring[i] - centre;
-            let reach = radial.length();
-            let dir = radial / reach.max(1e-4);
-            // A counter-clockwise ring's outward normal is the edge's clockwise perpendicular.
-            let normal = -((ring[i] - prev).perp().normalize_or_zero()
-                + (next - ring[i]).perp().normalize_or_zero())
-            .normalize_or(dir);
-            let half = widths[i] * 0.5 / dir.dot(normal).max(0.4);
-            self.vertex(centre + dir * (reach - half.min(reach * 0.5)), alpha);
-            self.vertex(centre + dir * (reach + half), 0.0);
-        }
-        for i in 0..n as u32 {
-            let j = (i + 1) % n as u32;
-            let (in_i, out_i) = (base + 2 * i, base + 2 * i + 1);
-            let (in_j, out_j) = (base + 2 * j, base + 2 * j + 1);
-            self.idx.extend([c, in_j, in_i]);
-            self.idx.extend([in_i, in_j, out_i, out_i, in_j, out_j]);
+    /// Draws the shadow over `[lo, hi]` into an RGBA `TEX × TEX` texture: the hull with its rim
+    /// centred on the outline, the blob darkest at its centre, the two darkening together.
+    fn raster(&self, lo: Vec2, hi: Vec2, out: &mut [u8]) {
+        // Each edge as (a point on it, outward normal over its rim width): a texel's largest
+        // `(p − a)·k` is how far out it lies in rim widths, negative inside.
+        let n = self.ring.len();
+        let edges: Vec<(Vec2, Vec2)> = if n >= 3 {
+            (0..n)
+                .map(|i| {
+                    let (a, b) = (self.ring[i], self.ring[(i + 1) % n]);
+                    // A counter-clockwise ring's outward normal is the edge's clockwise perpendicular.
+                    let normal = -(b - a).perp().normalize_or_zero();
+                    let width = ((self.widths[i] + self.widths[(i + 1) % n]) * 0.5).max(1e-3);
+                    (a, normal / width)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let step = (hi - lo) / TEX as f32;
+        for (k, texel) in out
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+            .take(TEX * TEX)
+        {
+            let p = lo + (Vec2::new((k % TEX) as f32, (k / TEX) as f32) + 0.5) * step;
+            let cast = if edges.is_empty() {
+                0.0
+            } else {
+                let out = edges
+                    .iter()
+                    .fold(f32::MIN, |m, (a, k)| m.max((p - *a).dot(*k)));
+                self.cast_alpha * (1.0 - smoothstep(-0.5, 0.5, out))
+            };
+            let r = ((p - self.blob_centre) / self.blob_half.max(Vec2::splat(1e-3))).length();
+            let blob = CONTACT_MAX * (1.0 - smoothstep(0.3, 1.05, r));
+            let alpha = 1.0 - (1.0 - cast) * (1.0 - blob);
+            texel[..3].copy_from_slice(&SHADE);
+            texel[3] = (alpha * 255.0).round() as u8;
         }
     }
-
-    fn into_mesh(self, mesh: &mut Mesh) {
-        let normals = vec![[0.0, 1.0, 0.0]; self.pos.len()];
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.pos);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.col);
-        mesh.insert_indices(Indices::U32(self.idx));
-    }
 }
 
-/// The contact blob: an oval over the footprint, darkest at its centre.
-fn contact_blob(shape: &mut Shape, centre: Vec2, half: Vec2, alpha: f32) {
-    let blob: Vec<Vec2> = (0..BLOB_SEGMENTS)
-        .map(|i| {
-            let a = TAU * i as f32 / BLOB_SEGMENTS as f32;
-            centre + Vec2::new(a.cos(), a.sin()) * half
-        })
-        .collect();
-    shape.soft_polygon(&blob, &[half.x * 0.9; BLOB_SEGMENTS], alpha);
+/// A point as the decal projector hands it over, `(x', y − centre.y, z')` in a frame turned by
+/// `(sin, cos)`, back to its world offset from the frame's centre: `DecalFrame`'s map inverted.
+fn from_frame(p: Vec3, sin: f32, cos: f32) -> Vec3 {
+    Vec3::new(p.x * cos + p.z * sin, p.y, p.z * cos - p.x * sin)
 }
 
-/// The cast shadow: the hull of the outline carried to the ground, softer where the light
-/// travelled further from the car.
-fn cast_outline(shape: &mut Shape, cast: &[Vec2], travel: &[f32], spread: f32, alpha: f32) {
-    let hull = convex_hull(cast);
-    let ring: Vec<Vec2> = hull.iter().map(|&i| cast[i]).collect();
-    let widths: Vec<f32> = hull
-        .iter()
-        .map(|&i| (PENUMBRA_BASE + PENUMBRA_PER_YARD * travel[i]) * spread)
-        .collect();
-    shape.soft_polygon(&ring, &widths, alpha);
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
-pub fn setup_car_shadow(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
+pub fn setup_car_shadow(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: TEX as u32,
+            height: TEX as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[0, 0, 0, 0],
+        // Raw bytes, as the unit blob shadow's texture: the multiply runs on them unconverted.
+        TextureFormat::Rgba8Unorm,
         RenderAssetUsages::default(),
     );
-    Shape::default().into_mesh(&mut mesh);
-    let material = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        cull_mode: None,
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
         ..default()
     });
-    commands.spawn((
-        CarShadow::default(),
-        Mesh3d(meshes.add(mesh)),
-        MeshMaterial3d(material),
-        Transform::from_translation(Vec3::new(0.0, -9999.0, 0.0)),
-        Visibility::Hidden,
-        // The mesh is rebuilt every frame and its bounds are not.
-        NoFrustumCulling,
-    ));
+    let owner = commands.spawn(Name::new("car-shadow")).id();
+    commands.insert_resource(CarShadow {
+        plane: None,
+        texture: images.add(image),
+        verts: Vec::new(),
+        anchor: Vec3::ZERO,
+        owner,
+    });
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn update_car_shadow(
     time: Res<Time>,
     world: WorldCollision,
+    decals: WorldDecal,
     lighting: Option<Res<WowLighting>>,
     silhouette: Option<Res<CarSilhouette>>,
     car_q: Query<&Car>,
-    mut shadow_q: Query<(&mut CarShadow, &mut Transform, &mut Visibility, &Mesh3d), Without<Car>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    shadow: Option<ResMut<CarShadow>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
-    let (Ok(car), Ok((mut shadow, mut tf, mut vis, mesh))) =
-        (car_q.single(), shadow_q.single_mut())
-    else {
+    let (Ok(car), Some(silhouette), Some(mut shadow)) = (car_q.single(), silhouette, shadow) else {
         return;
     };
-    let Some(silhouette) = silhouette else {
-        return;
-    };
+    let shadow = &mut *shadow;
+    shadow.verts.clear();
     if !car.placed {
         shadow.plane = None;
-        vis.set_if_neq(Visibility::Hidden);
         return;
     }
 
@@ -283,7 +291,6 @@ pub fn update_car_shadow(
         let probe = car.pos + Vec3::Y * 1.5;
         let Some(hit) = world.ray_body(probe, Dir3::NEG_Y, 70.0) else {
             shadow.plane = None;
-            vis.set_if_neq(Visibility::Hidden);
             return;
         };
         let point = probe - Vec3::Y * hit.distance;
@@ -295,18 +302,17 @@ pub fn update_car_shadow(
         (point, normal, (car.pos.y - point.y).max(0.0))
     };
     // In the air the probe steps across triangles, so the plane is eased; on the wheels it is exact.
-    let (ground, normal) = match shadow.plane {
+    let (origin, normal) = match shadow.plane {
         Some((g, n)) if !car.grounded => {
             let t = 1.0 - (-20.0 * time.delta_secs()).exp();
             (g.lerp(ground, t), n.lerp(normal, t).normalize_or(normal))
         }
         _ => (ground, normal),
     };
-    shadow.plane = Some((ground, normal));
+    shadow.plane = Some((origin, normal));
 
     let fade = (1.0 - altitude / 30.0).clamp(0.0, 1.0);
     if fade <= 0.0 {
-        vis.set_if_neq(Visibility::Hidden);
         return;
     }
 
@@ -316,50 +322,101 @@ pub fn update_car_shadow(
     };
     let ray = cast_direction(sun, normal);
 
-    // The plane's frame, aligned with the car's heading: x right, z back.
-    let (fwd, _) = car.basis();
-    let flat_fwd = (fwd - normal * fwd.dot(normal)).normalize_or(fwd);
-    let right = flat_fwd.cross(normal).normalize_or(Vec3::X);
-    let origin = ground + normal * LIFT;
-    tf.translation = origin;
-    tf.rotation = Quat::from_mat3(&Mat3::from_cols(right, normal, -flat_fwd));
-    tf.scale = Vec3::ONE;
-    let to_plane = |p: Vec3| Vec2::new((p - origin).dot(right), -(p - origin).dot(flat_fwd));
+    // The decal frame turns with the car, so the box hugs it; `in_frame` is `DecalFrame`'s own map.
+    let (sin, cos) = car.yaw.sin_cos();
+    let in_frame = |p: Vec3| {
+        let (dx, dz) = (p.x - origin.x, p.z - origin.z);
+        Vec2::new(dx * cos - dz * sin, dz * cos + dx * sin)
+    };
 
-    // Each outline point carried along the light to the plane, with how far it travelled.
+    // Each outline point carried along the light to the plane: where it lands, how high that is
+    // over the plane's origin, and how far the light travelled.
     let rot = car.rotation();
-    let (cast, travel): (Vec<Vec2>, Vec<f32>) = silhouette
-        .points
-        .iter()
-        .map(|&local| {
-            let (p, t) = project(car.pos + rot * local, origin, normal, ray);
-            (to_plane(p), t)
-        })
-        .unzip();
-
-    let mut shape = Shape::default();
-
-    // The contact blob: the car's footprint, darkest at its centre, spreading as the car climbs.
-    let spread = 1.0 + (altitude / 25.0).min(0.6);
-    let footprint = silhouette.centre;
-    let centre = to_plane(car.pos + rot * Vec3::new(footprint.x, 0.0, footprint.y));
-    let half = silhouette.half * Vec2::new(0.95, 0.9) * spread;
-    contact_blob(&mut shape, centre, half, CONTACT_MAX * fade * fade);
-
-    // The cast shadow, softer where the light travelled further from the car.
-    let strength = cast_strength(ambient, diffuse, sun, normal);
-    cast_outline(
-        &mut shape,
-        &cast,
-        &travel,
-        spread,
-        CAST_MAX * strength * fade,
-    );
-
-    if let Some(mesh) = meshes.get_mut(&mesh.0) {
-        shape.into_mesh(mesh);
+    let (mut low, mut high) = (0.0f32, 0.0f32);
+    let mut cast = Vec::with_capacity(silhouette.points.len());
+    let mut travel = Vec::with_capacity(silhouette.points.len());
+    for &local in &silhouette.points {
+        let (p, t) = project(car.pos + rot * local, origin, normal, ray);
+        (low, high) = (low.min(p.y - origin.y), high.max(p.y - origin.y));
+        cast.push(in_frame(p));
+        travel.push(t);
     }
-    vis.set_if_neq(Visibility::Visible);
+
+    // The cast hull, softer where the light travelled further, and the contact blob over the
+    // footprint, both spreading as the car climbs.
+    let spread = 1.0 + (altitude / 25.0).min(0.6);
+    let hull = convex_hull(&cast);
+    let footprint = silhouette.centre;
+    let shape = Footprint {
+        ring: hull.iter().map(|&i| cast[i]).collect(),
+        widths: hull
+            .iter()
+            .map(|&i| (PENUMBRA_BASE + PENUMBRA_PER_YARD * travel[i]) * spread)
+            .collect(),
+        cast_alpha: CAST_MAX * cast_strength(ambient, diffuse, sun, normal),
+        blob_centre: in_frame(car.pos + rot * Vec3::new(footprint.x, 0.0, footprint.y)),
+        blob_half: silhouette.half * Vec2::new(0.95, 0.9) * spread,
+    };
+    let (lo, hi) = shape.bounds();
+    let Some(data) = images
+        .get_mut(&shadow.texture)
+        .and_then(|image| image.data.as_mut())
+    else {
+        return;
+    };
+    shape.raster(lo, hi, data);
+
+    // The terrain and WMO faces in the box, the ones far off the plane faded out.
+    let frame = DecalFrame {
+        center: origin,
+        sin,
+        cos,
+        min_x: lo.x,
+        max_x: hi.x,
+        min_z: lo.y,
+        max_z: hi.y,
+        min_y: low - PLANE_HOLD - PLANE_FADE,
+        max_y: high + PLANE_HOLD + PLANE_FADE,
+    };
+    let off_plane = |p: Vec3| {
+        let h = from_frame(p, sin, cos).dot(normal).abs();
+        (1.0 - (h - PLANE_HOLD) / PLANE_FADE).clamp(0.0, 1.0)
+    };
+    // White vertices with the fades in alpha; the colour is the texture's.
+    let mut verts = std::mem::take(&mut shadow.verts);
+    let landed = decals.project(
+        &mut verts,
+        &frame,
+        |p| fade * off_plane(p),
+        |x, z| frame.rect_uv(x, z),
+    );
+    if !landed {
+        verts.clear();
+    }
+    shadow.verts = verts;
+    shadow.anchor = origin;
+}
+
+/// Copies this frame's shadow onto the effect stream: a multiply on the unit blob shadow's rung.
+pub fn push_car_shadow(
+    shadow: Option<Res<CarShadow>>,
+    cam: Query<Entity, With<WorldCamera>>,
+    mut draw: WorldEffectDraw,
+) {
+    let (Some(shadow), Ok(cam)) = (shadow, cam.single()) else {
+        return;
+    };
+    if shadow.verts.is_empty() {
+        return;
+    }
+    let mut batch = draw
+        .batch(cam, shadow.texture.id())
+        .multiply()
+        .anchored(shadow.anchor)
+        .rung(Rung::SHADOW_SORT, Rung::DECAL_RASTER)
+        .owner(shadow.owner);
+    batch.vertices(&shadow.verts);
+    batch.tris();
 }
 
 #[cfg(test)]
@@ -440,69 +497,47 @@ mod tests {
         assert!((t - 3.2).abs() < 1e-4);
     }
 
-    /// How much the shape's triangles cover beyond the area they outline: zero when none overlap,
-    /// and an overlap draws twice, a darker seam.
-    fn overlap(shape: &Shape) -> f32 {
-        let p: Vec<Vec2> = shape.pos.iter().map(|v| Vec2::new(v[0], v[2])).collect();
-        let tris: f32 = shape
-            .idx
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|t| {
-                let (a, b, c) = (p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]);
-                (b - a).perp_dot(c - a).abs() * 0.5
-            })
-            .sum();
-        let hull = convex_hull(&p);
-        let outline: f32 = (0..hull.len())
-            .map(|i| p[hull[i]].perp_dot(p[hull[(i + 1) % hull.len()]]) * 0.5)
-            .sum();
-        tris - outline
+    #[test]
+    fn the_texture_holds_the_shadow_and_clears_its_edge() {
+        // A 2 × 4 yd box shadow with the blob over it.
+        let shape = Footprint {
+            ring: vec![
+                Vec2::new(-1.0, -2.0),
+                Vec2::new(1.0, -2.0),
+                Vec2::new(1.0, 2.0),
+                Vec2::new(-1.0, 2.0),
+            ],
+            widths: vec![0.3; 4],
+            cast_alpha: 0.5,
+            blob_centre: Vec2::ZERO,
+            blob_half: Vec2::new(1.0, 2.0),
+        };
+        let (lo, hi) = shape.bounds();
+        let mut tex = vec![0u8; TEX * TEX * 4];
+        shape.raster(lo, hi, &mut tex);
+        let alpha = |x: usize, y: usize| tex[(y * TEX + x) * 4 + 3];
+        // Centre: both, 1 − 0.5 · (1 − 0.42).
+        assert_eq!(alpha(TEX / 2, TEX / 2), (0.71f32 * 255.0).round() as u8);
+        // Every texel on the border is clear, so the clamped sampler smears nothing.
+        for i in 0..TEX {
+            for (x, y) in [(i, 0), (i, TEX - 1), (0, i), (TEX - 1, i)] {
+                assert_eq!(alpha(x, y), 0, "border texel ({x}, {y})");
+            }
+        }
+        // The counter-clockwise ring is dark inside, not out: a mirrored normal would invert it.
+        assert!(alpha(TEX / 2, TEX / 8) > 0);
     }
 
     #[test]
-    fn the_shadow_never_overlaps_itself() {
-        let (parts, _) = crate::model::load();
-        let s = crate::car::silhouette(&parts);
-        let origin = Vec3::new(0.0, -RIDE + LIFT, 0.0);
-        let mut worst = (0.0f32, 0.0f32, 0.0f32);
-        for elev in [20.0f32, 30.0, 37.0, 60.0, 90.0] {
-            for az in (0..24).map(|i| i as f32 * 15.0) {
-                let (e, a) = (elev.to_radians(), az.to_radians());
-                let sun = Vec3::new(e.cos() * a.cos(), -e.sin(), e.cos() * a.sin());
-                let (cast, travel): (Vec<Vec2>, Vec<f32>) = s
-                    .points
-                    .iter()
-                    .map(|&p| {
-                        let (q, t) = project(p, origin, Vec3::Y, sun);
-                        (Vec2::new(q.x, q.z), t)
-                    })
-                    .unzip();
-                // On the ground and at the widest airborne spread.
-                for spread in [1.0, 1.6] {
-                    let mut shape = Shape::default();
-                    cast_outline(&mut shape, &cast, &travel, spread, 0.5);
-                    let excess = overlap(&shape);
-                    if excess > worst.0 {
-                        worst = (excess, elev, az);
-                    }
-                }
-            }
-        }
-        let mut blob = Shape::default();
-        contact_blob(&mut blob, Vec2::ZERO, s.half, 0.4);
-        assert!(
-            overlap(&blob) < 1e-3,
-            "blob overlaps by {} yd²",
-            overlap(&blob)
+    fn frame_coordinates_turn_back_to_world() {
+        let (sin, cos) = 0.7f32.sin_cos();
+        let world = Vec3::new(3.0, -0.4, -1.5);
+        // `DecalFrame`'s own map, as `update_car_shadow`'s `in_frame` writes it.
+        let framed = Vec3::new(
+            world.x * cos - world.z * sin,
+            world.y,
+            world.z * cos + world.x * sin,
         );
-        assert!(
-            worst.0 < 1e-3,
-            "cast shadow overlaps by {} yd² at elevation {}°, azimuth {}°",
-            worst.0,
-            worst.1,
-            worst.2
-        );
+        assert!(from_frame(framed, sin, cos).distance(world) < 1e-5);
     }
 }

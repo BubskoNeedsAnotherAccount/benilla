@@ -165,6 +165,11 @@ fn main() -> AppExit {
             preload::preload_course.after(trial::handle_trial_input),
         ),
     )
+    // After the frame's effect-stream clear.
+    .add_systems(
+        PostUpdate,
+        shadow::push_car_shadow.after(benilla_world::particles::buffer::begin_effect_frame),
+    )
     .add_systems(bevy_egui::EguiPrimaryContextPass, trial::render_trial_ui);
 
     // After `AssetPlugin`: the loaders go into the live `AssetServer`.
