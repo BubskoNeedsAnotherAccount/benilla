@@ -14,7 +14,7 @@ const LADDER = ["high", "balanced", "fast", "eco"];
 const START = 1;
 // Cost of tier i against tier i + 1, measured on the wasm build (v10, idle to full-throttle redline):
 // the junction solves scale with the step count, about 1/dx, so finer is cheaper than 1/dx^2.
-const COST = [1.55, 1.45, 1.3];
+const COST = [1.6, 1.5, 1.3];
 
 const WINDOW_MS = 2000;
 const MIN_BLOCKS = 32; // a window with fewer blocks rendered (audio not pulling) says nothing

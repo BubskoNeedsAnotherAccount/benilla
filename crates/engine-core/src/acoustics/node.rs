@@ -319,6 +319,9 @@ struct Eval {
     dp: f32,
 }
 
+/// A valve at or under this effective area (m^2) is shut: it passes no flow.
+const CLOSED_AREA: f32 = 2.0e-6;
+
 fn area_guard(a: f32) -> f32 {
     a.max(1.0e-9)
 }
@@ -633,7 +636,31 @@ impl Node {
         grid.set_end(leg.duct, leg.end, fx, e.rho, ux, e.p);
     }
 
+    /// A port whose valves are all shut: one pipe leg and no flow, so the face is a wall. The
+    /// Newton solve below converges to this same zero-velocity state; ports spend most of the cycle
+    /// here, so it is taken directly.
+    fn solve_closed_port(&mut self, grid: &mut Grid, dt: f32) {
+        let leg = &mut self.legs[0];
+        let e = LegW::new(grid, leg, dt).eval(0.0);
+        // The stagnation pressure the Newton would leave, the warm start for the valve opening.
+        self.p0 = e.pt;
+        leg.u = 0.0;
+        leg.mdot = 0.0;
+        leg.p_face = e.p;
+        for v in self.valves.iter_mut() {
+            v.mdot = 0.0;
+        }
+        grid.set_end(leg.duct, leg.end, [0.0, e.p, 0.0], e.rho, 0.0, e.p);
+    }
+
     fn solve_junction(&mut self, grid: &mut Grid, res: &mut [Reservoir], dt: f32, env: &Env) {
+        if self.legs.len() == 1
+            && self.slugs.is_empty()
+            && !self.valves.is_empty()
+            && self.valves.iter().all(|v| v.area <= CLOSED_AREA)
+        {
+            return self.solve_closed_port(grid, dt);
+        }
         let np = self.legs.len();
         let ns = self.slugs.len();
         let nl = np + ns;
@@ -662,7 +689,7 @@ impl Node {
         let gas_pipe = if np > 0 { grid.gas } else { env.gas };
         // flow from the reservoir into the node and its derivative with respect to the node pressure
         let valve_eval = |res: &[Reservoir], v: &ValveLeg, p0: f32| -> (f32, f32) {
-            if v.area <= 2.0e-6 {
+            if v.area <= CLOSED_AREA {
                 return (0.0, 0.0);
             }
             let r = &res[v.res];
@@ -690,7 +717,7 @@ impl Node {
                 let (m, d) = valve_eval(res, v, p0);
                 g += m;
                 scale += m.abs();
-                denom += d.min(-1.0e-12) * (v.area > 2.0e-6) as u8 as f32;
+                denom += d.min(-1.0e-12) * (v.area > CLOSED_AREA) as u8 as f32;
             }
             let mut numer = 0.0f32;
             let mut fk = [0.0f32; MAX_LEGS];
