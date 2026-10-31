@@ -76,6 +76,8 @@ pub enum MenuTab {
     #[default]
     FreeDrive,
     Race,
+    /// Courses a friend built, kept apart from the shipped ones.
+    Slayzer,
     Settings,
 }
 

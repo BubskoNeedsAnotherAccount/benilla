@@ -85,6 +85,9 @@ pub struct TimeTrial {
     /// Online, the drivers on this course line up on a grid and start together.
     #[serde(default)]
     pub versus: bool,
+    /// Listed on the Slayzer's Races page instead of Racing.
+    #[serde(default)]
+    pub slayzer: bool,
 }
 
 impl TimeTrial {
@@ -107,6 +110,7 @@ impl TimeTrial {
             circuit: false,
             checkpoint_radius: DEFAULT_GATE_RADIUS,
             versus: false,
+            slayzer: false,
         }
     }
 
@@ -221,6 +225,8 @@ pub struct TimeTrialDef {
     pub rotation: Option<f32>,
     #[serde(default, alias = "vs")]
     pub versus: bool,
+    #[serde(default)]
+    pub slayzer: bool,
 }
 
 impl From<TimeTrialDef> for TimeTrial {
@@ -254,6 +260,7 @@ impl From<TimeTrialDef> for TimeTrial {
                 .filter(|r| *r > 0.0)
                 .unwrap_or(DEFAULT_GATE_RADIUS),
             versus: def.versus,
+            slayzer: def.slayzer,
         }
     }
 }
@@ -344,6 +351,9 @@ impl Default for TimeTrialManager {
         let trials = load_time_trials();
         let is_kalimdor = std::env::var("WOW_MAP").map(|v| v == "1").unwrap_or(false);
         let free_drive_loc = if is_kalimdor { 1 } else { 0 };
+        // The Slayzer's courses go last, so each menu page is one run of indices.
+        let mut trials = trials;
+        trials.sort_by_key(|t| t.slayzer);
         Self {
             trials,
             current_trial_idx: None,
@@ -903,10 +913,11 @@ pub fn handle_trial_input(
     if manager.menu_open && keys.just_pressed(KeyCode::Tab) {
         *tab = match *tab {
             MenuTab::FreeDrive => MenuTab::Race,
-            MenuTab::Race => MenuTab::Settings,
+            MenuTab::Race => MenuTab::Slayzer,
+            MenuTab::Slayzer => MenuTab::Settings,
             MenuTab::Settings => MenuTab::FreeDrive,
         };
-        if let Some(range) = menu_range(*tab, manager.trials.len()) {
+        if let Some(range) = menu_range(*tab, &manager.trials) {
             manager.selected_menu_idx = range.start;
         }
     }
@@ -919,7 +930,7 @@ pub fn handle_trial_input(
     // When menu is open, handle keyboard navigation
     if manager.menu_open {
         // The settings page is driven with the mouse; the keys would pick a course.
-        let Some(range) = menu_range(*tab, manager.trials.len()) else {
+        let Some(range) = menu_range(*tab, &manager.trials) else {
             return;
         };
         if range.is_empty() {
@@ -1060,10 +1071,19 @@ pub fn apply_menu_choice(
 }
 
 /// The menu rows a page lists, in `apply_menu_choice` indices; `None` for the settings page.
-fn menu_range(tab: MenuTab, trials: usize) -> Option<std::ops::Range<usize>> {
+/// The courses are kept with the Slayzer's ones last (`TimeTrialManager::default`), so each page
+/// is one run of indices.
+fn menu_range(tab: MenuTab, trials: &[TimeTrial]) -> Option<std::ops::Range<usize>> {
+    let split = trials
+        .iter()
+        .position(|t| t.slayzer)
+        .unwrap_or(trials.len());
     match tab {
         MenuTab::FreeDrive => Some(0..FREE_DRIVES.len()),
-        MenuTab::Race => Some(FREE_DRIVES.len()..FREE_DRIVES.len() + trials),
+        MenuTab::Race => Some(FREE_DRIVES.len()..FREE_DRIVES.len() + split),
+        MenuTab::Slayzer => {
+            Some(FREE_DRIVES.len() + split..FREE_DRIVES.len() + trials.len())
+        }
         MenuTab::Settings => None,
     }
 }
@@ -1912,6 +1932,7 @@ pub fn render_trial_ui(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         for (page, label) in [
                             (MenuTab::Settings, "Settings"),
+                            (MenuTab::Slayzer, "Slayzer's Races"),
                             (MenuTab::Race, "Racing"),
                             (MenuTab::FreeDrive, "Free Driving"),
                         ] {
@@ -1932,7 +1953,7 @@ pub fn render_trial_ui(
                             .min_size(egui::vec2(92.0, 30.0));
                             if ui.add(button).clicked() {
                                 new_tab = page;
-                                if let Some(range) = menu_range(page, manager.trials.len()) {
+                                if let Some(range) = menu_range(page, &manager.trials) {
                                     if !range.contains(&selected) {
                                         tab_selection = Some(range.start);
                                     }
@@ -1995,8 +2016,22 @@ pub fn render_trial_ui(
                                 return;
                             }
 
-                            section_heading(ui, "TIME TRIALS & RACES", Some("Nitro off"));
-                            for (i, trial) in manager.trials.iter().enumerate() {
+                            section_heading(
+                                ui,
+                                if new_tab == MenuTab::Slayzer {
+                                    "SLAYZER'S RACES"
+                                } else {
+                                    "TIME TRIALS & RACES"
+                                },
+                                Some("Nitro off"),
+                            );
+                            let slayzer_page = new_tab == MenuTab::Slayzer;
+                            for (i, trial) in manager
+                                .trials
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, t)| t.slayzer == slayzer_page)
+                            {
                                 let idx = i + FREE_DRIVES.len();
                                 let continent = match trial.map_id {
                                     0 => "Eastern Kingdoms".to_string(),
@@ -2463,9 +2498,19 @@ mod tests {
         assert!(trials[3].circuit && trials[3].end == trials[3].start);
         assert_eq!(trials[3].lap_count(), 2);
         assert_eq!(trials[3].checkpoints.len(), 6);
-        // The first eight are versus courses; the rest are not.
-        assert!(trials[..8].iter().all(|t| t.versus));
-        assert!(trials[8..].iter().all(|t| !t.versus));
+        // The first eight are versus courses, then a sprint; the Slayzer's three close the list.
+        assert!(trials[..8].iter().all(|t| t.versus && !t.slayzer));
+        assert!(!trials[8].versus && !trials[8].slayzer);
+        assert_eq!(trials.len(), 12);
+        assert!(trials[9..].iter().all(|t| t.versus && t.slayzer));
+        assert_eq!(trials[9].name, "Black Rock Circuit");
+        assert!(trials[9].circuit && trials[9].lap_count() == 5);
+        assert_eq!(trials[9].checkpoints.len(), 4);
+        assert_eq!(trials[10].name, "Tunnel Rumble");
+        assert!(trials[10].circuit && trials[10].lap_count() == 2);
+        assert_eq!(trials[10].checkpoints.len(), 12);
+        assert_eq!(trials[11].name, "Burning Steps to Loch Modan");
+        assert!(!trials[11].circuit && trials[11].checkpoints.len() == 34);
         assert_eq!(trials[7].name, "Orgrimmar Race");
         assert_eq!(trials[7].map_id, 1);
         assert_eq!(trials[7].checkpoints.len(), 7);
