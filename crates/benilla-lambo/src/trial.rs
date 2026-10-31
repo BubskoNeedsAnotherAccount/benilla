@@ -2455,9 +2455,13 @@ mod tests {
         assert!(trials[3].circuit && trials[3].end == trials[3].start);
         assert_eq!(trials[3].lap_count(), 2);
         assert_eq!(trials[3].checkpoints.len(), 6);
-        // The first six are versus courses; the rest are not.
-        assert!(trials[..6].iter().all(|t| t.versus));
-        assert!(trials[6..].iter().all(|t| !t.versus));
+        // The first seven are versus courses; the rest are not.
+        assert!(trials[..7].iter().all(|t| t.versus));
+        assert!(trials[7..].iter().all(|t| !t.versus));
+        assert_eq!(trials[6].name, "Crimson Crusade");
+        assert_eq!(trials[6].map_id, 0);
+        assert_eq!(trials[6].checkpoints.len(), 11);
+        assert!(!trials[6].circuit && trials[6].lap_count() == 1);
         assert_eq!(trials[4].name, "Redridge Highway");
         assert_eq!(trials[4].checkpoints.len(), 5);
         // A two-lap circuit finishing at its start.
