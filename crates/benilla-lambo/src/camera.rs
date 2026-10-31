@@ -4,9 +4,11 @@ use std::f32::consts::{PI, TAU};
 
 use bevy::camera::{PerspectiveProjection, Projection};
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::render::view::Hdr;
 use bevy::window::PrimaryWindow;
+use bevy_egui::EguiContexts;
 
 use benilla_assets::coords::wow_to_bevy;
 use benilla_world::collision::WorldCollision;
@@ -18,12 +20,23 @@ use crate::car::{smooth, Car, TOP_SPEED};
 const DISTANCE: f32 = 5.5;
 const HEIGHT: f32 = 3.0;
 const BASE_FOV: f32 = 1.05;
+/// Radians of orbit per pixel of mouse travel while dragging.
+const DRAG_SENSITIVITY: f32 = 0.005;
+/// How far the drag may tilt the camera from its resting angle, down and up.
+const DRAG_PITCH_MIN: f32 = -0.45;
+const DRAG_PITCH_MAX: f32 = 0.9;
+/// How fast the camera swings back behind the car once the button is let go.
+const DRAG_RETURN_RATE: f32 = 6.0;
 
-/// The camera's own heading, which trails the car's.
+/// The camera's own heading, which trails the car's, plus a mouse-drag orbit offset.
 #[derive(Component)]
 pub struct ChaseCam {
     pub yaw: f32,
     pub snapped: bool,
+    /// Orbit offset from the chase position while the left button drags; eases to zero on release.
+    pub drag_yaw: f32,
+    pub drag_pitch: f32,
+    pub dragging: bool,
 }
 
 /// The world camera, as the world viewer spawns it, with the chase state on top.
@@ -45,6 +58,9 @@ pub fn spawn_camera(mut commands: Commands, msaa: Res<MsaaSetting>) {
         ChaseCam {
             yaw: crate::car::SPAWN_YAW_DEG.to_radians(),
             snapped: false,
+            drag_yaw: 0.0,
+            drag_pitch: 0.0,
+            dragging: false,
         },
         AmbientLight {
             color: Color::WHITE,
@@ -64,7 +80,34 @@ pub fn spawn_camera(mut commands: Commands, msaa: Res<MsaaSetting>) {
     ));
 }
 
-/// Follows the car from behind, trailing its heading, widening the view with speed; C looks back.
+/// Left-drag orbits the camera around the car; a drag that starts on the egui UI is left to it.
+pub fn mouse_look(
+    buttons: Res<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    mut contexts: EguiContexts,
+    mut cam: Query<&mut ChaseCam>,
+) {
+    let Ok(mut chase) = cam.single_mut() else {
+        return;
+    };
+    if buttons.just_pressed(MouseButton::Left) {
+        let over_ui = contexts
+            .ctx_mut()
+            .is_ok_and(|ctx| ctx.is_pointer_over_area() || ctx.wants_pointer_input());
+        chase.dragging = !over_ui;
+    }
+    if !buttons.pressed(MouseButton::Left) {
+        chase.dragging = false;
+    }
+    if chase.dragging {
+        let d = motion.delta * DRAG_SENSITIVITY;
+        chase.drag_yaw = (chase.drag_yaw - d.x + PI).rem_euclid(TAU) - PI;
+        chase.drag_pitch = (chase.drag_pitch + d.y).clamp(DRAG_PITCH_MIN, DRAG_PITCH_MAX);
+    }
+}
+
+/// Follows the car from behind, trailing its heading, widening the view with speed; C looks back,
+/// and a left-drag orbit (`mouse_look`) springs back once released.
 pub fn chase(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -85,9 +128,20 @@ pub fn chase(
         diff
     };
 
+    // Once the button is let go, the drag offset eases back to the plain chase position.
+    if !chase.dragging {
+        let k = smooth(dt, DRAG_RETURN_RATE);
+        chase.drag_yaw -= chase.drag_yaw * k;
+        chase.drag_pitch -= chase.drag_pitch * k;
+    }
+
     let speed = car.speed();
-    let back = Vec3::new(chase.yaw.sin(), 0.0, chase.yaw.cos());
-    let ideal_cam = car.pos + back * DISTANCE + Vec3::Y * (HEIGHT + speed * 0.01);
+    let height = HEIGHT + speed * 0.01;
+    let reach = DISTANCE.hypot(height);
+    let pitch = height.atan2(DISTANCE) + chase.drag_pitch;
+    let yaw = chase.yaw + chase.drag_yaw;
+    let back = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+    let ideal_cam = car.pos + (back * pitch.cos() + Vec3::Y * pitch.sin()) * reach;
 
     // Car focus point for line-of-sight raycasting (just above the car center)
     let focus = car.pos + Vec3::Y * 0.9;
@@ -118,7 +172,8 @@ pub fn chase(
     chase.snapped = true;
 
     let cam_dist = (tf.translation - focus).length();
-    let look_ahead = (cam_dist * 0.35).clamp(0.5, 3.0);
+    // Looking ahead of the car only makes sense from behind it; an orbit looks at the car itself.
+    let look_ahead = (cam_dist * 0.35).clamp(0.5, 3.0) * chase.drag_yaw.cos().max(0.0);
     let look = car.pos + car.up * 0.8 + car.basis().0 * look_ahead;
     tf.look_at(look, Vec3::Y);
 
