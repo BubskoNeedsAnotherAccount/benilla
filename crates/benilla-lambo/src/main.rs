@@ -26,6 +26,7 @@ mod shadow;
 mod smoke;
 mod sound;
 mod trial;
+mod warmup;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
@@ -123,6 +124,8 @@ fn main() -> AppExit {
 
     // The world is always live: there is no session to say otherwise.
     app.insert_resource(WorldLive(true));
+
+    app.add_systems(Update, warmup::warm_pipelines);
 
     app.add_systems(
         Startup,

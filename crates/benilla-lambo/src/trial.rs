@@ -344,7 +344,8 @@ impl TimeTrialManager {
             TrialState::WaitingToStart => self.loading,
             _ => false,
         }
-    }}
+    }
+}
 
 impl Default for TimeTrialManager {
     fn default() -> Self {
@@ -1081,9 +1082,7 @@ fn menu_range(tab: MenuTab, trials: &[TimeTrial]) -> Option<std::ops::Range<usiz
     match tab {
         MenuTab::FreeDrive => Some(0..FREE_DRIVES.len()),
         MenuTab::Race => Some(FREE_DRIVES.len()..FREE_DRIVES.len() + split),
-        MenuTab::Slayzer => {
-            Some(FREE_DRIVES.len() + split..FREE_DRIVES.len() + trials.len())
-        }
+        MenuTab::Slayzer => Some(FREE_DRIVES.len() + split..FREE_DRIVES.len() + trials.len()),
         MenuTab::Settings => None,
     }
 }
@@ -2001,10 +2000,7 @@ pub fn render_trial_ui(
                                         idx,
                                         MenuRow {
                                             title: spot.zone,
-                                            subtitle: format!(
-                                                "{} • {}",
-                                                spot.town, spot.continent
-                                            ),
+                                            subtitle: format!("{} • {}", spot.town, spot.continent),
                                             versus: false,
                                             best: None,
                                             active: manager.current_trial_idx.is_none()
