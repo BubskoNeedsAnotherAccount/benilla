@@ -35,10 +35,11 @@ const FALLBACK_SUN: Vec3 = Vec3::new(0.612, -0.5, 0.612);
 const BLOB_SEGMENTS: usize = 28;
 
 /// The car's outline points in its own space (+Y up, −Z forward, yards, the body centre at the origin),
-/// and the half extents of its footprint.
+/// and its footprint's centre and half extents on (x, z).
 #[derive(Resource)]
 pub struct CarSilhouette {
     pub points: Vec<Vec3>,
+    pub centre: Vec2,
     pub half: Vec2,
 }
 
@@ -60,10 +61,15 @@ impl CarSilhouette {
             let flat: Vec<Vec2> = slice.iter().map(|p| Vec2::new(p.x, p.z)).collect();
             points.extend(convex_hull(&flat).into_iter().map(|i| slice[i]));
         }
-        let half = points
-            .iter()
-            .fold(Vec2::ZERO, |h, p| h.max(Vec2::new(p.x.abs(), p.z.abs())));
-        Self { points, half }
+        let (lo, hi) = points.iter().fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| {
+            let f = Vec2::new(p.x, p.z);
+            (lo.min(f), hi.max(f))
+        });
+        Self {
+            points,
+            centre: (lo + hi) * 0.5,
+            half: (hi - lo) * 0.5,
+        }
     }
 }
 
@@ -122,10 +128,18 @@ fn cast_direction(sun: Vec3, normal: Vec3) -> Vec3 {
     const MIN_DOT: f32 = 0.3;
     let d = sun.dot(normal);
     if d > -MIN_DOT {
-        (sun - normal * (d + MIN_DOT)).normalize_or(-normal)
+        let along = (sun - normal * d).normalize_or_zero();
+        along * (1.0 - MIN_DOT * MIN_DOT).sqrt() - normal * MIN_DOT
     } else {
         sun
     }
+}
+
+/// `p` carried along `ray` onto the plane through `origin` with `normal`, and how far it went; a
+/// point already under the plane stays where it is. `ray` must point into the plane.
+fn project(p: Vec3, origin: Vec3, normal: Vec3, ray: Vec3) -> (Vec3, f32) {
+    let t = ((p - origin).dot(normal) / -ray.dot(normal)).max(0.0);
+    (p + ray * t, t)
 }
 
 /// Mesh buffers for one frame of the shadow.
@@ -286,14 +300,12 @@ pub fn update_car_shadow(
 
     // Each outline point carried along the light to the plane, with how far it travelled.
     let rot = car.rotation();
-    let down = -ray.dot(normal);
     let (cast, travel): (Vec<Vec2>, Vec<f32>) = silhouette
         .points
         .iter()
         .map(|&local| {
-            let p = car.pos + rot * local;
-            let t = ((p - origin).dot(normal) / down).max(0.0);
-            (to_plane(p + ray * t), t)
+            let (p, t) = project(car.pos + rot * local, origin, normal, ray);
+            (to_plane(p), t)
         })
         .unzip();
 
@@ -301,7 +313,8 @@ pub fn update_car_shadow(
 
     // The contact blob: the car's footprint, darkest at its centre, spreading as the car climbs.
     let spread = 1.0 + (altitude / 25.0).min(0.6);
-    let centre = to_plane(car.pos);
+    let footprint = silhouette.centre;
+    let centre = to_plane(car.pos + rot * Vec3::new(footprint.x, 0.0, footprint.y));
     let half = silhouette.half * Vec2::new(0.95, 0.9) * spread;
     let blob: Vec<Vec2> = (0..BLOB_SEGMENTS)
         .map(|i| {
@@ -322,8 +335,8 @@ pub fn update_car_shadow(
     let strength = cast_strength(ambient, diffuse, sun, normal);
     shape.soft_polygon(&ring, &widths, CAST_MAX * strength * fade);
 
-    if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
-        shape.into_mesh(&mut mesh);
+    if let Some(mesh) = meshes.get_mut(&mesh.0) {
+        shape.into_mesh(mesh);
     }
     vis.set_if_neq(Visibility::Visible);
 }
@@ -363,10 +376,10 @@ mod tests {
                 }
             }
         }
-        pts.push(Vec3::new(0.0, 0.5, 0.0));
+        pts.push(Vec3::new(0.0, 0.0, 0.0));
         let s = CarSilhouette::from_points(&pts);
-        assert_eq!(s.half, Vec2::new(1.0, 2.0));
-        assert!(!s.points.contains(&Vec3::new(0.0, 0.5, 0.0)));
+        assert_eq!((s.centre, s.half), (Vec2::ZERO, Vec2::new(1.0, 2.0)));
+        assert!(!s.points.contains(&Vec3::ZERO));
     }
 
     #[test]
@@ -378,5 +391,31 @@ mod tests {
         // A grazing sun is steepened, never cast along the ground.
         let ray = cast_direction(Vec3::new(1.0, -0.01, 0.0).normalize(), normal);
         assert!(-ray.dot(normal) >= 0.29);
+    }
+
+    #[test]
+    fn the_car_outline_matches_its_size() {
+        let (parts, _) = crate::model::load();
+        let s = crate::car::silhouette(&parts);
+        // The car is about 2.4 m wide at the mirrors and 5.3 m long (the model runs about 7% large) at 1.361 yd/m, and stands on the ground at −RIDE.
+        assert!((1.2..1.8).contains(&s.half.x), "half width {}", s.half.x);
+        assert!((3.2..3.8).contains(&s.half.y), "half length {}", s.half.y);
+        let low = s.points.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        assert!((low + RIDE).abs() < 0.1, "lowest point {low}");
+        assert!(
+            (50..2000).contains(&s.points.len()),
+            "{} points",
+            s.points.len()
+        );
+    }
+
+    #[test]
+    fn a_roof_point_lands_away_from_the_sun() {
+        // The sun 30° up, shining toward +X: a point 1.6 yd up lands 1.6 / tan 30° down-sun.
+        let sun = Vec3::new(30f32.to_radians().cos(), -30f32.to_radians().sin(), 0.0);
+        let (p, t) = project(Vec3::new(0.0, 1.6, 0.0), Vec3::ZERO, Vec3::Y, sun);
+        assert!(p.y.abs() < 1e-5);
+        assert!((p.x - 1.6 / 30f32.to_radians().tan()).abs() < 1e-4, "{p}");
+        assert!((t - 3.2).abs() < 1e-4);
     }
 }

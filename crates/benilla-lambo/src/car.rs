@@ -12,6 +12,7 @@ use bevy::prelude::*;
 
 use crate::model::{self, Finish, PartKind};
 use crate::paint::{self, CarMaterial, CarMaterials};
+use crate::shadow::CarSilhouette;
 
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_world::collision::WorldCollision;
@@ -270,22 +271,7 @@ pub fn load_car_assets(
     mut painted: ResMut<CarMaterials>,
 ) {
     let (parts, texture) = model::load();
-    // Every vertex in car space, as `spawn_model` places the model, for the shadow's outline.
-    let root = model_root();
-    let points: Vec<Vec3> = parts
-        .iter()
-        .filter_map(|p| {
-            Some((
-                p.pivot,
-                p.mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?,
-            ))
-        })
-        .flat_map(|(pivot, pos)| {
-            pos.iter()
-                .map(move |v| root.transform_point(pivot + Vec3::from(*v)))
-        })
-        .collect();
-    commands.insert_resource(crate::shadow::CarSilhouette::from_points(&points));
+    commands.insert_resource(silhouette(&parts));
     let texture = images.add(texture);
     let mut made: HashMap<(bool, Finish), Handle<CarMaterial>> = HashMap::new();
     let parts = parts
@@ -319,6 +305,25 @@ pub fn load_car_assets(
         })
         .collect();
     commands.insert_resource(CarAssets { parts });
+}
+
+/// The shadow's outline from every vertex of the model, in car space as `spawn_model` places it.
+pub fn silhouette(parts: &[model::Part]) -> CarSilhouette {
+    let root = model_root();
+    let points: Vec<Vec3> = parts
+        .iter()
+        .filter_map(|p| {
+            Some((
+                p.pivot,
+                p.mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?,
+            ))
+        })
+        .flat_map(|(pivot, pos)| {
+            pos.iter()
+                .map(move |v| root.transform_point(pivot + Vec3::from(*v)))
+        })
+        .collect();
+    CarSilhouette::from_points(&points)
 }
 
 /// The model's place in the car: it faces +Z and the car −Z, so it is turned half way round, scaled
