@@ -10,19 +10,8 @@ use kira::{
     AudioManager, AudioManagerSettings, Decibels, DefaultBackend, Tween,
 };
 
-use crate::car::{smooth, Car, TOP_SPEED};
+use crate::car::{smooth, Car, GEAR_BOUNDS, TOP_SPEED};
 use crate::engine_synth::{EngineSoundData, EngineSoundHandle};
-
-/// Speed bands for the 7 gears in yd/s (1 yd/s ≈ 3.3 km/h).
-const GEAR_BOUNDS: [(f32, f32); 7] = [
-    (0.0, 16.0),    // Gear 1: 0..16 yd/s (~0..53 km/h)
-    (16.0, 30.0),   // Gear 2: 16..30 yd/s (~53..100 km/h)
-    (30.0, 46.0),   // Gear 3: 30..46 yd/s (~100..152 km/h)
-    (46.0, 64.0),   // Gear 4: 46..64 yd/s (~152..211 km/h)
-    (64.0, 82.0),   // Gear 5: 64..82 yd/s (~211..270 km/h)
-    (82.0, 100.0),  // Gear 6: 82..100 yd/s (~270..330 km/h)
-    (100.0, 150.0), // Gear 7: 100+ yd/s (~330..500 km/h)
-];
 
 /// Holds Kira's audio manager and active sound handles.
 #[derive(Resource)]
@@ -37,7 +26,7 @@ pub struct CarAudio {
     current_engine_rate: f32,
     current_engine_db: f32,
     current_skid_db: f32,
-    /// Transmission state for procedural audio.
+    /// The gear the engine sound last ran in, to cut the throttle as the car's gear changes.
     current_gear: usize,
     simulated_rpm: f32,
     gear_shift_timer: f32,
@@ -250,22 +239,16 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 synth.set_rpm(audio.simulated_rpm);
                 synth.set_throttle(throttle_pos);
                 synth.set_volume(0.36 + throttle_pos * 0.18);
-                synth.set_drivetrain(0.0, 1, false);
+                synth.set_drivetrain(0.0, 1);
             } else {
-                // Automatic transmission gear selection with hysteresis
-                let mut target_gear = audio.current_gear;
-                let cur_idx = (audio.current_gear - 1).min(6);
-                let (cur_low, cur_high) = GEAR_BOUNDS[cur_idx];
-                if target_gear < 7 && speed > cur_high * 0.95 {
-                    target_gear += 1;
-                } else if target_gear > 1 && speed < cur_low * 0.82 {
-                    target_gear -= 1;
-                }
-
-                // Dual-clutch quick-shift cut effect
-                if target_gear != audio.current_gear {
-                    audio.current_gear = target_gear;
+                // Dual-clutch quick-shift cut effect; an upshift's cut lights the unburnt
+                // charge in the exhaust: a pop.
+                if car.gear != audio.current_gear {
+                    audio.current_gear = car.gear;
                     audio.gear_shift_timer = 0.08;
+                }
+                if car.just_upshifted {
+                    synth.pop();
                 }
 
                 let gear_idx = (audio.current_gear - 1).min(6);
@@ -337,7 +320,7 @@ pub fn update_car_audio(time: Res<Time>, car: Query<&Car>, mut audio: Option<Res
                 synth.set_rpm(audio.simulated_rpm);
                 synth.set_throttle(effective_throttle);
                 synth.set_volume(target_vol);
-                synth.set_drivetrain(speed, audio.current_gear, audio.gear_shift_timer > 0.0);
+                synth.set_drivetrain(speed, audio.current_gear);
             }
         }
         #[cfg(target_arch = "wasm32")]

@@ -38,6 +38,9 @@ pub const SMOKE_X: f32 = 0.84 * CAR_SCALE;
 pub const SMOKE_Z: f32 = 1.447 * CAR_SCALE;
 /// Where the axles' midpoint is along model Z, which the car's centre is moved to.
 pub const AXLE_MID: f32 = (1.317 + -1.577) * 0.5;
+/// The left tailpipe's outlet in model space, metres; the right one is its mirror across X. The
+/// pipes point straight back, along −Z.
+pub const EXHAUST: Vec3 = Vec3::new(0.31, 0.79, -2.58);
 
 pub struct Part {
     pub kind: PartKind,
@@ -309,6 +312,32 @@ mod tests {
         assert!((hub(PartKind::FrontLeft).z - 1.317).abs() < 0.01);
         assert!((hub(PartKind::BackWheels).z + 1.577).abs() < 0.01);
         assert!(hub(PartKind::FrontLeft).x > 0.5 && hub(PartKind::FrontRight).x < -0.5);
+    }
+
+    #[test]
+    fn exhaust_sits_at_the_tailpipes() {
+        let (parts, _) = load();
+        for side in [1.0, -1.0] {
+            let axis = Vec2::new(EXHAUST.x * side, EXHAUST.y);
+            // The pipe's wall: body vertices a few centimetres off the outlet's axis, behind the
+            // rear axle.
+            let wall: Vec<Vec3> = parts
+                .iter()
+                .filter(|p| p.kind == PartKind::Body)
+                .filter_map(|p| p.mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3())
+                .flatten()
+                .map(|v| Vec3::from(*v))
+                .filter(|v| v.z < -2.3 && (v.xy() - axis).length() < 0.08)
+                .collect();
+            assert!(wall.len() > 20, "{} vertices round the pipe", wall.len());
+            let mid = wall.iter().map(|v| v.xy()).sum::<Vec2>() / wall.len() as f32;
+            assert!(
+                (mid - axis).length() < 0.02,
+                "pipe centred at {mid}, not {axis}"
+            );
+            let tip = wall.iter().map(|v| v.z).fold(f32::MAX, f32::min);
+            assert!((tip - EXHAUST.z).abs() < 0.03, "pipe ends at z {tip}");
+        }
     }
 }
 
