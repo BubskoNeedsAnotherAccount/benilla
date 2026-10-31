@@ -23,8 +23,8 @@ use crate::camera::ChaseCam;
 use crate::car::Car;
 
 use crate::car::{
-    BLOODHOOF_WOW, CROSSROADS_WOW, DARKSHIRE_WOW, GADGETZAN_WOW, GOLDSHIRE_WOW, KHARANOS_WOW,
-    LAKESHIRE_WOW, RAZOR_HILL_WOW, SENTINEL_HILL_WOW, SOUTHSHORE_WOW,
+    BLOODHOOF_WOW, CROSSROADS_WOW, DARKSHIRE_WOW, GADGETZAN_WOW, GOLDSHIRE_WOW, HYJAL_WOW,
+    KHARANOS_WOW, LAKESHIRE_WOW, RAZOR_HILL_WOW, SENTINEL_HILL_WOW, SOUTHSHORE_WOW,
 };
 
 /// Horizontal radius, in yards, of a checkpoint or finish gate unless a course says otherwise.
@@ -1290,7 +1290,7 @@ struct FreeDrive {
 }
 
 /// The free-driving spots, in menu order (the first `apply_menu_choice` indices).
-const FREE_DRIVES: [FreeDrive; 10] = [
+const FREE_DRIVES: [FreeDrive; 11] = [
     FreeDrive {
         zone: "Redridge Mountains",
         town: "Lakeshire",
@@ -1369,6 +1369,14 @@ const FREE_DRIVES: [FreeDrive; 10] = [
         continent: "Kalimdor",
         map_id: 1,
         wow: GADGETZAN_WOW,
+        yaw_deg: 0.0,
+    },
+    FreeDrive {
+        zone: "Mount Hyjal",
+        town: "Nordrassil",
+        continent: "Kalimdor",
+        map_id: 1,
+        wow: HYJAL_WOW,
         yaw_deg: 0.0,
     },
 ];
@@ -2455,9 +2463,12 @@ mod tests {
         assert!(trials[3].circuit && trials[3].end == trials[3].start);
         assert_eq!(trials[3].lap_count(), 2);
         assert_eq!(trials[3].checkpoints.len(), 6);
-        // The first seven are versus courses; the rest are not.
-        assert!(trials[..7].iter().all(|t| t.versus));
-        assert!(trials[7..].iter().all(|t| !t.versus));
+        // The first eight are versus courses; the rest are not.
+        assert!(trials[..8].iter().all(|t| t.versus));
+        assert!(trials[8..].iter().all(|t| !t.versus));
+        assert_eq!(trials[7].name, "Orgrimmar Race");
+        assert_eq!(trials[7].map_id, 1);
+        assert_eq!(trials[7].checkpoints.len(), 7);
         assert_eq!(trials[6].name, "Crimson Crusade");
         assert_eq!(trials[6].map_id, 0);
         assert_eq!(trials[6].checkpoints.len(), 11);
