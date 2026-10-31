@@ -704,10 +704,18 @@ impl Node {
                 scale += m.abs();
                 fk[k] = f;
                 dpk[k] = e.dpt;
-                let r = lw[k].a * e.dq / e.dpt;
-                denom += r;
-                numer += r * f;
-                worst = worst.max(f.abs());
+                // A leg held at its sonic limit and pushing past it is choked: its flow is fixed
+                // and its face pressure cannot match the node's, so it drops out of the pressure
+                // match. The bisection fallback ends at this same state, ~30x slower.
+                let want = -f / e.dpt;
+                let choked =
+                    (lw[k].u >= lw[k].u_hi && want > 0.0) || (lw[k].u <= lw[k].u_lo && want < 0.0);
+                if !choked {
+                    let r = lw[k].a * e.dq / e.dpt;
+                    denom += r;
+                    numer += r * f;
+                    worst = worst.max(f.abs());
+                }
                 ev[k] = e;
             }
             if g.abs() < (5.0e-4 * scale + 4.0e-6) * env.tol
@@ -716,7 +724,8 @@ impl Node {
                 converged = true;
                 break;
             }
-            let dp0 = ((-g + numer) / denom).clamp(-0.5 * p0, 0.5 * p0);
+            // Every leg choked and no valve: no slope to step along, so take the clamped step.
+            let dp0 = ((-g + numer) / denom.min(-1.0e-12)).clamp(-0.5 * p0, 0.5 * p0);
             p0 = (p0 + dp0).max(5.0e3);
             for k in 0..nl {
                 let du = (dp0 - fk[k]) / dpk[k];
@@ -753,8 +762,11 @@ impl Node {
                     for _ in 0..14 {
                         let e = lw[k].eval(u);
                         let du = ((p - e.pt) / e.dpt).clamp(-lw[k].dmax, lw[k].dmax);
-                        u = (u + du).clamp(lw[k].u_lo, lw[k].u_hi);
-                        if du.abs() < 2.0e-3 {
+                        let next = (u + du).clamp(lw[k].u_lo, lw[k].u_hi);
+                        // A leg held at its limit does not move again: it is choked.
+                        let stuck = next == u;
+                        u = next;
+                        if du.abs() < 2.0e-3 || stuck {
                             break;
                         }
                     }

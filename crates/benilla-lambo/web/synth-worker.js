@@ -8,18 +8,21 @@ const BLOCK = 256;
 const TARGET = 3072;
 
 // The solver's cell size is the cost knob, so the worker adapts the tier to the machine. Tiers are
-// ordered finest first; `quality` in the config is the finest it will ever use.
-const LADDER = ["balanced", "fast", "eco"];
-// Cost of tier i against tier i + 1. A wave step costs about 1/dx^2 (cells 4, 5.5, 7 cm): 1.9, 1.6.
-const COST = [1.9, 1.6];
+// ordered finest first; `quality` in the config is the finest it will ever use, and it starts no
+// finer than `balanced`, stepping finer once a tier has shown the room.
+const LADDER = ["high", "balanced", "fast", "eco"];
+const START = 1;
+// Cost of tier i against tier i + 1, measured on the wasm build (v10, idle to full-throttle redline):
+// the junction solves scale with the step count, about 1/dx, so finer is cheaper than 1/dx^2.
+const COST = [1.55, 1.45, 1.3];
 
 const WINDOW_MS = 2000;
 const MIN_BLOCKS = 32; // a window with fewer blocks rendered (audio not pulling) says nothing
-const WARMUP_WINDOWS = 2; // the wasm is still tiering up, and the engine settling, for the first seconds
-const LOAD_BAD = 0.75; // median block time over its real time: no headroom left
-const STARVED_BAD = 3; // blocks started with under a block of audio left in the ring
+const WARMUP_WINDOWS = 2; // the wasm is still tiering up, and the engine settling, for the first seconds of sound
+const LOAD_BAD = 0.85; // median block time over its real time: no headroom left
+const STARVE_LOAD = 0.5; // a dry ring is the synth's fault only if it is also busy; else it was descheduled
 const BAD_WINDOWS = 2; // consecutive, before stepping a tier coarser
-const UPGRADE_HEADROOM = 0.5; // the finer tier's estimated load must stay under this
+const UPGRADE_HEADROOM = 0.6; // the finer tier's estimated peak load must stay under this
 const GOOD_WINDOWS = 10; // consecutive, before trying a finer tier
 const PROBATION_MS = 30000; // a finer tier that fails within this is not tried again
 
@@ -35,8 +38,9 @@ self.onmessage = async (e) => {
 
     // `"adaptive": false` in the config pins the tier.
     const adaptive = cfg.adaptive !== false;
-    let finest = Math.max(0, LADDER.indexOf(cfg.quality ?? "balanced"));
-    let tier = finest;
+    const named = cfg.quality === "ultra" ? 0 : LADDER.indexOf(cfg.quality ?? "balanced");
+    let finest = named < 0 ? START : named;
+    let tier = adaptive ? Math.max(finest, START) : finest;
     const make = () => new WebSynth(cfg.engine_id ?? "v8", cfg.muffler ?? "sport", LADDER[tier], cfg.burble ?? 0.85, rate);
     let synth = make();
     self.postMessage({ type: "ready" });
@@ -45,8 +49,11 @@ self.onmessage = async (e) => {
     const block = new Float32Array(BLOCK);
     const times = new Float32Array(Math.ceil((WINDOW_MS / 1000) * 48000 * 2 / BLOCK) + 16);
     const nap = new Int32Array(new SharedArrayBuffer(4));
-    let n = 0, starved = 0, windows = 0, bad = 0, good = 0, windowStart = performance.now();
-    let upgradedAt = -Infinity;
+    let n = 0, starved = 0, dry = false, windows = 0, bad = 0, good = 0, windowStart = performance.now();
+    let upgradedAt = -Infinity, settleUntil = WARMUP_WINDOWS;
+    // The highest window load each tier has shown: the engine at redline costs about twice idle,
+    // so a tier's room is judged on its worst, not on the window the player happens to be idling in.
+    const peak = new Float32Array(LADDER.length);
 
     const switchTier = (to, why) => {
       console.info(`engine sound: ${LADDER[tier]} -> ${LADDER[to]} (${why})`);
@@ -55,6 +62,7 @@ self.onmessage = async (e) => {
       synth = make();
       bad = 0;
       good = 0;
+      settleUntil = windows + 1; // the new engine starts cold
     };
 
     for (;;) {
@@ -64,7 +72,13 @@ self.onmessage = async (e) => {
         Atomics.wait(nap, 0, 0, 2);
         continue;
       }
-      if (fill < BLOCK) starved++;
+      // Count dry spells, not blocks: one hitch leaves several blocks short while the ring refills.
+      if (fill < BLOCK) {
+        if (!dry) starved++;
+        dry = true;
+      } else {
+        dry = false;
+      }
       const wanted = Atomics.load(head, 3);
       if (wanted && wanted !== rate) {
         rate = wanted;
@@ -82,14 +96,17 @@ self.onmessage = async (e) => {
       const blocks = n, starves = starved;
       n = 0;
       starved = 0;
+      // A suspended context renders nothing, and is no part of the warm-up either.
+      if (blocks < MIN_BLOCKS) continue;
       windows++;
-      if (!adaptive || windows <= WARMUP_WINDOWS || blocks < MIN_BLOCKS) continue;
+      if (!adaptive || windows <= settleUntil) continue;
 
       // The median, not the mean: one descheduled block is not the machine being too slow.
       const sorted = times.subarray(0, blocks).sort();
       const load = sorted[blocks >> 1] / ((BLOCK / rate) * 1000);
+      peak[tier] = Math.max(peak[tier], load);
 
-      if (load > LOAD_BAD || starves >= STARVED_BAD) {
+      if (load > LOAD_BAD || (starves > 0 && load > STARVE_LOAD)) {
         good = 0;
         if (++bad >= BAD_WINDOWS && tier < LADDER.length - 1) {
           // A finer tier that did not hold is not offered again this session.
@@ -98,7 +115,7 @@ self.onmessage = async (e) => {
         }
       } else {
         bad = 0;
-        const room = tier > finest && load * COST[tier - 1] < UPGRADE_HEADROOM && starves === 0;
+        const room = tier > finest && peak[tier] * COST[tier - 1] < UPGRADE_HEADROOM && starves === 0;
         good = room ? good + 1 : 0;
         if (good >= GOOD_WINDOWS) {
           upgradedAt = now;
