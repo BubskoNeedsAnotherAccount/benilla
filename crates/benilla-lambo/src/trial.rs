@@ -294,6 +294,9 @@ pub struct TimeTrialManager {
     pub versus_known: Vec<u32>,
     /// Our place on the grid and the grid's size when the car was last put there.
     pub grid_slot: Option<(usize, usize)>,
+    /// The picked course's map is still being preloaded (`preload::mark_course_loading`): the car
+    /// is held and no start or countdown begins until it has loaded.
+    pub loading: bool,
 }
 
 /// Seconds a versus start counts down, from the last driver to join the grid.
@@ -327,11 +330,14 @@ impl TimeTrialManager {
         }
     }
 
-    /// The car is held still: a versus countdown is running.
+    /// The car is held still: a versus countdown is running, or the course is still loading.
     pub fn frozen(&self) -> bool {
-        matches!(self.state, TrialState::Countdown { .. })
-    }
-}
+        match self.state {
+            TrialState::Countdown { .. } => true,
+            TrialState::WaitingToStart => self.loading,
+            _ => false,
+        }
+    }}
 
 impl Default for TimeTrialManager {
     fn default() -> Self {
@@ -351,6 +357,7 @@ impl Default for TimeTrialManager {
             debug_open: false,
             versus_known: Vec::new(),
             grid_slot: None,
+            loading: false,
         }
     }
 }
@@ -816,7 +823,8 @@ pub fn update_versus(
     let Some(trial) = manager.current_trial().filter(|t| t.versus).cloned() else {
         return;
     };
-    if manager.state == TrialState::WaitingToStart && lobby.online {
+    // The count starts, and with it the join signal other drivers see, only once the map is in.
+    if manager.state == TrialState::WaitingToStart && lobby.online && !manager.loading {
         manager.state = TrialState::Countdown {
             remaining: VERSUS_COUNTDOWN,
         };
@@ -867,7 +875,7 @@ pub fn update_versus(
     }
 
     // The count holds until the car is on the ground.
-    if car.single().is_ok_and(|c| c.placed) {
+    if car.single().is_ok_and(|c| c.placed) && !manager.loading {
         remaining -= time.delta_secs();
     }
     manager.state = if remaining <= 0.0 {
@@ -1076,6 +1084,7 @@ pub fn start_trial_by_index(
     manager.progress = RaceProgress::default();
     manager.versus_known.clear();
     manager.grid_slot = None;
+    manager.loading = true;
 
     // Switch map if trial is on another continent
     if current_map.0 != trial.map_id {
@@ -1126,7 +1135,10 @@ pub fn update_trial_progress(
     match manager.state {
         TrialState::WaitingToStart => {
             // Once car has touched ground and player hits throttle or begins rolling, start timer
-            if car.placed && (car.throttle_input.abs() > 0.05 || car.speed() > 1.0) {
+            if car.placed
+                && !manager.loading
+                && (car.throttle_input.abs() > 0.05 || car.speed() > 1.0)
+            {
                 manager.state = TrialState::Racing { elapsed: 0.0 };
             }
         }
@@ -1586,6 +1598,42 @@ pub fn render_trial_ui(
         let best_lap = manager.best_laps.get(&trial.name).copied();
         let drivers = lobby.rivals.len() + 1;
 
+        if manager.loading {
+            let (ready, total) = preload.pending().unwrap_or((0, 0));
+            egui::Area::new(egui::Id::new("course_loading"))
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .interactable(false)
+                .show(ctx, |ui| {
+                    egui::Frame::window(&ctx.style())
+                        .fill(egui::Color32::from_black_alpha(220))
+                        .stroke(egui::Stroke::new(
+                            1.5_f32,
+                            egui::Color32::from_rgb(255, 170, 0),
+                        ))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(32, 20))
+                        .show(ui, |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    egui::RichText::new("LOADING MAP")
+                                        .color(egui::Color32::from_rgb(255, 230, 80))
+                                        .size(28.0)
+                                        .strong(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(if total > 0 {
+                                        format!("{ready}/{total}")
+                                    } else {
+                                        "preparing the course…".to_string()
+                                    })
+                                    .color(egui::Color32::LIGHT_GRAY)
+                                    .size(15.0),
+                                );
+                            });
+                        });
+                });
+        }
+
         egui::Area::new(egui::Id::new("race_hud"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 16.0))
             .show(ctx, |ui| {
@@ -1648,6 +1696,14 @@ pub fn render_trial_ui(
                                         )
                                         .color(egui::Color32::LIGHT_GRAY)
                                         .size(13.0),
+                                    );
+                                }
+                                TrialState::WaitingToStart if manager.loading => {
+                                    ui.label(
+                                        egui::RichText::new("LOADING MAP — the car is held until it is ready")
+                                            .color(egui::Color32::from_rgb(255, 230, 80))
+                                            .size(18.0)
+                                            .strong(),
                                     );
                                 }
                                 TrialState::WaitingToStart => {

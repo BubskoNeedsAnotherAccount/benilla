@@ -170,7 +170,9 @@ fn main() -> AppExit {
             smoke::spawn_tire_smoke,
             smoke::update_tire_smoke,
             shadow::update_car_shadow.after(WorldStage::Input),
-            preload::preload_course.after(trial::handle_trial_input),
+            (preload::preload_course, preload::mark_course_loading)
+                .chain()
+                .after(trial::handle_trial_input),
         ),
     )
     // After the frame's effect-stream clear.

@@ -332,6 +332,26 @@ pub fn preload_course(
     pre.progress = (ready, total);
 }
 
+/// Tells the race code whether the picked course's map is still loading, so the car is held and
+/// no start or countdown begins until the preload has caught up. The catalog not being read yet
+/// counts as loading; a course whose map the catalog cannot name never loads, so it never holds
+/// the car.
+pub fn mark_course_loading(
+    pre: Res<CoursePreload>,
+    catalog: Option<Res<MapCatalogRes>>,
+    mut manager: ResMut<TimeTrialManager>,
+) {
+    let loading = manager.current_trial().is_some_and(|t| {
+        catalog
+            .as_ref()
+            .is_none_or(|c| c.0.directory(t.map_id).is_some())
+            && (pre.key.is_none() || pre.pending().is_some())
+    });
+    if manager.loading != loading {
+        manager.loading = loading;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
