@@ -1230,6 +1230,201 @@ fn settings_page(ui: &mut egui::Ui, s: &mut Settings) {
     }
 }
 
+/// The ESC menu's accent colour.
+const MENU_ACCENT: egui::Color32 = egui::Color32::from_rgb(255, 140, 0);
+/// Highlight for the selected row's title.
+const MENU_GOLD: egui::Color32 = egui::Color32::from_rgb(255, 210, 60);
+
+/// The free-driving spots, in menu order (`apply_menu_choice` 0..=2): zone, town, continent.
+const FREE_DRIVES: [(&str, &str, &str); 3] = [
+    ("Redridge Mountains", "Lakeshire", "Eastern Kingdoms"),
+    ("The Barrens", "Crossroads", "Kalimdor"),
+    ("Elwynn Forest", "Goldshire", "Eastern Kingdoms"),
+];
+
+/// One entry of the menu's Drive page.
+struct MenuRow<'a> {
+    title: &'a str,
+    subtitle: String,
+    versus: bool,
+    best: Option<String>,
+    active: bool,
+    selected: bool,
+}
+
+/// Text that does not take the pointer, so a click falls through to the row under it.
+fn plain(ui: &mut egui::Ui, text: egui::RichText) {
+    ui.add(egui::Label::new(text).selectable(false));
+}
+
+/// A small outlined tag, such as "ACTIVE".
+fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.18))
+        .stroke(egui::Stroke::new(1.0_f32, color))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(6, 1))
+        .show(ui, |ui| {
+            plain(
+                ui,
+                egui::RichText::new(text).size(11.0).color(color).strong(),
+            );
+        });
+}
+
+/// A section title, with an optional note on the right.
+fn section_heading(ui: &mut egui::Ui, title: &str, note: Option<&str>) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        plain(
+            ui,
+            egui::RichText::new(title)
+                .color(MENU_ACCENT)
+                .size(12.0)
+                .strong(),
+        );
+        if let Some(note) = note {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                plain(
+                    ui,
+                    egui::RichText::new(note)
+                        .color(egui::Color32::GRAY)
+                        .size(11.0),
+                );
+            });
+        }
+    });
+    ui.add_space(2.0);
+}
+
+/// A key cap and what it does, for the menu's footer.
+fn key_hint(ui: &mut egui::Ui, key: &str, action: &str) {
+    egui::Frame::new()
+        .fill(egui::Color32::from_white_alpha(14))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_white_alpha(40),
+        ))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| {
+            plain(
+                ui,
+                egui::RichText::new(key)
+                    .monospace()
+                    .size(11.0)
+                    .color(egui::Color32::LIGHT_GRAY),
+            );
+        });
+    plain(
+        ui,
+        egui::RichText::new(action)
+            .size(12.0)
+            .color(egui::Color32::GRAY),
+    );
+    ui.add_space(6.0);
+}
+
+/// Draws one Drive-page row as a card and returns its click response. `idx` is its menu index:
+/// the first nine carry their number key.
+fn menu_row(ui: &mut egui::Ui, idx: usize, row: &MenuRow) -> egui::Response {
+    let (fill, stroke) = if row.selected {
+        (
+            egui::Color32::from_rgb(58, 38, 8),
+            egui::Stroke::new(1.5_f32, MENU_ACCENT),
+        )
+    } else {
+        (
+            egui::Color32::from_white_alpha(6),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(18)),
+        )
+    };
+    let card = egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.set_min_height(34.0);
+
+                // The number key, 1-9.
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+                if idx < 9 {
+                    ui.painter().rect_filled(
+                        rect,
+                        4.0,
+                        if row.selected {
+                            MENU_ACCENT
+                        } else {
+                            egui::Color32::from_white_alpha(16)
+                        },
+                    );
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        (idx + 1).to_string(),
+                        egui::FontId::monospace(13.0),
+                        if row.selected {
+                            egui::Color32::BLACK
+                        } else {
+                            egui::Color32::LIGHT_GRAY
+                        },
+                    );
+                }
+                ui.add_space(4.0);
+
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.horizontal(|ui| {
+                        plain(
+                            ui,
+                            egui::RichText::new(row.title).size(15.0).strong().color(
+                                if row.selected {
+                                    MENU_GOLD
+                                } else {
+                                    egui::Color32::WHITE
+                                },
+                            ),
+                        );
+                        if row.versus {
+                            badge(ui, "VERSUS", egui::Color32::from_rgb(120, 200, 255));
+                        }
+                    });
+                    plain(
+                        ui,
+                        egui::RichText::new(&row.subtitle)
+                            .size(12.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if row.active {
+                        badge(ui, "ACTIVE", egui::Color32::from_rgb(110, 220, 120));
+                    }
+                    if let Some(best) = &row.best {
+                        plain(
+                            ui,
+                            egui::RichText::new(format!("★ {best}"))
+                                .monospace()
+                                .size(13.0)
+                                .color(MENU_GOLD),
+                        );
+                    }
+                });
+            });
+        });
+    ui.interact(
+        card.response.rect,
+        ui.id().with(("esc_menu_row", idx)),
+        egui::Sense::click(),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Renders the in-game Time Trial UI: the ESC menu modal and the live race HUD.
 pub fn render_trial_ui(
     mut contexts: EguiContexts,
@@ -1467,9 +1662,28 @@ pub fn render_trial_ui(
     // 2. ESC MENU MODAL
     if manager.menu_open {
         let mut chosen_idx: Option<usize> = None;
+        let mut hovered_idx: Option<usize> = None;
+        let mut close = false;
         let selected = manager.selected_menu_idx;
         let mut edit = settings.clone();
         let mut new_tab = *tab;
+        let screen = ctx.content_rect();
+
+        // Dim the world behind the menu so it reads as paused.
+        ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("esc_menu_backdrop"),
+        ))
+        .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
+
+        let now_driving = match manager.current_trial() {
+            Some(trial) => trial.name.clone(),
+            None => {
+                let (zone, town, _) =
+                    FREE_DRIVES[manager.free_drive_loc.min(FREE_DRIVES.len() - 1)];
+                format!("Free Driving — {zone}, {town}")
+            }
+        };
 
         egui::Window::new("TIME TRIAL MENU")
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -1478,269 +1692,188 @@ pub fn render_trial_ui(
             .title_bar(false)
             .frame(
                 egui::Frame::window(&ctx.style())
-                    .fill(egui::Color32::from_black_alpha(235))
-                    .stroke(egui::Stroke::new(
-                        2.0_f32,
-                        egui::Color32::from_rgb(255, 140, 0),
-                    ))
+                    .fill(egui::Color32::from_rgb(16, 14, 12))
+                    .stroke(egui::Stroke::new(1.5_f32, MENU_ACCENT))
                     .corner_radius(12.0)
-                    .inner_margin(egui::Margin::same(24)),
+                    .inner_margin(egui::Margin::same(20)),
             )
             .show(ctx, |ui| {
-                ui.set_min_width(520.0);
-                ui.vertical_centered(|ui| {
-                    ui.heading(
-                        egui::RichText::new("🏁 LAMBORGHINI TIME TRIALS 🏁")
-                            .color(egui::Color32::from_rgb(255, 170, 0))
-                            .size(26.0)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("Select a Trial or Free Driving • ESC to resume")
-                            .color(egui::Color32::LIGHT_GRAY)
-                            .size(14.0),
-                    );
-                });
+                ui.set_width(560.0);
 
-                ui.add_space(10.0);
+                // Header: title, what is running now, and the page tabs.
                 ui.horizontal(|ui| {
-                    for (page, label) in
-                        [(MenuTab::Drive, "Drive"), (MenuTab::Settings, "Settings")]
-                    {
-                        if ui
-                            .selectable_label(
-                                new_tab == page,
-                                egui::RichText::new(label).size(17.0).strong(),
-                            )
-                            .clicked()
+                    ui.vertical(|ui| {
+                        plain(
+                            ui,
+                            egui::RichText::new("BENILLA LAMBO")
+                                .color(MENU_ACCENT)
+                                .size(24.0)
+                                .strong(),
+                        );
+                        plain(
+                            ui,
+                            egui::RichText::new(format!("Now: {now_driving}"))
+                                .color(egui::Color32::LIGHT_GRAY)
+                                .size(13.0),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        for (page, label) in
+                            [(MenuTab::Settings, "Settings"), (MenuTab::Drive, "Drive")]
                         {
-                            new_tab = page;
+                            let on = new_tab == page;
+                            let button = egui::Button::new(
+                                egui::RichText::new(label).size(15.0).strong().color(if on {
+                                    egui::Color32::BLACK
+                                } else {
+                                    egui::Color32::LIGHT_GRAY
+                                }),
+                            )
+                            .fill(if on {
+                                MENU_ACCENT
+                            } else {
+                                egui::Color32::from_white_alpha(10)
+                            })
+                            .corner_radius(6.0)
+                            .min_size(egui::vec2(92.0, 30.0));
+                            if ui.add(button).clicked() {
+                                new_tab = page;
+                            }
                         }
-                    }
-                    ui.label(
-                        egui::RichText::new("Tab switches pages")
-                            .color(egui::Color32::GRAY)
-                            .size(12.0),
-                    );
+                    });
                 });
+                ui.add_space(10.0);
                 ui.separator();
+
                 if new_tab == MenuTab::Settings {
                     settings_page(ui, &mut edit);
                 } else {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("FREE DRIVING MODES:")
-                            .color(egui::Color32::from_rgb(255, 140, 0))
-                            .size(13.0)
-                            .strong(),
-                    );
-                    ui.add_space(4.0);
+                    // Scroll the list on a short window; follow the keyboard selection.
+                    let last_scrolled = egui::Id::new("esc_menu_scrolled_to");
+                    let scrolled_to = ui.ctx().data(|d| d.get_temp::<usize>(last_scrolled));
+                    let pointer_moving = ui.ctx().input(|i| i.pointer.is_moving());
 
-                    // Option 0: Free Driving (Lakeshire, Redridge Mountains)
-                    let is_sel0 = selected == 0;
-                    let is_active0 =
-                        manager.current_trial_idx.is_none() && manager.free_drive_loc == 0;
-                    let free0_text = format!(
-                        "{} [1] Redridge Mountains — Lakeshire (Eastern Kingdoms) {}",
-                        if is_sel0 { "▶ " } else { "   " },
-                        if is_active0 { "(Active)" } else { "" }
-                    );
+                    egui::ScrollArea::vertical()
+                        .max_height((screen.height() - 220.0).max(160.0))
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            let mut row_ui = |ui: &mut egui::Ui, idx: usize, row: MenuRow| {
+                                let response = menu_row(ui, idx, &row);
+                                if response.hovered() && pointer_moving {
+                                    hovered_idx = Some(idx);
+                                }
+                                if response.clicked() {
+                                    chosen_idx = Some(idx);
+                                }
+                                if row.selected && scrolled_to != Some(idx) {
+                                    response.scroll_to_me(None);
+                                    ui.ctx().data_mut(|d| d.insert_temp(last_scrolled, idx));
+                                }
+                                ui.add_space(4.0);
+                            };
 
-                    let btn0 = ui.add_sized(
-                        [ui.available_width(), 36.0],
-                        egui::Button::new(
-                            egui::RichText::new(free0_text)
-                                .size(15.0)
-                                .color(if is_sel0 {
-                                    egui::Color32::from_rgb(255, 220, 0)
+                            section_heading(ui, "FREE DRIVING", None);
+                            for (idx, (zone, town, continent)) in FREE_DRIVES.iter().enumerate() {
+                                row_ui(
+                                    ui,
+                                    idx,
+                                    MenuRow {
+                                        title: zone,
+                                        subtitle: format!("{town} • {continent}"),
+                                        versus: false,
+                                        best: None,
+                                        active: manager.current_trial_idx.is_none()
+                                            && manager.free_drive_loc == idx,
+                                        selected: selected == idx,
+                                    },
+                                );
+                            }
+
+                            ui.add_space(8.0);
+                            section_heading(ui, "TIME TRIALS & RACES", Some("Nitro off"));
+                            for (i, trial) in manager.trials.iter().enumerate() {
+                                let idx = i + FREE_DRIVES.len();
+                                let continent = match trial.map_id {
+                                    0 => "Eastern Kingdoms".to_string(),
+                                    1 => "Kalimdor".to_string(),
+                                    other => format!("Map {other}"),
+                                };
+                                let shape = if trial.is_race() {
+                                    let laps = trial.lap_count();
+                                    let gates = trial.checkpoints.len();
+                                    format!(
+                                        "{laps} lap{} • {gates} checkpoint{}",
+                                        if laps == 1 { "" } else { "s" },
+                                        if gates == 1 { "" } else { "s" },
+                                    )
                                 } else {
-                                    egui::Color32::WHITE
-                                })
-                                .strong(),
-                        )
-                        .fill(if is_sel0 {
-                            egui::Color32::from_rgb(60, 45, 10)
-                        } else {
-                            egui::Color32::from_black_alpha(100)
-                        }),
-                    );
-                    if btn0.clicked() {
-                        chosen_idx = Some(0);
-                    }
-
-                    ui.add_space(4.0);
-
-                    // Option 1: Free Driving (Crossroads, The Barrens)
-                    let is_sel1 = selected == 1;
-                    let is_active1 =
-                        manager.current_trial_idx.is_none() && manager.free_drive_loc == 1;
-                    let free1_text = format!(
-                        "{} [2] The Barrens — Crossroads (Kalimdor) {}",
-                        if is_sel1 { "▶ " } else { "   " },
-                        if is_active1 { "(Active)" } else { "" }
-                    );
-
-                    let btn1 = ui.add_sized(
-                        [ui.available_width(), 36.0],
-                        egui::Button::new(
-                            egui::RichText::new(free1_text)
-                                .size(15.0)
-                                .color(if is_sel1 {
-                                    egui::Color32::from_rgb(255, 220, 0)
-                                } else {
-                                    egui::Color32::WHITE
-                                })
-                                .strong(),
-                        )
-                        .fill(if is_sel1 {
-                            egui::Color32::from_rgb(60, 45, 10)
-                        } else {
-                            egui::Color32::from_black_alpha(100)
-                        }),
-                    );
-                    if btn1.clicked() {
-                        chosen_idx = Some(1);
-                    }
-
-                    ui.add_space(4.0);
-
-                    // Option 2: Free Driving (Goldshire, Elwynn Forest)
-                    let is_sel2 = selected == 2;
-                    let is_active2 =
-                        manager.current_trial_idx.is_none() && manager.free_drive_loc == 2;
-                    let free2_text = format!(
-                        "{} [3] Elwynn Forest — Goldshire (Eastern Kingdoms) {}",
-                        if is_sel2 { "▶ " } else { "   " },
-                        if is_active2 { "(Active)" } else { "" }
-                    );
-
-                    let btn2 = ui.add_sized(
-                        [ui.available_width(), 36.0],
-                        egui::Button::new(
-                            egui::RichText::new(free2_text)
-                                .size(15.0)
-                                .color(if is_sel2 {
-                                    egui::Color32::from_rgb(255, 220, 0)
-                                } else {
-                                    egui::Color32::WHITE
-                                })
-                                .strong(),
-                        )
-                        .fill(if is_sel2 {
-                            egui::Color32::from_rgb(60, 45, 10)
-                        } else {
-                            egui::Color32::from_black_alpha(100)
-                        }),
-                    );
-                    if btn2.clicked() {
-                        chosen_idx = Some(2);
-                    }
-
-                    ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new("TIME TRIALS & RACES (NITRO DISABLED):")
-                            .color(egui::Color32::from_rgb(255, 140, 0))
-                            .size(13.0)
-                            .strong(),
-                    );
-                    ui.add_space(4.0);
-
-                    // Trial Options (3..N+2)
-                    for (i, trial) in manager.trials.iter().enumerate() {
-                        let option_idx = i + 3;
-                        let is_sel = selected == option_idx;
-                        let is_active = manager.current_trial_idx == Some(i);
-
-                        let map_name = match trial.map_id {
-                            0 => "Eastern Kingdoms",
-                            1 => "Kalimdor",
-                            other => &format!("Map {other}"),
-                        };
-
-                        let best_str = if let Some(b) = manager.best_times.get(&trial.name) {
-                            format!(" ★ Best: {}", format_time(*b))
-                        } else {
-                            "".to_string()
-                        };
-
-                        let race_str = if trial.is_race() {
-                            format!(
-                                " — {} lap{}, {} checkpoint{}",
-                                trial.lap_count(),
-                                if trial.lap_count() == 1 { "" } else { "s" },
-                                trial.checkpoints.len(),
-                                if trial.checkpoints.len() == 1 {
-                                    ""
-                                } else {
-                                    "s"
-                                },
-                            )
-                        } else {
-                            String::new()
-                        };
-
-                        let label_text = format!(
-                            "{} [{}] {}{} ({}){}{}",
-                            if is_sel { "▶ " } else { "   " },
-                            option_idx + 1,
-                            if trial.versus { "[VERSUS] " } else { "" },
-                            trial.name,
-                            map_name,
-                            race_str,
-                            if is_active { " (Active)" } else { "" }
-                        );
-
-                        let full_text = format!("{label_text}{best_str}");
-
-                        let btn = ui.add_sized(
-                            [ui.available_width(), 38.0],
-                            egui::Button::new(egui::RichText::new(full_text).size(15.0).color(
-                                if is_sel {
-                                    egui::Color32::from_rgb(255, 220, 0)
-                                } else {
-                                    egui::Color32::WHITE
-                                },
-                            ))
-                            .fill(if is_sel {
-                                egui::Color32::from_rgb(60, 45, 10)
-                            } else {
-                                egui::Color32::from_black_alpha(100)
-                            }),
-                        );
-                        if btn.clicked() {
-                            chosen_idx = Some(option_idx);
-                        }
-                    }
+                                    "Sprint".to_string()
+                                };
+                                row_ui(
+                                    ui,
+                                    idx,
+                                    MenuRow {
+                                        title: &trial.name,
+                                        subtitle: format!("{continent} • {shape}"),
+                                        versus: trial.versus,
+                                        best: manager
+                                            .best_times
+                                            .get(&trial.name)
+                                            .map(|b| format_time(*b)),
+                                        active: manager.current_trial_idx == Some(i),
+                                        selected: selected == idx,
+                                    },
+                                );
+                            }
+                        });
                 }
 
-                ui.add_space(16.0);
+                ui.add_space(10.0);
                 ui.separator();
-                ui.add_space(12.0);
+                ui.add_space(6.0);
 
-                // Footer controls guide and Close button
+                // Footer: the keys, and a mouse way out.
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(
-                            "Controls: Up/Down or W/S to navigate, Enter to select, ESC to resume",
-                        )
-                        .color(egui::Color32::GRAY)
-                        .size(12.0),
-                    );
+                    let hints: &[(&str, &str)] = if new_tab == MenuTab::Drive {
+                        &[
+                            ("↑↓", "Select"),
+                            ("Enter", "Drive"),
+                            ("1-9", "Quick pick"),
+                            ("Tab", "Settings"),
+                        ]
+                    } else {
+                        &[("Tab", "Drive")]
+                    };
+                    for (key, action) in hints {
+                        key_hint(ui, key, action);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .button(
-                                egui::RichText::new("Close Menu")
-                                    .size(14.0)
-                                    .color(egui::Color32::LIGHT_GRAY),
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Resume  (Esc)")
+                                        .size(14.0)
+                                        .color(egui::Color32::LIGHT_GRAY),
+                                )
+                                .corner_radius(6.0)
+                                .min_size(egui::vec2(0.0, 28.0)),
                             )
                             .clicked()
                         {
-                            manager.menu_open = false;
+                            close = true;
                         }
                     });
                 });
             });
 
+        if close {
+            manager.menu_open = false;
+        }
+        if let Some(idx) = hovered_idx {
+            manager.selected_menu_idx = idx;
+            // The mouse picked it: no need to scroll the list to it.
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("esc_menu_scrolled_to"), idx));
+        }
         if new_tab != *tab {
             *tab = new_tab;
         }
