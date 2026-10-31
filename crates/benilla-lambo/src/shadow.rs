@@ -19,6 +19,8 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::tasks::futures_lite::future;
+use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 
 use crate::car::{Car, RIDE};
 
@@ -80,12 +82,25 @@ impl CarSilhouette {
     }
 }
 
+/// One finished raster: the texels and the bounds they were drawn over.
+struct Raster {
+    lo: Vec2,
+    hi: Vec2,
+    data: Vec<u8>,
+}
+
 /// The shadow's state: the ground plane it last lay on, its texture, and this frame's projected
 /// triangles (empty when hidden).
 #[derive(Resource)]
 pub struct CarShadow {
     plane: Option<(Vec3, Vec3)>,
     texture: Handle<Image>,
+    /// The raster a worker is drawing.
+    raster: Option<Task<Raster>>,
+    /// The bounds the texture's current texels were drawn over; `None` before the first raster.
+    drawn: Option<(Vec2, Vec2)>,
+    /// The texture's previous texels, reused as the next raster's buffer.
+    spare: Vec<u8>,
     verts: Vec<EffectVertex>,
     anchor: Vec3,
     /// The draw's owner, for the render world's bookkeeping.
@@ -257,6 +272,9 @@ pub fn setup_car_shadow(mut commands: Commands, mut images: ResMut<Assets<Image>
     commands.insert_resource(CarShadow {
         plane: None,
         texture: images.add(image),
+        raster: None,
+        drawn: None,
+        spare: Vec::new(),
         verts: Vec::new(),
         anchor: Vec3::ZERO,
         owner,
@@ -357,14 +375,9 @@ pub fn update_car_shadow(
         blob_centre: in_frame(car.pos + rot * Vec3::new(footprint.x, 0.0, footprint.y)),
         blob_half: silhouette.half * Vec2::new(0.95, 0.9) * spread,
     };
-    let (lo, hi) = shape.bounds();
-    let Some(data) = images
-        .get_mut(&shadow.texture)
-        .and_then(|image| image.data.as_mut())
-    else {
+    let Some((lo, hi)) = raster_shadow(shadow, shape, &mut images) else {
         return;
     };
-    shape.raster(lo, hi, data);
 
     // The terrain and WMO faces in the box, the ones far off the plane faded out.
     let frame = DecalFrame {
@@ -395,6 +408,44 @@ pub fn update_car_shadow(
     }
     shadow.verts = verts;
     shadow.anchor = origin;
+}
+
+/// Hands `shape` to a worker to draw and returns the bounds of the texels the texture holds now,
+/// which the decal maps it by. The shape is in the car's own frame, so a raster a frame or two old
+/// still sits under the car; only its outline trails. The first raster is drawn here, so the
+/// texture is never shown blank.
+fn raster_shadow(
+    shadow: &mut CarShadow,
+    shape: Footprint,
+    images: &mut Assets<Image>,
+) -> Option<(Vec2, Vec2)> {
+    if let Some(task) = shadow.raster.as_mut() {
+        if let Some(done) = block_on(future::poll_once(task)) {
+            shadow.raster = None;
+            let data = images.get_mut(&shadow.texture)?.data.as_mut()?;
+            shadow.spare = std::mem::replace(data, done.data);
+            shadow.drawn = Some((done.lo, done.hi));
+        }
+    }
+    let (lo, hi) = shape.bounds();
+    let Some(drawn) = shadow.drawn else {
+        let data = images.get_mut(&shadow.texture)?.data.as_mut()?;
+        shape.raster(lo, hi, data);
+        shadow.drawn = Some((lo, hi));
+        return shadow.drawn;
+    };
+    if shadow.raster.is_none() {
+        let mut data = std::mem::take(&mut shadow.spare);
+        data.resize(TEX * TEX * 4, 0);
+        shadow.raster = Some(AsyncComputeTaskPool::get().spawn(async move {
+            benilla_assets::offload::run(move || {
+                shape.raster(lo, hi, &mut data);
+                Raster { lo, hi, data }
+            })
+            .await
+        }));
+    }
+    Some(drawn)
 }
 
 /// Copies this frame's shadow onto the effect stream: a multiply on the unit blob shadow's rung.
@@ -497,21 +548,81 @@ mod tests {
         assert!((t - 3.2).abs() < 1e-4);
     }
 
-    #[test]
-    fn the_texture_holds_the_shadow_and_clears_its_edge() {
-        // A 2 × 4 yd box shadow with the blob over it.
-        let shape = Footprint {
+    /// A 2 × 4 yd box shadow with the blob over it, stretched `long` along its length.
+    fn box_shape(long: f32) -> Footprint {
+        Footprint {
             ring: vec![
-                Vec2::new(-1.0, -2.0),
-                Vec2::new(1.0, -2.0),
-                Vec2::new(1.0, 2.0),
-                Vec2::new(-1.0, 2.0),
+                Vec2::new(-1.0, -2.0 * long),
+                Vec2::new(1.0, -2.0 * long),
+                Vec2::new(1.0, 2.0 * long),
+                Vec2::new(-1.0, 2.0 * long),
             ],
             widths: vec![0.3; 4],
             cast_alpha: 0.5,
             blob_centre: Vec2::ZERO,
             blob_half: Vec2::new(1.0, 2.0),
+        }
+    }
+
+    #[test]
+    fn the_first_raster_is_drawn_in_place_and_later_ones_swap_in_with_their_bounds() {
+        AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+        let mut images = Assets::<Image>::default();
+        let texture = images.add(Image::new_fill(
+            Extent3d {
+                width: TEX as u32,
+                height: TEX as u32,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0, 0, 0, 0],
+            TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::default(),
+        ));
+        let mut shadow = CarShadow {
+            plane: None,
+            texture: texture.clone(),
+            raster: None,
+            drawn: None,
+            spare: Vec::new(),
+            verts: Vec::new(),
+            anchor: Vec3::ZERO,
+            owner: Entity::PLACEHOLDER,
         };
+        let centre = |images: &Assets<Image>| {
+            images.get(&texture).unwrap().data.as_ref().unwrap()[(TEX / 2 * TEX + TEX / 2) * 4 + 3]
+        };
+
+        let first = box_shape(1.0).bounds();
+        assert_eq!(
+            raster_shadow(&mut shadow, box_shape(1.0), &mut images),
+            Some(first)
+        );
+        assert!(centre(&images) > 0, "the first raster is in the texture");
+        assert!(shadow.raster.is_none());
+
+        // A longer shadow goes to a worker; the decal keeps the drawn bounds until it lands.
+        let second = box_shape(1.5).bounds();
+        assert_eq!(
+            raster_shadow(&mut shadow, box_shape(1.5), &mut images),
+            Some(first)
+        );
+        assert!(shadow.raster.is_some());
+        let mut tries = 0;
+        while raster_shadow(&mut shadow, box_shape(1.5), &mut images) != Some(second) {
+            tries += 1;
+            assert!(tries < 2000, "the worker's raster never landed");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            images.get(&texture).unwrap().data.as_ref().unwrap().len(),
+            TEX * TEX * 4
+        );
+    }
+
+    #[test]
+    fn the_texture_holds_the_shadow_and_clears_its_edge() {
+        let shape = box_shape(1.0);
         let (lo, hi) = shape.bounds();
         let mut tex = vec![0u8; TEX * TEX * 4];
         shape.raster(lo, hi, &mut tex);

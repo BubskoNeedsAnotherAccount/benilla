@@ -31,6 +31,7 @@ pub struct TireSmokeAssets {
 
 impl TireSmokeAssets {
     /// Puffs showing now.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // read by the browser's `net`
     pub fn live(&self) -> usize {
         self.total - self.free.len()
     }

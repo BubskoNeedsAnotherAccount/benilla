@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use super::query::{wet_footprint, FoamPatch, LiquidSource, WmoPool};
 use crate::collision::liquid_layers;
 use crate::lighting::WATER_SHININESS;
-use avian3d::prelude::{Collider, RigidBody};
+use crate::terrain_stream::{build_collider_task, PendingCollider};
 use benilla_assets::coords::wow_to_bevy;
 use benilla_assets::materials::{LiquidExt, LiquidMaterial};
 use benilla_assets::LockRecover;
@@ -183,17 +183,18 @@ pub(crate) fn spawn_liquids<'a>(
                 .insert(FoamPatch);
         }
         // The waterline for the camera sweep under `cameraWaterCollision`; nothing else queries it.
-        if let Some(collider) = liquid_collider(lq) {
+        if let Some(pending) = liquid_collider(lq) {
             commands
                 .entity(*entities.last().expect("just pushed"))
-                .insert((collider, RigidBody::Static, liquid_layers()));
+                .insert(pending);
         }
     }
 }
 
-/// The collision trimesh for one [`LiquidMesh`]: the render mesh's own wet-cell triangles, `None`
-/// when every cell is dry. Built inline, as a layer is at most 128 triangles.
-fn liquid_collider(lq: &LiquidMesh) -> Option<Collider> {
+/// The collision trimesh for one [`LiquidMesh`], the render mesh's own wet-cell triangles, as a
+/// static collider building off the main thread; `None` when every cell is dry. A layer is at most
+/// 128 triangles, but a tile brings up to 256 layers.
+fn liquid_collider(lq: &LiquidMesh) -> Option<PendingCollider> {
     let tris: Vec<[u32; 3]> = lq
         .indices
         .as_chunks::<3>()
@@ -205,7 +206,11 @@ fn liquid_collider(lq: &LiquidMesh) -> Option<Collider> {
         return None;
     }
     let verts: Vec<Vec3> = lq.positions.iter().map(|p| wow_to_bevy(*p)).collect();
-    Some(Collider::trimesh(verts, tris))
+    Some(PendingCollider::new(
+        build_collider_task(verts, tris),
+        Some(liquid_layers()),
+        true,
+    ))
 }
 
 /// The render mesh for one [`LiquidMesh`] in its own space (absolute for MCLQ, model-local for WMO
@@ -300,10 +305,8 @@ pub(crate) fn spawn_wmo_liquids<'a>(
             commands.entity(surface).insert(FoamPatch);
         }
         // The camera's waterline, model-local under the entity's placement `transform`.
-        if let Some(collider) = liquid_collider(lq) {
-            commands
-                .entity(surface)
-                .insert((collider, RigidBody::Static, liquid_layers()));
+        if let Some(pending) = liquid_collider(lq) {
+            commands.entity(surface).insert(pending);
         }
         entities.push(surface);
     }

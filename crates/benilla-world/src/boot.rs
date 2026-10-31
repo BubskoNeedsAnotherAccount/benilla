@@ -6,6 +6,18 @@ use bevy::prelude::*;
 
 use crate::thread_qos;
 
+#[cfg(not(target_arch = "wasm32"))]
+const LOG_LEVEL: bevy::log::Level = bevy::log::Level::INFO;
+#[cfg(not(target_arch = "wasm32"))]
+const LOG_FILTER: &str = "wgpu=error,naga=warn";
+/// In a browser the log layer turns every span into a `performance.mark` and `measure` on the main
+/// thread, and the dependencies' per-frame info spans took ~18 % of it: they log warnings only
+/// there, benilla's own crates (whose targets start `benilla`) info.
+#[cfg(target_arch = "wasm32")]
+const LOG_LEVEL: bevy::log::Level = bevy::log::Level::WARN;
+#[cfg(target_arch = "wasm32")]
+const LOG_FILTER: &str = "wgpu=error,naga=warn,benilla=info";
+
 /// `DefaultPlugins` with benilla's engine tuning applied, around the caller's primary window.
 pub fn tuned_default_plugins(primary_window: Window) -> PluginGroupBuilder {
     DefaultPlugins
@@ -17,7 +29,8 @@ pub fn tuned_default_plugins(primary_window: Window) -> PluginGroupBuilder {
         // machine. Every shader is embedded (`embedded://<crate>/shaders/…`), so no root is read.
         // Quiet wgpu/naga; the ring keeps the last stderr lines for the crash report (`log_ring`).
         .set(bevy::log::LogPlugin {
-            filter: "wgpu=error,naga=warn".into(),
+            filter: LOG_FILTER.into(),
+            level: LOG_LEVEL,
             custom_layer: |_| Some(Box::new(crate::log_ring::LogRing)),
             ..default()
         })
