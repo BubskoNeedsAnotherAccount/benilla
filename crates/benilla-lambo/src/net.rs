@@ -451,18 +451,35 @@ fn collide_cars(
     }
 }
 
+const TAG_FONT: egui::FontId = egui::FontId::proportional(15.0);
+
 /// Name tags over the other cars, and a line saying how many are driving.
 fn hud(
     mut contexts: EguiContexts,
     roster: Res<Roster>,
     cars: Query<(&RemoteCar, &GlobalTransform)>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
+    mut warmed: Local<bool>,
 ) {
+    let Ok(ctx) = contexts.ctx_mut() else { return };
+    // The tags' glyphs go into the font atlas now, not on the frame a driver's tag first needs one
+    // (the atlas growing is a re-upload).
+    if !*warmed {
+        *warmed = true;
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("net_tags"),
+        ));
+        let glyphs: String = (' '..='~')
+            .chain('\u{a0}'..='\u{ff}')
+            .chain(['⚡', '…'])
+            .collect();
+        painter.layout_no_wrap(glyphs, TAG_FONT, egui::Color32::WHITE);
+    }
     let state = net_state();
     if state == 0 {
         return;
     }
-    let Ok(ctx) = contexts.ctx_mut() else { return };
 
     let line = match state {
         1 => "connecting…".to_string(),
@@ -510,7 +527,7 @@ fn hud(
         } else {
             name.to_string()
         };
-        let font = egui::FontId::proportional(15.0);
+        let font = TAG_FONT;
         let pos = egui::pos2(p.x, p.y);
         let galley = painter.layout_no_wrap(text, font, egui::Color32::WHITE);
         let rect = egui::Align2::CENTER_BOTTOM.anchor_size(pos, galley.size());
