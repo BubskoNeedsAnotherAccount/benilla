@@ -15,6 +15,7 @@
 mod camera;
 mod car;
 mod engine_synth;
+mod exhaust;
 mod model;
 #[cfg(target_arch = "wasm32")]
 mod net;
@@ -125,7 +126,11 @@ fn main() -> AppExit {
 
     app.add_systems(
         Startup,
-        (car::load_car_assets, car::spawn_car)
+        (
+            car::load_car_assets,
+            car::spawn_car,
+            exhaust::setup_exhaust_flames,
+        )
             .chain()
             .after(benilla_assets::AssetSet::Open),
     )
@@ -159,7 +164,9 @@ fn main() -> AppExit {
         (
             camera::speedometer,
             car::prepare_car_materials,
-            sound::update_car_audio,
+            // After `drive`, so a one-frame flag such as an upshift is read once.
+            sound::update_car_audio.after(WorldStage::Input),
+            exhaust::pop_exhaust_flames.after(WorldStage::Input),
             smoke::spawn_tire_smoke,
             smoke::update_tire_smoke,
             shadow::update_car_shadow.after(WorldStage::Input),

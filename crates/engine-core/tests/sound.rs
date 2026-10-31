@@ -705,3 +705,66 @@ fn a_running_engine_has_a_bounded_crank_speed_ripple() {
         );
     }
 }
+
+/// The loudest sample in `secs` of sound.
+fn peak(snd: &mut EngineSound, secs: f32) -> f32 {
+    (0..(secs * 44_100.0) as usize).fold(0.0f32, |m, _| m.max(snd.next_sample().abs()))
+}
+
+#[test]
+fn a_backfire_edge_fires_exactly_one_pop_and_it_is_loud() {
+    let cfg = engines().into_iter().find(|c| c.id == "v8").unwrap();
+    // an open exhaust, as a car that pops on its shifts has
+    let tuning = Tuning::parse_spec("header=long,cat=delete,muffler=sport,filter=cold").unwrap();
+    // a gear change's throttle cut at 4500 rpm, with no overrun burble to fire pops of its own
+    let inp = SoundInput {
+        rpm: 4500.0,
+        load: 0.04,
+        map_pa: 32_000.0,
+        atm_pa: 101_325.0,
+        air_k: 293.0,
+        charge_k: 300.0,
+        afr: 14.7,
+        egt_k: 850.0,
+        running: true,
+        lit: true,
+        burn: vec![1.0; cfg.cylinder_count],
+        master: 0.5,
+        serial: 1,
+        ..Default::default()
+    };
+    let make = || {
+        let mut snd = EngineSound::new(&cfg, &tuning, &default_banks(&cfg), Quality::BALANCED);
+        snd.full_scale_pa = 9.0;
+        snd.set_input(&inp);
+        peak(&mut snd, 0.45);
+        snd
+    };
+    let (mut shifted, mut quiet) = (make(), make());
+    let before = shifted.pops_fired;
+    let with = |serial: u64, backfire: f32| SoundInput {
+        serial,
+        backfire,
+        ..inp.clone()
+    };
+
+    shifted.set_input(&with(2, 1.0));
+    quiet.set_input(&with(2, 0.0));
+    // an engine cycle at 4500 rpm is 27 ms: the pop is in the first 40
+    let (pop, plain) = (peak(&mut shifted, 0.04), peak(&mut quiet, 0.04));
+    assert_eq!(shifted.pops_fired - before, 1, "one edge, one pop");
+    assert!(
+        pop > 1.3 * plain,
+        "the pop stands out of the overrun: peak {pop:.3} against {plain:.3}"
+    );
+
+    // holding the input high is not another edge; dropping it and raising it again is
+    shifted.set_input(&with(3, 1.0));
+    peak(&mut shifted, 0.3);
+    assert_eq!(shifted.pops_fired - before, 1);
+    shifted.set_input(&with(4, 0.0));
+    peak(&mut shifted, 0.05);
+    shifted.set_input(&with(5, 1.0));
+    peak(&mut shifted, 0.15);
+    assert_eq!(shifted.pops_fired - before, 2);
+}

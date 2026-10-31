@@ -58,6 +58,16 @@ const REVERSE_ACCEL: f32 = 18.0;
 const REVERSE_MAX: f32 = 33.0;
 /// Top speed in yd/s. nitro boosts it even further. (Scaled 1.5x to match 1.5x model scale)
 pub const TOP_SPEED: f32 = 175.0;
+/// Speed bands for the 7 gears in yd/s (1 yd/s ≈ 3.3 km/h).
+pub const GEAR_BOUNDS: [(f32, f32); 7] = [
+    (0.0, 16.0),    // Gear 1: 0..16 yd/s (~0..53 km/h)
+    (16.0, 30.0),   // Gear 2: 16..30 yd/s (~53..100 km/h)
+    (30.0, 46.0),   // Gear 3: 30..46 yd/s (~100..152 km/h)
+    (46.0, 64.0),   // Gear 4: 46..64 yd/s (~152..211 km/h)
+    (64.0, 82.0),   // Gear 5: 64..82 yd/s (~211..270 km/h)
+    (82.0, 100.0),  // Gear 6: 82..100 yd/s (~270..330 km/h)
+    (100.0, 150.0), // Gear 7: 100+ yd/s (~330..500 km/h)
+];
 const GRIP: f32 = 7.5;
 const GRIP_HANDBRAKE: f32 = 1.3;
 /// The rear wheels locked by the handbrake slow the car this much, yd/s².
@@ -90,6 +100,10 @@ pub struct Car {
     pub nitro_timer: f32,
     /// Flag set for one frame when nitro is engaged (triggers sound).
     pub just_used_nitro: bool,
+    /// The automatic gearbox's gear, 1 to 7.
+    pub gear: usize,
+    /// Flag set for one frame when the gearbox shifts up (the exhaust's pop).
+    pub just_upshifted: bool,
     /// Whether wheels are currently touching terrain.
     pub grounded: bool,
     /// Driver's current throttle input (0.0 to 1.0).
@@ -131,6 +145,8 @@ impl Car {
             nitro_cooldown: 0.0,
             nitro_timer: 0.0,
             just_used_nitro: false,
+            gear: 1,
+            just_upshifted: false,
             grounded: false,
             throttle_input: 0.0,
             brake_input: 0.0,
@@ -155,6 +171,8 @@ impl Car {
         self.nitro_cooldown = 0.0;
         self.nitro_timer = 0.0;
         self.just_used_nitro = false;
+        self.gear = 1;
+        self.just_upshifted = false;
         self.grounded = false;
         self.throttle_input = 0.0;
         self.brake_input = 0.0;
@@ -484,6 +502,7 @@ pub fn drive(
     }
 
     car.just_used_nitro = false;
+    car.just_upshifted = false;
     car.nitro_cooldown = (car.nitro_cooldown - dt).max(0.0);
     car.nitro_timer = (car.nitro_timer - dt).max(0.0);
 
@@ -531,6 +550,7 @@ pub fn drive(
             car.vel.z = 0.0;
         }
     }
+    shift_gears(&mut car);
     // Driven off the edge of the world into the void: wait in the air for ground to arrive.
     if car.lost > 6.0 {
         car.placed = false;
@@ -544,6 +564,32 @@ pub fn drive(
     viewer.planar_speed = Vec3::new(car.vel.x, 0.0, car.vel.z).length();
     tf.translation = car.pos;
     tf.rotation = car.rotation();
+}
+
+/// The automatic gearbox: one gear up or down when the speed leaves the gear's band, with
+/// hysteresis. The handbrake holds the gear (the engine revs in neutral).
+fn shift_gears(car: &mut Car) {
+    if car.handbrake_input {
+        return;
+    }
+    let speed = car.speed();
+    let (low, high) = GEAR_BOUNDS[car.gear - 1];
+    if car.gear < GEAR_BOUNDS.len() && speed > high * 0.95 {
+        car.gear += 1;
+        car.just_upshifted = true;
+    } else if car.gear > 1 && speed < low * 0.82 {
+        car.gear -= 1;
+    }
+}
+
+/// The tailpipes' outlets in car space, left then right, and the way they point.
+pub fn exhaust_outlets() -> ([Vec3; 2], Vec3) {
+    let root = model_root();
+    let e = model::EXHAUST;
+    (
+        [e, Vec3::new(-e.x, e.y, e.z)].map(|p| root.transform_point(p)),
+        root.rotation * Vec3::NEG_Z,
+    )
 }
 
 /// One physics step.
