@@ -166,17 +166,22 @@ impl Shape {
         let centre = ring.iter().copied().sum::<Vec2>() / n as f32;
         let c = self.vertex(centre, alpha);
         let base = self.pos.len() as u32;
+        // Each point moves along its own ray from the centre: the rays of a convex ring never cross,
+        // so no two pieces overlap and draw twice, a darker seam. The step is lengthened by how far
+        // the ray leans off the edge normal, to keep the rim its width across the edge.
         for i in 0..n {
             let prev = ring[(i + n - 1) % n];
             let next = ring[(i + 1) % n];
-            let out_a = (ring[i] - prev).perp().normalize_or_zero();
-            let out_b = (next - ring[i]).perp().normalize_or_zero();
+            let radial = ring[i] - centre;
+            let reach = radial.length();
+            let dir = radial / reach.max(1e-4);
             // A counter-clockwise ring's outward normal is the edge's clockwise perpendicular.
-            let out = -(out_a + out_b).normalize_or_zero();
-            let half = widths[i] * 0.5;
-            let inner = ring[i] - out * half.min((ring[i] - centre).length() * 0.5);
-            self.vertex(inner, alpha);
-            self.vertex(ring[i] + out * half, 0.0);
+            let normal = -((ring[i] - prev).perp().normalize_or_zero()
+                + (next - ring[i]).perp().normalize_or_zero())
+            .normalize_or(dir);
+            let half = widths[i] * 0.5 / dir.dot(normal).max(0.4);
+            self.vertex(centre + dir * (reach - half.min(reach * 0.5)), alpha);
+            self.vertex(centre + dir * (reach + half), 0.0);
         }
         for i in 0..n as u32 {
             let j = (i + 1) % n as u32;
@@ -194,6 +199,29 @@ impl Shape {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.col);
         mesh.insert_indices(Indices::U32(self.idx));
     }
+}
+
+/// The contact blob: an oval over the footprint, darkest at its centre.
+fn contact_blob(shape: &mut Shape, centre: Vec2, half: Vec2, alpha: f32) {
+    let blob: Vec<Vec2> = (0..BLOB_SEGMENTS)
+        .map(|i| {
+            let a = TAU * i as f32 / BLOB_SEGMENTS as f32;
+            centre + Vec2::new(a.cos(), a.sin()) * half
+        })
+        .collect();
+    shape.soft_polygon(&blob, &[half.x * 0.9; BLOB_SEGMENTS], alpha);
+}
+
+/// The cast shadow: the hull of the outline carried to the ground, softer where the light
+/// travelled further from the car.
+fn cast_outline(shape: &mut Shape, cast: &[Vec2], travel: &[f32], spread: f32, alpha: f32) {
+    let hull = convex_hull(cast);
+    let ring: Vec<Vec2> = hull.iter().map(|&i| cast[i]).collect();
+    let widths: Vec<f32> = hull
+        .iter()
+        .map(|&i| (PENUMBRA_BASE + PENUMBRA_PER_YARD * travel[i]) * spread)
+        .collect();
+    shape.soft_polygon(&ring, &widths, alpha);
 }
 
 pub fn setup_car_shadow(
@@ -316,24 +344,17 @@ pub fn update_car_shadow(
     let footprint = silhouette.centre;
     let centre = to_plane(car.pos + rot * Vec3::new(footprint.x, 0.0, footprint.y));
     let half = silhouette.half * Vec2::new(0.95, 0.9) * spread;
-    let blob: Vec<Vec2> = (0..BLOB_SEGMENTS)
-        .map(|i| {
-            let a = TAU * i as f32 / BLOB_SEGMENTS as f32;
-            centre + Vec2::new(a.cos(), a.sin()) * half
-        })
-        .collect();
-    let blob_rim = vec![half.x * 0.9; BLOB_SEGMENTS];
-    shape.soft_polygon(&blob, &blob_rim, CONTACT_MAX * fade * fade);
+    contact_blob(&mut shape, centre, half, CONTACT_MAX * fade * fade);
 
     // The cast shadow, softer where the light travelled further from the car.
-    let hull = convex_hull(&cast);
-    let ring: Vec<Vec2> = hull.iter().map(|&i| cast[i]).collect();
-    let widths: Vec<f32> = hull
-        .iter()
-        .map(|&i| (PENUMBRA_BASE + PENUMBRA_PER_YARD * travel[i]) * spread)
-        .collect();
     let strength = cast_strength(ambient, diffuse, sun, normal);
-    shape.soft_polygon(&ring, &widths, CAST_MAX * strength * fade);
+    cast_outline(
+        &mut shape,
+        &cast,
+        &travel,
+        spread,
+        CAST_MAX * strength * fade,
+    );
 
     if let Some(mesh) = meshes.get_mut(&mesh.0) {
         shape.into_mesh(mesh);
@@ -417,5 +438,71 @@ mod tests {
         assert!(p.y.abs() < 1e-5);
         assert!((p.x - 1.6 / 30f32.to_radians().tan()).abs() < 1e-4, "{p}");
         assert!((t - 3.2).abs() < 1e-4);
+    }
+
+    /// How much the shape's triangles cover beyond the area they outline: zero when none overlap,
+    /// and an overlap draws twice, a darker seam.
+    fn overlap(shape: &Shape) -> f32 {
+        let p: Vec<Vec2> = shape.pos.iter().map(|v| Vec2::new(v[0], v[2])).collect();
+        let tris: f32 = shape
+            .idx
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| {
+                let (a, b, c) = (p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]);
+                (b - a).perp_dot(c - a).abs() * 0.5
+            })
+            .sum();
+        let hull = convex_hull(&p);
+        let outline: f32 = (0..hull.len())
+            .map(|i| p[hull[i]].perp_dot(p[hull[(i + 1) % hull.len()]]) * 0.5)
+            .sum();
+        tris - outline
+    }
+
+    #[test]
+    fn the_shadow_never_overlaps_itself() {
+        let (parts, _) = crate::model::load();
+        let s = crate::car::silhouette(&parts);
+        let origin = Vec3::new(0.0, -RIDE + LIFT, 0.0);
+        let mut worst = (0.0f32, 0.0f32, 0.0f32);
+        for elev in [20.0f32, 30.0, 37.0, 60.0, 90.0] {
+            for az in (0..24).map(|i| i as f32 * 15.0) {
+                let (e, a) = (elev.to_radians(), az.to_radians());
+                let sun = Vec3::new(e.cos() * a.cos(), -e.sin(), e.cos() * a.sin());
+                let (cast, travel): (Vec<Vec2>, Vec<f32>) = s
+                    .points
+                    .iter()
+                    .map(|&p| {
+                        let (q, t) = project(p, origin, Vec3::Y, sun);
+                        (Vec2::new(q.x, q.z), t)
+                    })
+                    .unzip();
+                // On the ground and at the widest airborne spread.
+                for spread in [1.0, 1.6] {
+                    let mut shape = Shape::default();
+                    cast_outline(&mut shape, &cast, &travel, spread, 0.5);
+                    let excess = overlap(&shape);
+                    if excess > worst.0 {
+                        worst = (excess, elev, az);
+                    }
+                }
+            }
+        }
+        let mut blob = Shape::default();
+        contact_blob(&mut blob, Vec2::ZERO, s.half, 0.4);
+        assert!(
+            overlap(&blob) < 1e-3,
+            "blob overlaps by {} yd²",
+            overlap(&blob)
+        );
+        assert!(
+            worst.0 < 1e-3,
+            "cast shadow overlaps by {} yd² at elevation {}°, azimuth {}°",
+            worst.0,
+            worst.1,
+            worst.2
+        );
     }
 }
