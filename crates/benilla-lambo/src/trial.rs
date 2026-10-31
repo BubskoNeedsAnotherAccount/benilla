@@ -977,10 +977,12 @@ pub fn handle_trial_input(
         return;
     }
 
-    // 'R' returns to the last checkpoint of a race in progress, else restarts the current mode
-    if keys.just_pressed(KeyCode::KeyR) {
+    // 'R' returns to the last checkpoint of a race in progress, else restarts the current mode;
+    // Delete always restarts the run from its start.
+    let restart = keys.just_pressed(KeyCode::Delete);
+    if restart || keys.just_pressed(KeyCode::KeyR) {
         let respawn = match (manager.current_trial(), &manager.state) {
-            (Some(trial), TrialState::Racing { .. }) => {
+            (Some(trial), TrialState::Racing { .. }) if !restart => {
                 checkpoint_respawn(trial, &manager.progress)
             }
             _ => None,
@@ -1737,7 +1739,7 @@ pub fn render_trial_ui(
                                         }
                                     }
                                     ui.label(
-                                        egui::RichText::new("Press 'R' to retry, or ESC for menu")
+                                        egui::RichText::new("Press 'R' or DEL to retry, or ESC for menu")
                                             .color(egui::Color32::LIGHT_GRAY)
                                             .size(14.0),
                                     );
@@ -1769,6 +1771,15 @@ pub fn render_trial_ui(
                                     ))
                                     .color(egui::Color32::GRAY)
                                     .size(12.0),
+                                );
+                            }
+
+                            if !matches!(manager.state, TrialState::Finished { .. }) {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new("R to respawn  ·  DEL to restart run")
+                                        .color(egui::Color32::GRAY)
+                                        .size(11.0),
                                 );
                             }
                         });
@@ -2383,10 +2394,10 @@ mod tests {
         assert_eq!(trials[2].map_id, 1);
         assert_eq!(trials[2].checkpoints.len(), 9);
         assert!(!trials[2].circuit && trials[2].lap_count() == 1);
-        // A three-lap circuit finishing at its start.
+        // A two-lap circuit finishing at its start.
         assert_eq!(trials[3].name, "Mirage Raceway");
         assert!(trials[3].circuit && trials[3].end == trials[3].start);
-        assert_eq!(trials[3].lap_count(), 3);
+        assert_eq!(trials[3].lap_count(), 2);
         assert_eq!(trials[3].checkpoints.len(), 6);
         // The first six are versus courses; the rest are not.
         assert!(trials[..6].iter().all(|t| t.versus));
