@@ -241,6 +241,8 @@ pub struct EngineSound {
     rpm_slow: f32,
     lift_env: f32,
     prev_backfire: f32,
+    /// Seconds a backfire edge stays armed, waiting for the next cylinder to reach its arming angle.
+    backfire_due: f32,
     pop_arm: Vec<f32>,
     rng: u32,
     /// Pops fired and the loudness of the latest, for the tailpipe visuals.
@@ -413,6 +415,7 @@ impl EngineSound {
             rpm_slow: 0.0,
             lift_env: 0.0,
             prev_backfire: 0.0,
+            backfire_due: 0.0,
             pop_arm: vec![0.0; n],
             rng: 0x2545_F491,
             pops_fired: 0,
@@ -668,8 +671,13 @@ impl EngineSound {
             0.0
         };
         let fire_hz = (self.rpm / 60.0 * n as f32 * 0.5).max(1.0);
-        let backfire_edge = self.input.backfire > self.prev_backfire + 0.3;
+        // an edge lasts one solver step, far shorter than the wait for a cylinder to reach 300 deg: hold it
+        // for the next one, so it always fires (an engine cycle is under 0.12 s above 1000 rpm)
+        if self.input.backfire > self.prev_backfire + 0.3 {
+            self.backfire_due = 0.12;
+        }
         self.prev_backfire = self.input.backfire;
+        self.backfire_due = (self.backfire_due - dt).max(0.0);
         for i in 0..n {
             let local = self.gas.local(i);
             let prev = self.pop_arm[i];
@@ -683,7 +691,8 @@ impl EngineSound {
             if !crossed || self.gas.pop[i].is_some() || self.rpm < 300.0 {
                 continue;
             }
-            if backfire_edge && self.rand() < 0.5 {
+            if self.backfire_due > 0.0 {
+                self.backfire_due = 0.0;
                 self.gas.pop[i] = Some((3.0 + 3.0 * self.rand(), 1900.0));
                 self.pop_gain = 1.3;
                 continue;
