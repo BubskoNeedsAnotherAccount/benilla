@@ -11,7 +11,9 @@ use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
 use benilla_world::view::WorldCamera;
+use benilla_world::world_map::CurrentMap;
 
+use crate::camera::ChaseCam;
 use crate::car::{orientation, smooth, spawn_model, wheel_rotation, Car, CarAssets, Wheels};
 use crate::model::WHEEL_RADIUS;
 use crate::smoke::{puff, smoke_interval, smoke_level, TireSmokeAssets};
@@ -118,6 +120,13 @@ struct Roster {
     grids: HashMap<u32, GridTag>,
     /// Seconds since the last grid message went out.
     since_grid: f32,
+    /// A driver who just joined a race, offered to those who are not in one.
+    invite: Option<Invite>,
+}
+
+struct Invite {
+    id: u32,
+    course: String,
 }
 
 /// Tells the race code who is online and who is loading or counting down on the same versus course.
@@ -216,7 +225,7 @@ impl Plugin for NetPlugin {
                     .chain()
                     .after(crate::car::drive),
             )
-            .add_systems(EguiPrimaryContextPass, hud);
+            .add_systems(EguiPrimaryContextPass, (hud, invite_popup));
     }
 }
 
@@ -312,6 +321,19 @@ fn receive(
                     2 => GridPhase::Loading,
                     _ => GridPhase::Racing,
                 };
+                let now = time.elapsed_secs();
+                // A driver stepping onto a course's start, rather than going on with it.
+                let fresh_entry = roster.grids.get(&id).is_none_or(|old| {
+                    old.course != r
+                        || now - old.seen > GRID_FRESH
+                        || (old.phase == GridPhase::Racing && phase != GridPhase::Racing)
+                });
+                if fresh_entry && phase != GridPhase::Racing {
+                    roster.invite = Some(Invite {
+                        id,
+                        course: r.clone(),
+                    });
+                }
                 roster.grids.insert(
                     id,
                     GridTag {
@@ -515,6 +537,80 @@ fn collide_cars(
             car.vel -= normal * closing * (1.0 + BOUNCE) * 0.5;
         }
         tf.translation = car.pos;
+    }
+}
+
+/// Offers a driver who is not in a versus race the start another driver just stepped onto, with a
+/// button that joins it. It goes when the driver's start has passed or the course is not found.
+fn invite_popup(
+    mut contexts: EguiContexts,
+    time: Res<Time>,
+    mut roster: ResMut<Roster>,
+    mut manager: ResMut<TimeTrialManager>,
+    mut car: Query<&mut Car>,
+    mut chase_cam: Query<&mut ChaseCam>,
+    mut current_map: ResMut<CurrentMap>,
+) {
+    let Some(invite) = &roster.invite else { return };
+    let now = time.elapsed_secs();
+    let on_start = roster.grids.get(&invite.id).is_some_and(|tag| {
+        tag.course == invite.course
+            && now - tag.seen <= GRID_FRESH
+            && tag.phase != GridPhase::Racing
+    });
+    let course = manager
+        .trials
+        .iter()
+        .position(|t| t.versus && t.name == invite.course);
+    let racing = manager.current_trial().is_some_and(|t| t.versus);
+    let (Some(course), Some(name), true, false) = (
+        course,
+        roster.names.get(&invite.id).cloned(),
+        on_start,
+        racing,
+    ) else {
+        // Nothing to offer now; one already in a race has no use for it later either.
+        if !on_start || racing || course.is_none() {
+            roster.invite = None;
+        }
+        return;
+    };
+    let Ok(ctx) = contexts.ctx_mut() else { return };
+    let (mut join, mut dismiss) = (false, false);
+    egui::Area::new(egui::Id::new("race_invite"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
+        .show(ctx, |ui| {
+            egui::Frame::window(&ctx.style())
+                .fill(egui::Color32::from_black_alpha(210))
+                .stroke(egui::Stroke::new(
+                    1.5_f32,
+                    egui::Color32::from_rgb(255, 90, 60),
+                ))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::symmetric(16, 12))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{name} just joined {}", invite.course))
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    );
+                    ui.horizontal(|ui| {
+                        join = ui.button("Join them").clicked();
+                        dismiss = ui.button("Dismiss").clicked();
+                    });
+                });
+        });
+    if join {
+        crate::trial::start_trial_by_index(
+            course,
+            &mut manager,
+            &mut car,
+            &mut chase_cam,
+            &mut current_map,
+        );
+    }
+    if join || dismiss {
+        roster.invite = None;
     }
 }
 
