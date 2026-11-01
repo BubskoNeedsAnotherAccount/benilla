@@ -90,7 +90,8 @@
 
     <div class="keys">
       <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or arrows drive · <kbd>Space</kbd> brake ·
-      <kbd>Shift</kbd> nitro · <kbd>C</kbd> camera · <kbd>R</kbd> reset · <kbd>G</kbd> time trials
+      <kbd>Shift</kbd> nitro · <kbd>C</kbd> camera · <kbd>R</kbd> reset · <kbd>Esc</kbd> races and replays ·
+      <kbd>H</kbd> gold medal ghost
     </div>
     <p class="fine">Nothing is uploaded: the files stay on your computer and are read from this page.
       Needs a browser with WebGPU (Chrome or Edge 113+, Safari 26+, Firefox 141+) and a few GB of free memory.</p>
@@ -329,6 +330,11 @@ async function startNet() {
 
 async function fetchAssets() {
   const wanted = ["sounds/skid_loop.wav", "sounds/nitro.wav"];
+  // Each course's gold medal replay, the ghost to beat; a course without one yet is a 404.
+  try {
+    const courses = await (await fetch("./assets/time_trials.json")).json();
+    for (const c of courses) if (c.goldMedalReplay) wanted.push(c.goldMedalReplay);
+  } catch {}
   const assets = new Map();
   await Promise.all(wanted.map(async (path) => {
     const res = await fetch(`./assets/${path}`);

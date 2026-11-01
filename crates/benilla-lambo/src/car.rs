@@ -397,8 +397,19 @@ fn model_root() -> Transform {
         .with_scale(Vec3::splat(model::CAR_SCALE))
 }
 
+/// A part of a car that is always a ghost (the gold medal ghost, `replay.rs`): `ghost_cars` leaves
+/// its paint alone.
+#[derive(Component)]
+pub struct AlwaysGhost;
+
 /// Spawns the car's model as a child of `parent`: the body and four wheels, which `Wheels` names.
-pub fn spawn_model(commands: &mut Commands, assets: &CarAssets, parent: Entity) -> Wheels {
+/// A `ghost` model is translucent for good.
+pub fn spawn_model(
+    commands: &mut Commands,
+    assets: &CarAssets,
+    parent: Entity,
+    ghost: bool,
+) -> Wheels {
     let root = commands
         .spawn((model_root(), Visibility::default(), ChildOf(parent)))
         .id();
@@ -407,15 +418,19 @@ pub fn spawn_model(commands: &mut Commands, assets: &CarAssets, parent: Entity) 
         front: [Entity::PLACEHOLDER; 2],
     };
     for (i, (kind, pivot, mesh, material)) in assets.parts.iter().enumerate() {
+        let paint = if ghost { &assets.ghosts[i] } else { material };
         let id = commands
             .spawn((
                 Mesh3d(mesh.clone()),
-                MeshMaterial3d(material.clone()),
+                MeshMaterial3d(paint.clone()),
                 CarPart(i),
                 Transform::from_translation(*pivot),
                 ChildOf(root),
             ))
             .id();
+        if ghost {
+            commands.entity(id).insert(AlwaysGhost);
+        }
         let slot = match kind {
             PartKind::Body => continue,
             PartKind::BackWheels => &mut wheels.back,
@@ -441,7 +456,7 @@ pub fn ghost_cars(
     manager: Res<crate::trial::TimeTrialManager>,
     lobby: Res<crate::trial::VersusLobby>,
     assets: Res<CarAssets>,
-    mut parts: Query<(Ref<CarPart>, &mut MeshMaterial3d<CarMaterial>)>,
+    mut parts: Query<(Ref<CarPart>, &mut MeshMaterial3d<CarMaterial>), Without<AlwaysGhost>>,
     mut shown: Local<bool>,
 ) {
     let ghosted = manager.ghosted(lobby.online);
@@ -468,7 +483,7 @@ pub fn spawn_car(mut commands: Commands, assets: Res<CarAssets>) {
             Visibility::default(),
         ))
         .id();
-    let wheels = spawn_model(&mut commands, &assets, car);
+    let wheels = spawn_model(&mut commands, &assets, car, false);
     commands.entity(wheels.back).insert(Wheel { front: false });
     for w in wheels.front {
         commands.entity(w).insert(Wheel { front: true });
@@ -538,6 +553,7 @@ pub fn drive(
     keys: Res<ButtonInput<KeyCode>>,
     world: WorldCollision,
     manager: Option<Res<crate::trial::TimeTrialManager>>,
+    playback: Option<Res<crate::replay::Playback>>,
     mut car: Query<(&mut Car, &mut Transform)>,
     mut focus: ResMut<ViewFocus>,
     mut viewer: ResMut<Viewer>,
@@ -547,6 +563,41 @@ pub fn drive(
     };
     let dt = time.delta_secs().min(1.0 / 20.0);
     if dt <= 0.0 {
+        return;
+    }
+
+    // A replay being watched drives the car: its pose, not the keys or the physics.
+    if let Some(pose) = playback.as_ref().and_then(|p| p.pose) {
+        let moved = pose.pos - car.pos;
+        car.pos = pose.pos;
+        car.vel = pose.vel;
+        car.yaw = pose.yaw;
+        car.up = pose.up;
+        car.steer = pose.steer;
+        car.throttle_input = pose.throttle;
+        car.brake_input = 0.0;
+        car.handbrake_input = false;
+        car.nitro_timer = 0.0;
+        car.placed = true;
+        car.grounded = true;
+        car.burnout = false;
+        car.just_used_nitro = false;
+        car.just_upshifted = false;
+        // Paused, the car stands: no speed, no revs, no rolling wheels.
+        if moved.length_squared() == 0.0 {
+            car.vel = Vec3::ZERO;
+            car.throttle_input = 0.0;
+        }
+        let (fwd, right) = car.basis();
+        car.lateral_speed = car.vel.dot(right).abs();
+        car.spin -= car.vel.dot(fwd) / model::WHEEL_RADIUS * dt;
+        shift_gears(&mut car);
+        *focus = ViewFocus::body(bevy_to_wow(car.pos), true);
+        viewer.at = Some(car.pos);
+        viewer.height = 1.5;
+        viewer.planar_speed = Vec3::new(car.vel.x, 0.0, car.vel.z).length();
+        tf.translation = car.pos;
+        tf.rotation = car.rotation();
         return;
     }
     let menu_open = manager.as_ref().map(|m| m.menu_open).unwrap_or(false);

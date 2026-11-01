@@ -261,6 +261,12 @@ pub fn speedometer(
                         trial.name
                     );
                 }
+                crate::trial::TrialState::Replay => {
+                    window.title = format!(
+                        "benilla lambo — [{}] REPLAY — Space pause, arrows skip/speed, ESC menu",
+                        trial.name
+                    );
+                }
                 crate::trial::TrialState::FreeDriving => {}
             }
             return;

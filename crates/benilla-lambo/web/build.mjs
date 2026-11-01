@@ -87,5 +87,14 @@ const assets = join(repo, "crates/benilla-lambo/assets");
 mkdirSync(join(dist, "assets/sounds"), { recursive: true });
 cpSync(join(assets, "lambo_v10.json"), join(dist, "assets/lambo_v10.json"));
 for (const s of ["skid_loop.wav", "nitro.wav"]) cpSync(join(assets, "sounds", s), join(dist, "assets/sounds", s));
+// The courses, for their `goldMedalReplay` paths, and each gold medal replay that exists: the page
+// fetches them ahead of the start (`index.html`, `fetchAssets`).
+cpSync(join(assets, "time_trials.json"), join(dist, "assets/time_trials.json"));
+for (const course of JSON.parse(readFileSync(join(assets, "time_trials.json"), "utf8"))) {
+  const rel = course.goldMedalReplay;
+  if (!rel || !existsSync(join(assets, rel))) continue;
+  mkdirSync(dirname(join(dist, "assets", rel)), { recursive: true });
+  cpSync(join(assets, rel), join(dist, "assets", rel));
+}
 
 console.log(`\nbuilt ${dist} (${(statSync(bg).size / 2 ** 20).toFixed(1)} MiB wasm)`);

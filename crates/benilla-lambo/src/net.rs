@@ -352,7 +352,7 @@ fn receive(
 fn spawn_remote_car(commands: &mut Commands, assets: &CarAssets, mut car: RemoteCar) -> Entity {
     let at = Transform::from_translation(car.pos).with_rotation(orientation(car.yaw, car.up));
     let e = commands.spawn((at, Visibility::default())).id();
-    car.wheels = spawn_model(commands, assets, e);
+    car.wheels = spawn_model(commands, assets, e, false);
     commands.entity(e).insert(car);
     e
 }
@@ -437,7 +437,8 @@ fn send_state(
         return;
     }
     let Ok(car) = car.single() else { return };
-    if !car.placed {
+    // A replay being watched is not where this driver is.
+    if !car.placed || manager.state == TrialState::Replay {
         return;
     }
     roster.since_send = 0.0;

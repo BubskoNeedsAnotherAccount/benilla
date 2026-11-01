@@ -236,7 +236,7 @@ pub fn preload_course(
 
     // Roll the hold to where the car is; before the start and after the finish, the start.
     let at = match (manager.state.clone(), car.single()) {
-        (TrialState::Racing { .. }, Ok(c)) => {
+        (TrialState::Racing { .. } | TrialState::Replay, Ok(c)) => {
             let wow = bevy_to_wow(c.pos);
             car_sample(
                 &pre.samples,

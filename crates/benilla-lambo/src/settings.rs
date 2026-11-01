@@ -1,5 +1,5 @@
 //! Player settings, edited in the ESC menu's Settings tab and applied live: master volume, engine
-//! sound, view distance, tyre smoke and render resolution. In a browser they are remembered in the page's
+//! sound, view distance, tyre smoke, render resolution and the player's name. In a browser they are remembered in the page's
 //! local storage.
 
 use bevy::prelude::*;
@@ -29,6 +29,8 @@ pub struct Settings {
     pub tire_smoke: bool,
     /// Render resolution, one of [`RENDER_SCALES`].
     pub render_scale: f32,
+    /// The name saved replays carry.
+    pub player_name: String,
 }
 
 impl Default for Settings {
@@ -39,6 +41,7 @@ impl Default for Settings {
             view_distance: DEFAULT_VIEW_DISTANCE,
             tire_smoke: true,
             render_scale: 1.0,
+            player_name: crate::replay::default_player_name(),
         }
     }
 }
@@ -66,6 +69,15 @@ impl Settings {
                     .total_cmp(&(b - self.render_scale).abs())
             })
             .unwrap_or(1.0);
+        self.player_name = self
+            .player_name
+            .trim()
+            .chars()
+            .take(crate::replay::NAME_MAX)
+            .collect();
+        if self.player_name.is_empty() {
+            self.player_name = crate::replay::default_player_name();
+        }
         self
     }
 }
@@ -78,6 +90,8 @@ pub enum MenuTab {
     Race,
     /// Courses a friend built, kept apart from the shipped ones.
     Slayzer,
+    /// Saved runs: open one and watch it.
+    Replays,
     Settings,
 }
 

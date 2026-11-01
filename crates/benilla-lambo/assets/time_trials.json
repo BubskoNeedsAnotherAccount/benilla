@@ -1,6 +1,7 @@
 [
   {
     "name": "Tauren's Track",
+    "goldMedalReplay": "replays/gold/taurens-track.lambo-replay",
     "map_id": 1,
     "start": [-2916.76, -254.16, 53.46],
     "rotation": 181.9,
@@ -17,6 +18,7 @@
   },
   {
     "name": "Foothills Run",
+    "goldMedalReplay": "replays/gold/foothills-run.lambo-replay",
     "map_id": 0,
     "start": [-394.81, 20.95, 54.51],
     "rotation": 178.8,
@@ -33,6 +35,7 @@
   },
   {
     "name": "Dusty Dunes",
+    "goldMedalReplay": "replays/gold/dusty-dunes.lambo-replay",
     "map_id": 1,
     "start": [-9575.53, -2778.92, 8.34],
     "rotation": 5.0,
@@ -52,6 +55,7 @@
   },
   {
     "name": "Mirage Raceway",
+    "goldMedalReplay": "replays/gold/mirage-raceway.lambo-replay",
     "map_id": 1,
     "start": [-6198.84, -3901.48, -59.77],
     "rotation": 0.0,
@@ -69,6 +73,7 @@
   },
   {
     "name": "Redridge Highway",
+    "goldMedalReplay": "replays/gold/redridge-highway.lambo-replay",
     "map_id": 0,
     "start": [-8939.11, -2602.31, 132.94],
     "rotation": 185.3,
@@ -84,6 +89,7 @@
   },
   {
     "name": "Around the Forge",
+    "goldMedalReplay": "replays/gold/around-the-forge.lambo-replay",
     "map_id": 0,
     "start": [-4927.27, -854.22, 502.15],
     "rotation": 306.9,
@@ -105,6 +111,7 @@
   },
   {
     "name": "Crimson Crusade",
+    "goldMedalReplay": "replays/gold/crimson-crusade.lambo-replay",
     "map_id": 0,
     "start": [1927.03, -2574.44, 61.65],
     "rotation": 86.5,
@@ -127,6 +134,7 @@
   },
   {
     "name": "Orgrimmar Race",
+    "goldMedalReplay": "replays/gold/orgrimmar-race.lambo-replay",
     "map_id": 1,
     "start": [1698.07, -3919.52, 52.05],
     "rotation": 296.6,
@@ -145,6 +153,7 @@
   },
   {
     "name": "The Stonetalon Trail",
+    "goldMedalReplay": "replays/gold/the-stonetalon-trail.lambo-replay",
     "map_id": 1,
     "start": [
       1719.62,
@@ -160,6 +169,7 @@
   },
   {
     "name": "Black Rock Circuit",
+    "goldMedalReplay": "replays/gold/black-rock-circuit.lambo-replay",
     "map_id": 0,
     "start": [-7700.84, -1116.49, 216.50],
     "rotation": 274.9,
@@ -176,6 +186,7 @@
   },
   {
     "name": "Tunnel Rumble",
+    "goldMedalReplay": "replays/gold/tunnel-rumble.lambo-replay",
     "map_id": 0,
     "start": [-6861.22, -1225.18, 176.96],
     "rotation": 81.4,
@@ -200,6 +211,7 @@
   },
   {
     "name": "Burning Steps to Loch Modan",
+    "goldMedalReplay": "replays/gold/burning-steps-to-loch-modan.lambo-replay",
     "map_id": 0,
     "start": [-8425.06, -2543.46, 133.95],
     "rotation": 13.6,

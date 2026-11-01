@@ -21,6 +21,7 @@ mod model;
 mod net;
 mod paint;
 mod preload;
+mod replay;
 mod settings;
 mod shadow;
 mod smoke;
@@ -115,6 +116,8 @@ fn main() -> AppExit {
 
     app.add_plugins(settings::SettingsPlugin);
     app.add_plugins(paint::CarPaintPlugin);
+    // Saved runs, the replay viewer and the gold medal ghost.
+    app.add_plugins(replay::ReplayPlugin);
 
     // Initialize time trial manager.
     app.init_resource::<trial::TimeTrialManager>();
@@ -153,11 +156,14 @@ fn main() -> AppExit {
         (
             trial::handle_trial_input,
             trial::update_versus,
+            replay::advance_playback,
             car::drive,
             camera::mouse_look,
             camera::chase,
             car::animate_wheels,
             trial::update_trial_progress,
+            replay::record_runs,
+            replay::drive_gold_ghost,
             trial::update_course_markers,
         )
             .chain()

@@ -62,6 +62,8 @@ fn one_lap() -> u32 {
 ///   a lap ends when the car crosses it after the last checkpoint.
 /// - `laps` repeats a circuit; a point-to-point course always has one.
 /// - `checkpoint_radius` sizes every gate of the course (yards, default 16).
+/// - `goldMedalReplay` is a replay file, relative to `assets/`: beating its time wins the course's
+///   gold medal, and it races beside the car as a ghost (`replay.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeTrial {
     pub name: String,
@@ -88,6 +90,14 @@ pub struct TimeTrial {
     /// Listed on the Slayzer's Races page instead of Racing.
     #[serde(default)]
     pub slayzer: bool,
+    /// A replay file (`replay.rs`): beat its time for the course's gold medal; it races as a ghost.
+    #[serde(
+        default,
+        rename = "goldMedalReplay",
+        alias = "gold_medal_replay",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gold_medal_replay: Option<String>,
 }
 
 impl TimeTrial {
@@ -111,6 +121,7 @@ impl TimeTrial {
             checkpoint_radius: DEFAULT_GATE_RADIUS,
             versus: false,
             slayzer: false,
+            gold_medal_replay: None,
         }
     }
 
@@ -164,6 +175,28 @@ fn pass_gates(trial: &TimeTrial, progress: &mut RaceProgress, pos: Vec3) -> bool
         progress.armed = true;
     }
     at_finish && progress.armed && progress.next_checkpoint >= trial.checkpoints.len()
+}
+
+/// Moves `progress` on for a car at `pos` at race time `now`: when a lap just ended, its time and
+/// whether it was the last. The next lap starts from its first checkpoint.
+pub fn advance_race(
+    trial: &TimeTrial,
+    progress: &mut RaceProgress,
+    pos: Vec3,
+    now: f32,
+) -> Option<(f32, bool)> {
+    if progress.lap_times.len() as u32 >= trial.lap_count() || !pass_gates(trial, progress, pos) {
+        return None;
+    }
+    let lap_time = now - progress.lap_start;
+    progress.lap_times.push(lap_time);
+    let over = progress.lap_times.len() as u32 >= trial.lap_count();
+    if !over {
+        progress.next_checkpoint = 0;
+        progress.lap_start = now;
+        progress.armed = false;
+    }
+    Some((lap_time, over))
 }
 
 /// Flexible JSON coordinate definition that accepts either `[x, y, z]` or `{"x": .., "y": .., "z": ..}`.
@@ -227,6 +260,9 @@ pub struct TimeTrialDef {
     pub versus: bool,
     #[serde(default)]
     pub slayzer: bool,
+    /// Path of the replay to beat for the gold medal, relative to the courses' `assets` folder.
+    #[serde(default, rename = "goldMedalReplay", alias = "gold_medal_replay")]
+    pub gold_medal_replay: Option<String>,
 }
 
 impl From<TimeTrialDef> for TimeTrial {
@@ -261,6 +297,7 @@ impl From<TimeTrialDef> for TimeTrial {
                 .unwrap_or(DEFAULT_GATE_RADIUS),
             versus: def.versus,
             slayzer: def.slayzer,
+            gold_medal_replay: def.gold_medal_replay.filter(|p| !p.trim().is_empty()),
         }
     }
 }
@@ -281,6 +318,8 @@ pub enum TrialState {
         final_time: f32,
         is_best: bool,
     },
+    /// A saved run is being watched (`replay.rs`): the car follows it, not the keys.
+    Replay,
 }
 
 /// Global resource managing all time trials, race progress, records, and menu state.
@@ -444,7 +483,7 @@ impl TimeTrialManager {
 }
 
 /// Formats seconds as `MM:SS.cc`.
-fn format_time(secs: f32) -> String {
+pub fn format_time(secs: f32) -> String {
     format!("{:02}:{:05.2}", (secs / 60.0).floor() as u32, secs % 60.0)
 }
 
@@ -790,7 +829,10 @@ pub fn update_course_markers(
 
     let live = matches!(
         manager.state,
-        TrialState::WaitingToStart | TrialState::Countdown { .. } | TrialState::Racing { .. }
+        TrialState::WaitingToStart
+            | TrialState::Countdown { .. }
+            | TrialState::Racing { .. }
+            | TrialState::Replay
     );
     let next = manager.progress.next_checkpoint;
     let Some(trial) = manager.current_trial() else {
@@ -948,7 +990,8 @@ pub fn handle_trial_input(
         *tab = match *tab {
             MenuTab::FreeDrive => MenuTab::Race,
             MenuTab::Race => MenuTab::Slayzer,
-            MenuTab::Slayzer => MenuTab::Settings,
+            MenuTab::Slayzer => MenuTab::Replays,
+            MenuTab::Replays => MenuTab::Settings,
             MenuTab::Settings => MenuTab::FreeDrive,
         };
         if let Some(range) = menu_range(*tab, &manager.trials) {
@@ -1033,8 +1076,12 @@ pub fn handle_trial_input(
     // 'R' returns to the last checkpoint of a race in progress, else restarts the current mode;
     // Delete always restarts the run from its start. Neither works while the car is held (a
     // countdown, a map loading): restarting would walk off the grid and start the count over.
+    // A replay takes R itself (`replay::advance_playback`).
     let restart = keys.just_pressed(KeyCode::Delete);
-    if (restart || keys.just_pressed(KeyCode::KeyR)) && !manager.frozen() {
+    if (restart || keys.just_pressed(KeyCode::KeyR))
+        && !manager.frozen()
+        && manager.state != TrialState::Replay
+    {
         let respawn = match (manager.current_trial(), &manager.state) {
             (Some(trial), TrialState::Racing { .. }) if !restart => {
                 checkpoint_respawn(trial, &manager.progress)
@@ -1117,7 +1164,7 @@ fn menu_range(tab: MenuTab, trials: &[TimeTrial]) -> Option<std::ops::Range<usiz
         MenuTab::FreeDrive => Some(0..FREE_DRIVES.len()),
         MenuTab::Race => Some(FREE_DRIVES.len()..FREE_DRIVES.len() + split),
         MenuTab::Slayzer => Some(FREE_DRIVES.len() + split..FREE_DRIVES.len() + trials.len()),
-        MenuTab::Settings => None,
+        MenuTab::Replays | MenuTab::Settings => None,
     }
 }
 
@@ -1206,12 +1253,11 @@ pub fn update_trial_progress(
                 elapsed: current_time,
             };
             let mut progress = std::mem::take(&mut manager.progress);
-            let lap_done = pass_gates(&trial, &mut progress, car.pos);
-
             let mut race_over = false;
-            if lap_done {
-                let lap_time = current_time - progress.lap_start;
-                progress.lap_times.push(lap_time);
+            if let Some((lap_time, over)) =
+                advance_race(&trial, &mut progress, car.pos, current_time)
+            {
+                race_over = over;
                 let best_lap = manager.best_laps.get(&trial.name).copied();
                 if best_lap.is_none_or(|b| lap_time < b) {
                     manager.best_laps.insert(trial.name.clone(), lap_time);
@@ -1224,13 +1270,6 @@ pub fn update_trial_progress(
                         trial.lap_count(),
                         lap_time
                     );
-                }
-                if progress.lap_times.len() as u32 >= trial.lap_count() {
-                    race_over = true;
-                } else {
-                    progress.next_checkpoint = 0;
-                    progress.lap_start = current_time;
-                    progress.armed = false;
                 }
             }
             manager.progress = progress;
@@ -1276,6 +1315,22 @@ fn settings_page(ui: &mut egui::Ui, s: &mut Settings) {
         );
     };
 
+    heading(ui, "PLAYER");
+    ui.horizontal(|ui| {
+        ui.label("Your name");
+        ui.add(
+            egui::TextEdit::singleline(&mut s.player_name)
+                .char_limit(crate::replay::NAME_MAX)
+                .desired_width(200.0),
+        );
+    });
+    ui.label(
+        egui::RichText::new("Saved into the replays you save.")
+            .color(egui::Color32::GRAY)
+            .size(12.0),
+    );
+
+    ui.add_space(12.0);
     heading(ui, "SOUND");
     let mut percent = (s.volume * 100.0).round();
     ui.add(
@@ -1445,6 +1500,8 @@ struct MenuRow<'a> {
     subtitle: String,
     versus: bool,
     best: Option<String>,
+    /// The course's gold medal is won.
+    gold: bool,
     active: bool,
     selected: bool,
 }
@@ -1579,6 +1636,9 @@ fn menu_row(ui: &mut egui::Ui, idx: usize, row: &MenuRow) -> egui::Response {
                     if row.active {
                         badge(ui, "ACTIVE", egui::Color32::from_rgb(110, 220, 120));
                     }
+                    if row.gold {
+                        badge(ui, "🥇 GOLD", crate::replay::GOLD);
+                    }
                     if let Some(best) = &row.best {
                         plain(
                             ui,
@@ -1642,6 +1702,7 @@ pub fn render_trial_ui(
     mut tab: ResMut<MenuTab>,
     lobby: Res<VersusLobby>,
     preload: Res<crate::preload::CoursePreload>,
+    mut replays: crate::replay::ReplayState,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -1661,8 +1722,12 @@ pub fn render_trial_ui(
         )
     });
 
-    // 1. IN-GAME HUD (Top bar when racing, waiting, or finished)
-    if let Some(trial) = manager.current_trial().cloned() {
+    // 1. IN-GAME HUD (Top bar when racing, waiting, or finished); a replay has its own.
+    if let Some(trial) = manager
+        .current_trial()
+        .cloned()
+        .filter(|_| manager.state != TrialState::Replay)
+    {
         let target_bevy = wow_to_bevy(manager.target_gate().unwrap_or(trial.end));
         let heading_to_checkpoint = manager.progress.next_checkpoint < trial.checkpoints.len();
         let car_pos = car_telemetry.map(|t| t.7).unwrap_or(Vec3::ZERO);
@@ -1883,6 +1948,12 @@ pub fn render_trial_ui(
                                             );
                                         }
                                     }
+                                    crate::replay::finish_panel(
+                                        ui,
+                                        &mut replays,
+                                        &trial,
+                                        &settings.player_name,
+                                    );
                                     ui.label(
                                         egui::RichText::new("Press 'R' or DEL to retry, or ESC for menu")
                                             .color(egui::Color32::LIGHT_GRAY)
@@ -1891,6 +1962,7 @@ pub fn render_trial_ui(
                                 }
                                 _ => {}
                             }
+                            crate::replay::race_lines(ui, &replays.gold, &trial, &manager.state);
 
                             // Distance readout
                             let dist_km = dist_to_finish * 0.9144 / 1000.0;
@@ -1941,6 +2013,7 @@ pub fn render_trial_ui(
         let mut edit = settings.clone();
         let mut new_tab = *tab;
         let mut tab_selection: Option<usize> = None;
+        let mut replay_action: Option<crate::replay::ReplayAction> = None;
         let screen = ctx.content_rect();
 
         // Dim the world behind the menu so it reads as paused.
@@ -1951,6 +2024,14 @@ pub fn render_trial_ui(
         .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
 
         let now_driving = match manager.current_trial() {
+            _ if manager.state == TrialState::Replay => {
+                let replay = replays.playback.replay.as_ref();
+                format!(
+                    "Watching a replay — {} by {}",
+                    replay.map_or("", |r| r.course.as_str()),
+                    replay.map_or("", |r| r.player.as_str())
+                )
+            }
             Some(trial) => trial.name.clone(),
             None => {
                 let spot = &FREE_DRIVES[manager.free_drive_loc.min(FREE_DRIVES.len() - 1)];
@@ -1999,6 +2080,7 @@ pub fn render_trial_ui(
                         (MenuTab::FreeDrive, "Free Driving"),
                         (MenuTab::Race, "Racing"),
                         (MenuTab::Slayzer, "Slayzer's Races"),
+                        (MenuTab::Replays, "Replays"),
                         (MenuTab::Settings, "Settings"),
                     ] {
                         let on = new_tab == page;
@@ -2031,6 +2113,14 @@ pub fn render_trial_ui(
 
                 if new_tab == MenuTab::Settings {
                     settings_page(ui, &mut edit);
+                } else if new_tab == MenuTab::Replays {
+                    egui::ScrollArea::vertical()
+                        .max_height((screen.height() - 220.0).max(160.0))
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            replay_action =
+                                crate::replay::replays_page(ui, &mut replays, &manager.trials);
+                        });
                 } else {
                     let free_page = new_tab == MenuTab::FreeDrive;
                     // Scroll the list on a short window; follow the keyboard selection.
@@ -2068,6 +2158,7 @@ pub fn render_trial_ui(
                                             subtitle: format!("{} • {}", spot.town, spot.continent),
                                             versus: false,
                                             best: None,
+                                            gold: false,
                                             active: manager.current_trial_idx.is_none()
                                                 && manager.free_drive_loc == idx,
                                             selected: selected == idx,
@@ -2121,6 +2212,7 @@ pub fn render_trial_ui(
                                             .best_times
                                             .get(&trial.name)
                                             .map(|b| format_time(*b)),
+                                        gold: replays.gold.medals.contains(&trial.name),
                                         active: manager.current_trial_idx == Some(i),
                                         selected: selected == idx,
                                     },
@@ -2137,6 +2229,8 @@ pub fn render_trial_ui(
                 ui.horizontal(|ui| {
                     let hints: &[(&str, &str)] = if new_tab == MenuTab::Settings {
                         &[("Tab", "Free Driving")]
+                    } else if new_tab == MenuTab::Replays {
+                        &[("Tab", "Settings")]
                     } else {
                         &[
                             ("↑↓", "Select"),
@@ -2193,6 +2287,16 @@ pub fn render_trial_ui(
                 &mut current_map,
             );
             manager.menu_open = false;
+        }
+        if let Some(crate::replay::ReplayAction::Watch(replay)) = replay_action {
+            crate::replay::start_watching(
+                replay,
+                &mut manager,
+                &mut replays.playback,
+                &mut car,
+                &mut chase_cam,
+                &mut current_map,
+            );
         }
     }
 
@@ -2700,6 +2804,52 @@ mod tests {
         assert!(!trials[0].is_race());
         assert!(!trials[1].circuit && trials[1].checkpoints.len() == 2);
         assert!(trials[2].circuit && trials[2].lap_count() == 3);
+    }
+
+    #[test]
+    fn every_shipped_course_names_a_gold_medal_replay() {
+        let defs: Vec<TimeTrialDef> =
+            serde_json::from_str(include_str!("../assets/time_trials.json")).unwrap();
+        let trials: Vec<TimeTrial> = defs.into_iter().map(Into::into).collect();
+        for t in &trials {
+            let path = t.gold_medal_replay.as_deref().unwrap_or_default();
+            assert!(
+                path.ends_with(".lambo-replay"),
+                "'{}' has no goldMedalReplay",
+                t.name
+            );
+        }
+        let race = parse(
+            r#"[{"name": "G", "map": 0, "start": [0,0,0], "end": [9,0,0],
+                 "goldMedalReplay": "replays/gold/g.lambo-replay"}]"#,
+        );
+        assert_eq!(
+            race.gold_medal_replay.as_deref(),
+            Some("replays/gold/g.lambo-replay")
+        );
+        assert!(parse(r#"[{"name": "N", "map": 0, "start": [0,0,0]}]"#)
+            .gold_medal_replay
+            .is_none());
+    }
+
+    #[test]
+    fn a_lap_ends_once_and_the_next_starts_from_its_first_gate() {
+        let race = parse(
+            r#"[{"name": "L", "map": 0, "start": [0,0,0],
+                 "checkpoints": [[100,0,0]], "loop": true, "laps": 2}]"#,
+        );
+        let at = |x: f32| wow_to_bevy([x, 0.0, 0.0]);
+        let mut p = RaceProgress::default();
+        assert!(advance_race(&race, &mut p, at(0.0), 0.0).is_none());
+        advance_race(&race, &mut p, at(100.0), 5.0);
+        let (lap, over) = advance_race(&race, &mut p, at(0.0), 10.0).unwrap();
+        assert!((lap - 10.0).abs() < 1e-5 && !over);
+        assert_eq!(p.next_checkpoint, 0);
+        advance_race(&race, &mut p, at(100.0), 15.0);
+        let (lap, over) = advance_race(&race, &mut p, at(0.0), 22.0).unwrap();
+        assert!((lap - 12.0).abs() < 1e-5 && over);
+        // A finished race takes no more laps.
+        assert!(advance_race(&race, &mut p, at(0.0), 30.0).is_none());
     }
 
     #[test]
