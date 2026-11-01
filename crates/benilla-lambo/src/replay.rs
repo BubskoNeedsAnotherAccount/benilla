@@ -35,10 +35,8 @@ pub const REPLAY_EXT: &str = "lambo-replay";
 const SAMPLE_HZ: f32 = 20.0;
 /// Two frames this far apart, yards, are a respawn: playback jumps rather than slides.
 const SNAP: f32 = 40.0;
-/// Shows or hides the gold medal ghost.
+/// Shows or hides the gold medal ghost (`ghost_hint` says so at every race start).
 pub const GHOST_KEY: KeyCode = KeyCode::KeyH;
-/// What every race start says about it.
-pub const GHOST_HINT: &str = "Press [H] to toggle gold medal ghost";
 /// Seconds into a race the hint stays up.
 pub const GHOST_HINT_SECS: f32 = 6.0;
 /// The longest player name a replay keeps.
@@ -544,7 +542,7 @@ pub fn drive_gold_ghost(
     }
 }
 
-/// "GOLD · name" over the ghost.
+/// "AUTHOR TIME" over the ghost, with who set it.
 fn ghost_tag(
     mut contexts: EguiContexts,
     ghosts: Query<(&GoldGhost, &GlobalTransform, &ViewVisibility)>,
@@ -572,18 +570,38 @@ fn ghost_tag(
         egui::Order::Background,
         egui::Id::new("gold_ghost_tag"),
     ));
-    let galley = painter.layout_no_wrap(
-        format!("GOLD · {}", ghost.player),
-        egui::FontId::proportional(15.0),
+    // Two lines in a gold frame, unlike a driver's plain tag: this is the course's author time, not
+    // a player on the road.
+    let title =
+        painter.layout_no_wrap("AUTHOR TIME".into(), egui::FontId::proportional(15.0), GOLD);
+    let sub = painter.layout_no_wrap(
+        format!("gold medal ghost · set by {}", ghost.player),
+        egui::FontId::proportional(11.0),
+        egui::Color32::from_rgb(230, 215, 170),
+    );
+    let size = egui::vec2(
+        title.size().x.max(sub.size().x),
+        title.size().y + sub.size().y,
+    );
+    let rect = egui::Align2::CENTER_BOTTOM.anchor_size(egui::pos2(p.x, p.y), size);
+    painter.rect(
+        rect.expand2(egui::vec2(7.0, 3.0)),
+        4.0,
+        egui::Color32::from_black_alpha(170),
+        egui::Stroke::new(1.5_f32, GOLD),
+        egui::StrokeKind::Outside,
+    );
+    let mid = rect.center().x;
+    painter.galley(
+        egui::pos2(mid - title.size().x / 2.0, rect.min.y),
+        title.clone(),
         GOLD,
     );
-    let rect = egui::Align2::CENTER_BOTTOM.anchor_size(egui::pos2(p.x, p.y), galley.size());
-    painter.rect_filled(
-        rect.expand2(egui::vec2(6.0, 2.0)),
-        4.0,
-        egui::Color32::from_black_alpha(160),
+    painter.galley(
+        egui::pos2(mid - sub.size().x / 2.0, rect.min.y + title.size().y),
+        sub,
+        GOLD,
     );
-    painter.galley(rect.min, galley, GOLD);
 }
 
 /// Puts `replay` on the local car: its course and map are loaded, its gates stand, and the car
@@ -762,10 +780,13 @@ pub fn finish_panel(ui: &mut egui::Ui, state: &mut ReplayState, trial: &TimeTria
     match state.gold.result {
         Some(GoldResult::Earned { gold }) => {
             ui.label(
-                egui::RichText::new(format!("🥇 GOLD MEDAL! (beat {})", format_time(gold)))
-                    .color(GOLD)
-                    .size(20.0)
-                    .strong(),
+                egui::RichText::new(format!(
+                    "🥇 GOLD MEDAL! You beat the author time ({})",
+                    format_time(gold)
+                ))
+                .color(GOLD)
+                .size(20.0)
+                .strong(),
             );
         }
         Some(GoldResult::Missed { gold }) => {
@@ -776,7 +797,7 @@ pub fn finish_panel(ui: &mut egui::Ui, state: &mut ReplayState, trial: &TimeTria
                 .map_or(0.0, |r| r.time - gold);
             ui.label(
                 egui::RichText::new(format!(
-                    "Gold medal {} — {} off it",
+                    "Gold medal (author time) {} — {} off it",
                     format_time(gold),
                     format_time(by.max(0.0))
                 ))
@@ -850,32 +871,41 @@ pub fn race_lines(ui: &mut egui::Ui, gold: &GoldGhosts, trial: &TimeTrial, state
         TrialState::Racing { elapsed } => elapsed < GHOST_HINT_SECS,
         _ => return,
     };
-    if let Some(replay) = gold.get(trial) {
-        ui.label(
-            egui::RichText::new(format!(
-                "🥇 Gold {} by {}{}",
-                format_time(replay.time),
-                replay.player,
-                if gold.visible { "" } else { "  (ghost hidden)" }
-            ))
-            .color(GOLD)
-            .size(13.0),
-        );
-    }
-    if start {
-        ui.label(
-            egui::RichText::new(GHOST_HINT)
-                .color(GOLD)
-                .size(15.0)
-                .strong(),
-        );
-        if gold.get(trial).is_none() {
+    let Some(replay) = gold.get(trial) else {
+        if start {
             ui.label(
-                egui::RichText::new("(no gold medal replay for this course yet)")
+                egui::RichText::new("This course has no gold medal ghost yet")
                     .color(egui::Color32::GRAY)
-                    .size(11.0),
+                    .size(12.0),
             );
         }
+        return;
+    };
+    ui.label(
+        egui::RichText::new(format!(
+            "🥇 Gold medal: beat {} (author time by {})",
+            format_time(replay.time),
+            replay.player,
+        ))
+        .color(GOLD)
+        .size(13.0),
+    );
+    if start || !gold.visible {
+        ui.label(
+            egui::RichText::new(ghost_hint(gold.visible))
+                .color(GOLD)
+                .size(if start { 15.0 } else { 12.0 })
+                .strong(),
+        );
+    }
+}
+
+/// What H does to the ghost right now.
+pub fn ghost_hint(visible: bool) -> &'static str {
+    if visible {
+        "Press H to hide the gold medal ghost (the see-through car)"
+    } else {
+        "Gold medal ghost hidden — press H to show it"
     }
 }
 
@@ -1004,7 +1034,13 @@ pub fn replays_page(
         };
         any = true;
         let won = state.gold.medals.contains(&trial.name);
-        if card(ui, &r, if won { "🥇 Watch" } else { "▶  Watch" }) {
+        // The card says whose run it is: the course's author time, not a player's.
+        let shown = Replay {
+            player: format!("Author time by {}", r.player),
+            frames: Vec::new(),
+            ..r.clone()
+        };
+        if card(ui, &shown, if won { "🥇 Watch" } else { "▶  Watch" }) {
             action = Some(ReplayAction::Watch(r));
         }
         ui.add_space(4.0);
@@ -1381,6 +1417,26 @@ mod tests {
         let back = Replay::parse(&r.to_json()).unwrap();
         assert_eq!(back, r);
         assert_eq!(back.player, "Slayzer");
+    }
+
+    /// Every gold medal replay that ships reads, and was driven on the course that names it.
+    #[test]
+    fn the_shipped_gold_replays_are_their_courses() {
+        let trials = crate::trial::load_time_trials();
+        let mut gold = GoldGhosts::default();
+        let mut found = 0;
+        for t in &trials {
+            let path = t.gold_medal_replay.clone().unwrap_or_default();
+            if file_io::read_asset(&path).is_none() {
+                continue;
+            }
+            let r = gold
+                .load(t)
+                .unwrap_or_else(|| panic!("{path} does not read"));
+            assert_eq!((r.course.as_str(), r.map_id), (t.name.as_str(), t.map_id));
+            found += 1;
+        }
+        assert!(found >= 8, "only {found} gold replays found");
     }
 
     #[test]
