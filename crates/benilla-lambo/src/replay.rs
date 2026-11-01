@@ -37,8 +37,8 @@ const SAMPLE_HZ: f32 = 20.0;
 const SNAP: f32 = 40.0;
 /// Shows or hides the gold medal ghost (`ghost_hint` says so at every race start).
 pub const GHOST_KEY: KeyCode = KeyCode::KeyH;
-/// Seconds into a race the hint stays up.
-pub const GHOST_HINT_SECS: f32 = 6.0;
+/// Seconds into a race the hint stays up, mid-screen.
+pub const GHOST_HINT_SECS: f32 = 4.0;
 /// The longest player name a replay keeps.
 pub const NAME_MAX: usize = 24;
 /// Playback speeds, slowest first.
@@ -371,7 +371,10 @@ impl Plugin for ReplayPlugin {
                 hold_keys_while_typing.after(bevy_egui::EguiPreUpdateSet::ProcessInput),
             )
             .add_systems(Update, receive_opened_file)
-            .add_systems(bevy_egui::EguiPrimaryContextPass, (replay_hud, ghost_tag));
+            .add_systems(
+                bevy_egui::EguiPrimaryContextPass,
+                (replay_hud, ghost_tag, ghost_hint_overlay),
+            );
     }
 }
 
@@ -864,11 +867,12 @@ pub fn finish_panel(ui: &mut egui::Ui, state: &mut ReplayState, trial: &TimeTria
     }
 }
 
-/// The race HUD's gold medal lines: the gold time, and at the start the ghost key.
+/// The race HUD's gold medal lines: the gold time, and before the start the ghost key. The first
+/// seconds of the race say it mid-screen instead (`ghost_hint_overlay`).
 pub fn race_lines(ui: &mut egui::Ui, gold: &GoldGhosts, trial: &TimeTrial, state: &TrialState) {
-    let start = match *state {
-        TrialState::WaitingToStart | TrialState::Countdown { .. } => true,
-        TrialState::Racing { elapsed } => elapsed < GHOST_HINT_SECS,
+    let (start, overlay) = match *state {
+        TrialState::WaitingToStart | TrialState::Countdown { .. } => (true, false),
+        TrialState::Racing { elapsed } => (false, elapsed < GHOST_HINT_SECS),
         _ => return,
     };
     let Some(replay) = gold.get(trial) else {
@@ -890,7 +894,7 @@ pub fn race_lines(ui: &mut egui::Ui, gold: &GoldGhosts, trial: &TimeTrial, state
         .color(GOLD)
         .size(13.0),
     );
-    if start || !gold.visible {
+    if start || (!gold.visible && !overlay) {
         ui.label(
             egui::RichText::new(ghost_hint(gold.visible))
                 .color(GOLD)
@@ -900,13 +904,51 @@ pub fn race_lines(ui: &mut egui::Ui, gold: &GoldGhosts, trial: &TimeTrial, state
     }
 }
 
-/// What H does to the ghost right now.
-pub fn ghost_hint(visible: bool) -> &'static str {
-    if visible {
-        "Press H to hide the gold medal ghost (the see-through car)"
-    } else {
-        "Gold medal ghost hidden — press H to show it"
+/// The ghost key, large in the middle of the screen for the first seconds of a race on a course
+/// with a gold medal ghost, fading out over the last half second.
+fn ghost_hint_overlay(
+    mut contexts: EguiContexts,
+    manager: Res<TimeTrialManager>,
+    gold: Res<GoldGhosts>,
+) {
+    let TrialState::Racing { elapsed } = manager.state else {
+        return;
+    };
+    if elapsed >= GHOST_HINT_SECS || manager.menu_open {
+        return;
     }
+    if manager.current_trial().and_then(|t| gold.get(t)).is_none() {
+        return;
+    }
+    let Ok(ctx) = contexts.ctx_mut() else { return };
+    let fade = ((GHOST_HINT_SECS - elapsed) / 0.5).clamp(0.0, 1.0);
+    let alpha = |c: egui::Color32| c.gamma_multiply(fade);
+    egui::Area::new(egui::Id::new("ghost_hint_overlay"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -60.0))
+        .interactable(false)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(alpha(egui::Color32::from_black_alpha(190)))
+                .stroke(egui::Stroke::new(2.0_f32, alpha(GOLD)))
+                .corner_radius(10.0)
+                .inner_margin(egui::Margin::symmetric(28, 14))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new(ghost_hint(gold.visible))
+                                .color(alpha(GOLD))
+                                .size(26.0)
+                                .strong(),
+                        );
+                    });
+                });
+        });
+}
+
+/// The ghost key's hint, the same shown or hidden.
+pub fn ghost_hint(_visible: bool) -> &'static str {
+    "H to toggle"
 }
 
 /// What the Replays page asks for.
