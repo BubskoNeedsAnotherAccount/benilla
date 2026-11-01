@@ -540,8 +540,8 @@ fn collide_cars(
     }
 }
 
-/// Offers a driver who is not in a versus race the start another driver just stepped onto, with a
-/// button that joins it. It goes when the driver's start has passed or the course is not found.
+/// Offers every driver the start another driver just stepped onto, with a button that joins it. It
+/// goes when that start has passed, the course is not found, or the driver is already on it.
 fn invite_popup(
     mut contexts: EguiContexts,
     time: Res<Time>,
@@ -562,15 +562,23 @@ fn invite_popup(
         .trials
         .iter()
         .position(|t| t.versus && t.name == invite.course);
-    let racing = manager.current_trial().is_some_and(|t| t.versus);
+    // Already on that course: nothing to join.
+    let there = manager
+        .current_trial()
+        .is_some_and(|t| t.name == invite.course);
+    // Below the race panel when one is up.
+    let top = if manager.current_trial().is_some() {
+        230.0
+    } else {
+        24.0
+    };
     let (Some(course), Some(name), true, false) = (
         course,
         roster.names.get(&invite.id).cloned(),
         on_start,
-        racing,
+        there,
     ) else {
-        // Nothing to offer now; one already in a race has no use for it later either.
-        if !on_start || racing || course.is_none() {
+        if !on_start || there || course.is_none() {
             roster.invite = None;
         }
         return;
@@ -578,25 +586,63 @@ fn invite_popup(
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let (mut join, mut dismiss) = (false, false);
     egui::Area::new(egui::Id::new("race_invite"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
+        .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::window(&ctx.style())
-                .fill(egui::Color32::from_black_alpha(210))
+                .fill(egui::Color32::from_rgb(28, 14, 6))
                 .stroke(egui::Stroke::new(
-                    1.5_f32,
-                    egui::Color32::from_rgb(255, 90, 60),
+                    3.0_f32,
+                    egui::Color32::from_rgb(255, 200, 40),
                 ))
-                .corner_radius(8.0)
-                .inner_margin(egui::Margin::symmetric(16, 12))
+                .corner_radius(12.0)
+                .shadow(egui::Shadow {
+                    offset: [0, 4],
+                    blur: 24,
+                    spread: 4,
+                    color: egui::Color32::from_rgba_unmultiplied(255, 170, 0, 90),
+                })
+                .inner_margin(egui::Margin::symmetric(28, 18))
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{name} just joined {}", invite.course))
-                            .color(egui::Color32::WHITE)
-                            .strong(),
-                    );
-                    ui.horizontal(|ui| {
-                        join = ui.button("Join them").clicked();
-                        dismiss = ui.button("Dismiss").clicked();
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("🏁 {name} just joined"))
+                                .color(egui::Color32::from_rgb(255, 230, 80))
+                                .size(24.0)
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new(&invite.course)
+                                .color(egui::Color32::WHITE)
+                                .size(30.0)
+                                .strong(),
+                        );
+                        ui.add_space(10.0);
+                        let go = egui::Button::new(
+                            egui::RichText::new("▶  JOIN THEM")
+                                .color(egui::Color32::BLACK)
+                                .size(26.0)
+                                .strong(),
+                        )
+                        .fill(egui::Color32::from_rgb(70, 235, 90))
+                        .stroke(egui::Stroke::new(2.0_f32, egui::Color32::WHITE))
+                        .corner_radius(10.0)
+                        .min_size(egui::vec2(260.0, 52.0));
+                        join = ui
+                            .add(go)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked();
+                        ui.add_space(4.0);
+                        dismiss = ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("not now")
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                        .size(13.0),
+                                )
+                                .frame(false),
+                            )
+                            .clicked();
                     });
                 });
         });
