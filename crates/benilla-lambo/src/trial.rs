@@ -1176,6 +1176,7 @@ pub fn start_trial_by_index(
 pub fn update_trial_progress(
     time: Res<Time>,
     mut manager: ResMut<TimeTrialManager>,
+    lobby: Res<VersusLobby>,
     car: Query<&Car>,
 ) {
     let Ok(car) = car.single() else { return };
@@ -1187,8 +1188,12 @@ pub fn update_trial_progress(
 
     match manager.state {
         TrialState::WaitingToStart => {
-            // Once car has touched ground and player hits throttle or begins rolling, start timer
-            if car.placed
+            // Once car has touched ground and player hits throttle or begins rolling, start timer.
+            // Online, a versus course starts only by its countdown (`update_versus`): the map
+            // finishing to load lands in a frame before that runs, with the car already down and
+            // the throttle held.
+            if !(trial.versus && lobby.online)
+                && car.placed
                 && !manager.loading
                 && (car.throttle_input.abs() > 0.05 || car.speed() > 1.0)
             {
