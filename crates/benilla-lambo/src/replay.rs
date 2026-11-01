@@ -21,6 +21,7 @@ use crate::camera::ChaseCam;
 use crate::car::{spawn_model, wheel_rotation, Car, CarAssets, Wheels};
 use crate::model::WHEEL_RADIUS;
 use crate::settings::Settings;
+use crate::smoke::{motion_smoke_level, puff, smoke_interval, TireSmokeAssets};
 use crate::trial::{
     advance_race, format_time, RaceProgress, TimeTrial, TimeTrialManager, TrialState,
 };
@@ -469,17 +470,22 @@ pub struct GoldGhost {
     wheels: Wheels,
     spin: f32,
     player: String,
+    /// Seconds to its next round of tyre smoke.
+    smoke_wait: f32,
 }
 
 /// Drives the gold medal ghost: at the start line until the race begins, then along its replay at
-/// the race clock, gone once it has finished. H shows or hides it.
-#[allow(clippy::type_complexity)]
+/// the race clock, gone once it has finished, smoking its tyres at half opacity where it drifted. H
+/// shows or hides it.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn drive_gold_ghost(
     mut commands: Commands,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     assets: Option<Res<CarAssets>>,
     manager: Res<TimeTrialManager>,
+    settings: Res<Settings>,
+    smoke: Option<ResMut<TireSmokeAssets>>,
     mut gold: ResMut<GoldGhosts>,
     mut ghosts: Query<(&mut GoldGhost, &mut Transform, &mut Visibility)>,
     mut parts: Query<&mut Transform, Without<GoldGhost>>,
@@ -522,6 +528,7 @@ pub fn drive_gold_ghost(
                 wheels,
                 spin: 0.0,
                 player,
+                smoke_wait: 0.0,
             });
         }
         return;
@@ -542,6 +549,30 @@ pub fn drive_gold_ghost(
         if let Ok(mut wtf) = parts.get_mut(wheel) {
             wtf.rotation = wheel_rotation(steer, -ghost.spin);
         }
+    }
+
+    // Smoke only while it is driving, not waiting on the line.
+    let level = if matches!(manager.state, TrialState::Racing { .. }) {
+        motion_smoke_level(pose.vel, tf.rotation)
+    } else {
+        0
+    };
+    let Some(mut smoke) = smoke.filter(|_| settings.tire_smoke && level > 0) else {
+        ghost.smoke_wait = 0.0;
+        return;
+    };
+    ghost.smoke_wait -= time.delta_secs();
+    if ghost.smoke_wait <= 0.0 {
+        ghost.smoke_wait = smoke_interval(level);
+        puff(
+            &mut commands,
+            &mut smoke,
+            tf.translation,
+            tf.rotation,
+            pose.vel,
+            level,
+            true,
+        );
     }
 }
 
@@ -578,7 +609,7 @@ fn ghost_tag(
     let title =
         painter.layout_no_wrap("AUTHOR TIME".into(), egui::FontId::proportional(15.0), GOLD);
     let sub = painter.layout_no_wrap(
-        format!("gold medal ghost · set by {}", ghost.player),
+        format!("by {}", ghost.player),
         egui::FontId::proportional(11.0),
         egui::Color32::from_rgb(230, 215, 170),
     );
@@ -948,7 +979,7 @@ fn ghost_hint_overlay(
 
 /// The ghost key's hint, the same shown or hidden.
 pub fn ghost_hint(_visible: bool) -> &'static str {
-    "H to toggle"
+    "H to toggle Author Ghost"
 }
 
 /// What the Replays page asks for.

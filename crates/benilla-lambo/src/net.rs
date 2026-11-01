@@ -365,12 +365,16 @@ const REMOTE_SMOKE_RANGE: f32 = 150.0;
 const REMOTE_SMOKE_CAP: usize = 120;
 
 /// Puffs tyre smoke from the remote cars that report drifting, braking hard, a burnout or
-/// 200 km/h, thinner than the local car's and only near the camera.
+/// 200 km/h, thinner than the local car's and only near the camera; half as opaque while the cars
+/// are drawn as ghosts.
+#[allow(clippy::too_many_arguments)]
 fn smoke_remote_cars(
     mut commands: Commands,
     time: Res<Time>,
     smoke: Option<ResMut<TireSmokeAssets>>,
     settings: Res<crate::settings::Settings>,
+    manager: Res<TimeTrialManager>,
+    lobby: Res<VersusLobby>,
     camera: Query<&GlobalTransform, With<WorldCamera>>,
     mut cars: Query<(&mut RemoteCar, &Transform)>,
 ) {
@@ -381,6 +385,7 @@ fn smoke_remote_cars(
     let Ok(camera) = camera.single() else { return };
     let eye = camera.translation();
     let dt = time.delta_secs();
+    let ghosted = manager.ghosted(lobby.online);
     for (mut car, tf) in &mut cars {
         if car.smoke == 0 {
             car.smoke_wait = 0.0;
@@ -403,6 +408,7 @@ fn smoke_remote_cars(
             tf.rotation,
             car.vel,
             car.smoke,
+            ghosted,
         );
     }
 }
