@@ -309,7 +309,7 @@ pub struct TimeTrialManager {
 /// Seconds a versus start counts down, from the last driver to join the grid.
 pub const VERSUS_COUNTDOWN: f32 = 10.0;
 /// Seconds after a versus race starts during which cars pass through each other.
-pub const VERSUS_GHOST: f32 = 5.0;
+pub const VERSUS_GHOST: f32 = 2.0;
 
 /// Multiplayer as the race code sees it. The browser build's `net` fills it; elsewhere it stays
 /// offline and a versus course runs as a plain one.
@@ -1668,7 +1668,13 @@ pub fn render_trial_ui(
         let best_lap = manager.best_laps.get(&trial.name).copied();
         let drivers = lobby.rivals.len() + 1;
 
-        if manager.loading {
+        // Only before the start: models streaming in during a race are not worth a modal.
+        if manager.loading
+            && matches!(
+                manager.state,
+                TrialState::WaitingToStart | TrialState::Countdown { .. }
+            )
+        {
             let (ready, total) = preload.pending().unwrap_or((0, 0));
             egui::Area::new(egui::Id::new("course_loading"))
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -2655,7 +2661,7 @@ mod tests {
     }
 
     #[test]
-    fn versus_cars_are_ghosts_until_five_seconds_into_the_race() {
+    fn versus_cars_are_ghosts_until_two_seconds_into_the_race() {
         let mut m = TimeTrialManager::default();
         let mut race = parse(
             r#"[{"name": "G", "map": 0, "start": [0,0,0], "rotation": 90, "end": [500,0,0]}]"#,
@@ -2665,11 +2671,11 @@ mod tests {
         m.current_trial_idx = Some(0);
         m.state = TrialState::Countdown { remaining: 3.0 };
         assert!(m.ghosted(true));
-        m.state = TrialState::Racing { elapsed: 4.9 };
+        m.state = TrialState::Racing { elapsed: 1.9 };
         assert!(m.ghosted(true));
         // Alone, a versus course runs as a plain one.
         assert!(!m.ghosted(false));
-        m.state = TrialState::Racing { elapsed: 5.0 };
+        m.state = TrialState::Racing { elapsed: 2.0 };
         assert!(!m.ghosted(true));
         m.state = TrialState::WaitingToStart;
         m.loading = true;
