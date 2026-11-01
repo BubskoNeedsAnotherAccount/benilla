@@ -1534,31 +1534,8 @@ fn menu_row(ui: &mut egui::Ui, idx: usize, row: &MenuRow) -> egui::Response {
                 }
                 ui.add_space(4.0);
 
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.horizontal(|ui| {
-                        plain(
-                            ui,
-                            egui::RichText::new(row.title).size(15.0).strong().color(
-                                if row.selected {
-                                    MENU_GOLD
-                                } else {
-                                    egui::Color32::WHITE
-                                },
-                            ),
-                        );
-                        if row.versus {
-                            badge(ui, "VERSUS", egui::Color32::from_rgb(120, 200, 255));
-                        }
-                    });
-                    plain(
-                        ui,
-                        egui::RichText::new(&row.subtitle)
-                            .size(12.0)
-                            .color(egui::Color32::GRAY),
-                    );
-                });
-
+                // Badges and best time claim the right edge first; the title and subtitle
+                // take what is left and truncate rather than run under them.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if row.active {
                         badge(ui, "ACTIVE", egui::Color32::from_rgb(110, 220, 120));
@@ -1572,6 +1549,38 @@ fn menu_row(ui: &mut egui::Ui, idx: usize, row: &MenuRow) -> egui::Response {
                                 .color(MENU_GOLD),
                         );
                     }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(row.title).size(15.0).strong().color(
+                                            if row.selected {
+                                                MENU_GOLD
+                                            } else {
+                                                egui::Color32::WHITE
+                                            },
+                                        ),
+                                    )
+                                    .selectable(false)
+                                    .truncate(),
+                                );
+                                if row.versus {
+                                    badge(ui, "VERSUS", egui::Color32::from_rgb(120, 200, 255));
+                                }
+                            });
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&row.subtitle)
+                                        .size(12.0)
+                                        .color(egui::Color32::GRAY),
+                                )
+                                .selectable(false)
+                                .truncate(),
+                            );
+                        });
+                    });
                 });
             });
         });
@@ -1911,55 +1920,58 @@ pub fn render_trial_ui(
             .show(ctx, |ui| {
                 ui.set_width(560.0);
 
-                // Header: title, what is running now, and the page tabs.
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        plain(
-                            ui,
-                            egui::RichText::new("BENILLA LAMBO")
-                                .color(MENU_ACCENT)
-                                .size(24.0)
-                                .strong(),
-                        );
-                        plain(
-                            ui,
+                // Header: title and what is running now, then the page tabs on their own row
+                // so a long "Now:" line cannot run under them.
+                ui.vertical(|ui| {
+                    plain(
+                        ui,
+                        egui::RichText::new("BENILLA LAMBO")
+                            .color(MENU_ACCENT)
+                            .size(24.0)
+                            .strong(),
+                    );
+                    ui.add(
+                        egui::Label::new(
                             egui::RichText::new(format!("Now: {now_driving}"))
                                 .color(egui::Color32::LIGHT_GRAY)
                                 .size(13.0),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        for (page, label) in [
-                            (MenuTab::Settings, "Settings"),
-                            (MenuTab::Slayzer, "Slayzer's Races"),
-                            (MenuTab::Race, "Racing"),
-                            (MenuTab::FreeDrive, "Free Driving"),
-                        ] {
-                            let on = new_tab == page;
-                            let button = egui::Button::new(
-                                egui::RichText::new(label).size(15.0).strong().color(if on {
-                                    egui::Color32::BLACK
-                                } else {
-                                    egui::Color32::LIGHT_GRAY
-                                }),
-                            )
-                            .fill(if on {
-                                MENU_ACCENT
+                        )
+                        .selectable(false)
+                        .truncate(),
+                    );
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    for (page, label) in [
+                        (MenuTab::FreeDrive, "Free Driving"),
+                        (MenuTab::Race, "Racing"),
+                        (MenuTab::Slayzer, "Slayzer's Races"),
+                        (MenuTab::Settings, "Settings"),
+                    ] {
+                        let on = new_tab == page;
+                        let button = egui::Button::new(
+                            egui::RichText::new(label).size(15.0).strong().color(if on {
+                                egui::Color32::BLACK
                             } else {
-                                egui::Color32::from_white_alpha(10)
-                            })
-                            .corner_radius(6.0)
-                            .min_size(egui::vec2(92.0, 30.0));
-                            if ui.add(button).clicked() {
-                                new_tab = page;
-                                if let Some(range) = menu_range(page, &manager.trials) {
-                                    if !range.contains(&selected) {
-                                        tab_selection = Some(range.start);
-                                    }
+                                egui::Color32::LIGHT_GRAY
+                            }),
+                        )
+                        .fill(if on {
+                            MENU_ACCENT
+                        } else {
+                            egui::Color32::from_white_alpha(10)
+                        })
+                        .corner_radius(6.0)
+                        .min_size(egui::vec2(92.0, 30.0));
+                        if ui.add(button).clicked() {
+                            new_tab = page;
+                            if let Some(range) = menu_range(page, &manager.trials) {
+                                if !range.contains(&selected) {
+                                    tab_selection = Some(range.start);
                                 }
                             }
                         }
-                    });
+                    }
                 });
                 ui.add_space(10.0);
                 ui.separator();
