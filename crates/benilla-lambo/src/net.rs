@@ -17,7 +17,7 @@ use crate::camera::ChaseCam;
 use crate::car::{orientation, smooth, spawn_model, wheel_rotation, Car, CarAssets, Wheels};
 use crate::model::WHEEL_RADIUS;
 use crate::smoke::{puff, smoke_interval, smoke_level, TireSmokeAssets};
-use crate::trial::{GridPhase, Rival, TimeTrialManager, VersusLobby, VERSUS_COUNTDOWN};
+use crate::trial::{GridPhase, Rival, TimeTrialManager, TrialState, VersusLobby, VERSUS_COUNTDOWN};
 
 #[wasm_bindgen]
 extern "C" {
@@ -562,10 +562,12 @@ fn invite_popup(
         .trials
         .iter()
         .position(|t| t.versus && t.name == invite.course);
-    // Already on that course: nothing to join.
+    // On that course and not done with it (its start, or a run under way): nothing to join. A
+    // restart there (DEL) reaches those who have finished.
     let there = manager
         .current_trial()
-        .is_some_and(|t| t.name == invite.course);
+        .is_some_and(|t| t.name == invite.course)
+        && !matches!(manager.state, TrialState::Finished { .. });
     // Below the race panel when one is up.
     let top = if manager.current_trial().is_some() {
         230.0
