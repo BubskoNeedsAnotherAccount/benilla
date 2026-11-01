@@ -61,6 +61,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     color = color + paint.spec.rgb * highlight * paint.finish.x;
 
     // Glass turns opaque toward grazing angles, as a reflection does.
-    let alpha = mix(base.a, 1.0, fresnel * paint.finish.z);
+    // A ghost car (`finish.w` > 0) is that much less opaque throughout.
+    let alpha = mix(base.a, 1.0, fresnel * paint.finish.z) * (1.0 - paint.finish.w);
     return vec4<f32>(clamp(color, vec3(0.0), vec3(1.0)), alpha);
 }

@@ -294,7 +294,16 @@ impl Input {
 #[derive(Resource)]
 pub struct CarAssets {
     parts: Vec<(PartKind, Vec3, Handle<Mesh>, Handle<CarMaterial>)>,
+    /// Each part's translucent twin, shown while cars are ghosts (`ghost_cars`).
+    ghosts: Vec<Handle<CarMaterial>>,
 }
+
+/// A spawned model part, by its index in `CarAssets`.
+#[derive(Component)]
+pub struct CarPart(usize);
+
+/// How transparent a ghost car is.
+const GHOST_FADE: f32 = 0.6;
 
 /// The wheel entities of a spawned model: back pair, front left, front right.
 #[derive(Clone, Copy)]
@@ -316,6 +325,8 @@ pub fn load_car_assets(
     commands.insert_resource(silhouette(&parts));
     let texture = images.add(texture);
     let mut made: HashMap<(bool, Finish), Handle<CarMaterial>> = HashMap::new();
+    let mut ghosts = Vec::new();
+    let mut ghost_of: HashMap<AssetId<CarMaterial>, Handle<CarMaterial>> = HashMap::new();
     let parts = parts
         .into_iter()
         .map(|p| {
@@ -343,10 +354,20 @@ pub fn load_car_assets(
                     handle
                 })
                 .clone();
+            // One twin per paint, made when the paint is first met.
+            let ghost = ghost_of.entry(material.id()).or_insert_with(|| {
+                let mut twin = materials.get(&material).expect("a paint just made").clone();
+                twin.base.alpha_mode = AlphaMode::Blend;
+                twin.extension.finish.w = GHOST_FADE;
+                let handle = materials.add(twin);
+                painted.0.push(handle.clone());
+                handle
+            });
+            ghosts.push(ghost.clone());
             (p.kind, p.pivot, meshes.add(p.mesh), material)
         })
         .collect();
-    commands.insert_resource(CarAssets { parts });
+    commands.insert_resource(CarAssets { parts, ghosts });
 }
 
 /// The shadow's outline from every vertex of the model, in car space as `spawn_model` places it.
@@ -385,11 +406,12 @@ pub fn spawn_model(commands: &mut Commands, assets: &CarAssets, parent: Entity) 
         back: Entity::PLACEHOLDER,
         front: [Entity::PLACEHOLDER; 2],
     };
-    for (kind, pivot, mesh, material) in &assets.parts {
+    for (i, (kind, pivot, mesh, material)) in assets.parts.iter().enumerate() {
         let id = commands
             .spawn((
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(material.clone()),
+                CarPart(i),
                 Transform::from_translation(*pivot),
                 ChildOf(root),
             ))
@@ -410,6 +432,30 @@ pub fn spawn_model(commands: &mut Commands, assets: &CarAssets, parent: Entity) 
         }
     }
     wheels
+}
+
+/// While cars pass through each other (`TimeTrialManager::ghosted`) every car is drawn
+/// translucent: the parts swap to their ghost paint when it starts and back when it ends, and a car
+/// that appears meanwhile is swapped as it spawns.
+pub fn ghost_cars(
+    manager: Res<crate::trial::TimeTrialManager>,
+    assets: Res<CarAssets>,
+    mut parts: Query<(Ref<CarPart>, &mut MeshMaterial3d<CarMaterial>)>,
+    mut shown: Local<bool>,
+) {
+    let ghosted = manager.ghosted();
+    let changed = ghosted != *shown;
+    *shown = ghosted;
+    for (part, mut material) in &mut parts {
+        if changed || (ghosted && part.is_added()) {
+            let twin = if ghosted {
+                &assets.ghosts[part.0]
+            } else {
+                &assets.parts[part.0].3
+            };
+            material.0 = twin.clone();
+        }
+    }
 }
 
 /// Spawns the player's car.

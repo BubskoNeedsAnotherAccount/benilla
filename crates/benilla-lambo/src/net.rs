@@ -104,14 +104,12 @@ struct Roster {
 /// Tells the race code who is online and who is counting down on the same versus course.
 fn fill_lobby(
     time: Res<Time>,
-    roster: Res<Roster>,
     manager: Res<TimeTrialManager>,
     mut lobby: ResMut<VersusLobby>,
     cars: Query<&RemoteCar>,
 ) {
     let now = time.elapsed_secs();
     lobby.online = net_state() == 2;
-    lobby.my_id = roster.my_id;
     lobby.rivals.clear();
     if let Some((course, _)) = manager.versus_tag() {
         lobby.rivals.extend(cars.iter().filter_map(|car| {
@@ -411,13 +409,15 @@ const MAX_PUSH: f32 = 2.0;
 /// each pushes itself half the overlap away and takes half the impulse, so the two sides agree
 /// without any shared physics.
 fn collide_cars(
+    manager: Res<TimeTrialManager>,
     mut local: Query<(&mut Car, &mut Transform), Without<RemoteCar>>,
     remotes: Query<(&RemoteCar, &Transform), Without<Car>>,
 ) {
     let Ok((mut car, mut tf)) = local.single_mut() else {
         return;
     };
-    if !car.placed {
+    // A race starts with everyone on one spot: no bumping until the field has spread out.
+    if !car.placed || manager.ghosted() {
         return;
     }
     let heading = |yaw: f32| Vec3::new(-yaw.sin(), 0.0, -yaw.cos());

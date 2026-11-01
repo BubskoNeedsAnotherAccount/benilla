@@ -29,7 +29,8 @@ pub struct CarPaint {
     /// The horizon colour the paint reflects.
     #[uniform(100)]
     pub sky: Vec4,
-    /// x highlight strength, y highlight exponent, z reflection strength.
+    /// x highlight strength, y highlight exponent, z reflection strength, w how transparent a
+    /// ghost car is (0 for an ordinary one).
     #[uniform(100)]
     pub finish: Vec4,
     /// The glb's texture; untextured parts sample white.

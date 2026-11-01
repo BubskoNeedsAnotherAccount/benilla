@@ -299,8 +299,8 @@ pub struct TimeTrialManager {
     pub debug_open: bool,
     /// The rivals already on this countdown's grid; a new one restarts the count.
     pub versus_known: Vec<u32>,
-    /// Our place on the grid and the grid's size when the car was last put there.
-    pub grid_slot: Option<(usize, usize)>,
+    /// The car has been put on the start line for this countdown.
+    pub on_grid: bool,
     /// The picked course's map is still being preloaded (`preload::mark_course_loading`): the car
     /// is held and no start or countdown begins until it has loaded.
     pub loading: bool,
@@ -308,9 +308,8 @@ pub struct TimeTrialManager {
 
 /// Seconds a versus start counts down, from the last driver to join the grid.
 pub const VERSUS_COUNTDOWN: f32 = 10.0;
-/// Grid spacing: across the road, and back per place.
-const GRID_SIDE: f32 = 2.6;
-const GRID_BACK: f32 = 4.0;
+/// Seconds after a versus race starts during which cars pass through each other.
+pub const VERSUS_GHOST: f32 = 5.0;
 
 /// Multiplayer as the race code sees it. The browser build's `net` fills it; elsewhere it stays
 /// offline and a versus course runs as a plain one.
@@ -318,8 +317,6 @@ const GRID_BACK: f32 = 4.0;
 pub struct VersusLobby {
     /// Connected to a relay.
     pub online: bool,
-    /// This client's relay id.
-    pub my_id: Option<u32>,
     /// The other drivers counting down on the same course, sorted by id.
     pub rivals: Vec<u32>,
 }
@@ -334,6 +331,19 @@ impl TimeTrialManager {
             TrialState::Countdown { .. } => Some((&trial.name, true)),
             TrialState::Racing { .. } | TrialState::WaitingToStart => Some((&trial.name, false)),
             _ => None,
+        }
+    }
+
+    /// Cars do not bump: a versus race is counting down, or started less than `VERSUS_GHOST` ago.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn ghosted(&self) -> bool {
+        if !self.current_trial().is_some_and(|t| t.versus) {
+            return false;
+        }
+        match self.state {
+            TrialState::Countdown { .. } => true,
+            TrialState::Racing { elapsed } => elapsed < VERSUS_GHOST,
+            _ => false,
         }
     }
 
@@ -367,7 +377,7 @@ impl Default for TimeTrialManager {
             free_drive_loc,
             debug_open: false,
             versus_known: Vec::new(),
-            grid_slot: None,
+            on_grid: false,
             loading: false,
         }
     }
@@ -808,21 +818,16 @@ fn checkpoint_respawn(trial: &TimeTrial, progress: &RaceProgress) -> Option<([f3
     Some(([last[0], last[1], last[2] + 40.0], (-d.x).atan2(-d.z)))
 }
 
-/// Where versus grid place `slot` starts (WoW coordinates, raised for the drop) and its heading:
-/// a staggered two-wide grid behind the start, every car facing the course's start heading.
-pub fn grid_spawn(trial: &TimeTrial, slot: usize) -> ([f32; 3], f32) {
-    let yaw = start_yaw(trial);
-    let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-    let right = fwd.cross(Vec3::Y);
-    let side = if slot % 2 == 0 { -GRID_SIDE } else { GRID_SIDE };
-    let at = wow_to_bevy(trial.start) - fwd * (slot as f32 * GRID_BACK) + right * side;
-    let mut wow = bevy_to_wow(at);
-    wow[2] = trial.start[2] + 40.0;
-    (wow, yaw)
+/// Where every versus car starts (WoW coordinates, raised for the drop) and its heading: all on
+/// the course's start, facing its start heading; the cars are ghosts until the race is under way.
+pub fn grid_spawn(trial: &TimeTrial) -> ([f32; 3], f32) {
+    let mut wow = trial.start;
+    wow[2] += 40.0;
+    (wow, start_yaw(trial))
 }
 
 /// Runs a versus start: online, a versus course counts down instead of waiting for
-/// the throttle, puts the car on its grid place, and restarts the count whenever a driver joins
+/// the throttle, puts the car on the start, and restarts the count whenever a driver joins
 /// the grid.
 pub fn update_versus(
     time: Res<Time>,
@@ -840,7 +845,7 @@ pub fn update_versus(
             remaining: VERSUS_COUNTDOWN,
         };
         manager.versus_known.clear();
-        manager.grid_slot = None;
+        manager.on_grid = false;
     }
     let TrialState::Countdown { mut remaining } = manager.state else {
         return;
@@ -860,29 +865,17 @@ pub fn update_versus(
     }
     manager.versus_known = lobby.rivals.clone();
 
-    // Places go by relay id, so a driver who joins later lines up behind. A car is moved only
-    // when someone joins: one leaving the grid (because their count ran out first) moves no one.
-    if joined || manager.grid_slot.is_none() {
-        let mut grid = lobby.rivals.clone();
-        grid.extend(lobby.my_id);
-        grid.sort_unstable();
-        grid.dedup();
-        let slot = lobby
-            .my_id
-            .and_then(|me| grid.iter().position(|&id| id == me))
-            .unwrap_or(0);
-        let place = (slot, grid.len());
-        if manager.grid_slot.map(|(s, _)| s) != Some(slot) {
-            let (at, yaw) = grid_spawn(&trial, slot);
-            if let Ok(mut c) = car.single_mut() {
-                c.set_spawn(at, yaw);
-            }
-            if let Ok(mut cam) = chase_cam.single_mut() {
-                cam.yaw = yaw;
-                cam.snapped = false;
-            }
+    // Every car starts on the same spot, put there once per countdown.
+    if !manager.on_grid {
+        let (at, yaw) = grid_spawn(&trial);
+        if let Ok(mut c) = car.single_mut() {
+            c.set_spawn(at, yaw);
         }
-        manager.grid_slot = Some(place);
+        if let Ok(mut cam) = chase_cam.single_mut() {
+            cam.yaw = yaw;
+            cam.snapped = false;
+        }
+        manager.on_grid = true;
     }
 
     // The count holds until the car is on the ground.
@@ -1102,7 +1095,7 @@ pub fn start_trial_by_index(
     manager.state = TrialState::WaitingToStart;
     manager.progress = RaceProgress::default();
     manager.versus_known.clear();
-    manager.grid_slot = None;
+    manager.on_grid = false;
     manager.loading = true;
 
     // Switch map if trial is on another continent
@@ -2602,27 +2595,34 @@ mod tests {
     }
 
     #[test]
-    fn grid_places_line_up_behind_the_start_facing_one_way() {
+    fn every_versus_car_starts_on_the_start_facing_one_way() {
         let race = parse(
             r#"[{"name": "G", "map": 0, "start": [0,0,0], "rotation": 90, "end": [500,0,0]}]"#,
         );
-        let places: Vec<_> = (0..4).map(|slot| grid_spawn(&race, slot)).collect();
-        let start = wow_to_bevy(race.start);
-        let yaw = 90f32.to_radians();
-        let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-        for (slot, (at, heading)) in places.iter().enumerate() {
-            assert!((heading - yaw).abs() < 1e-5);
-            let back = (start - wow_to_bevy(*at)).dot(fwd);
-            assert!((back - slot as f32 * GRID_BACK).abs() < 1e-3, "slot {slot}");
-            // Dropped from above the start.
-            assert_eq!(at[2], 40.0);
-        }
-        for a in 0..places.len() {
-            for b in a + 1..places.len() {
-                let d = wow_to_bevy(places[a].0) - wow_to_bevy(places[b].0);
-                assert!(Vec2::new(d.x, d.z).length() > 4.0, "{a} and {b} overlap");
-            }
-        }
+        let (at, heading) = grid_spawn(&race);
+        assert!((heading - 90f32.to_radians()).abs() < 1e-5);
+        // Dropped from above the start.
+        assert_eq!(at, [0.0, 0.0, 40.0]);
+    }
+
+    #[test]
+    fn versus_cars_are_ghosts_until_five_seconds_into_the_race() {
+        let mut m = TimeTrialManager::default();
+        let mut race = parse(
+            r#"[{"name": "G", "map": 0, "start": [0,0,0], "rotation": 90, "end": [500,0,0]}]"#,
+        );
+        race.versus = true;
+        m.trials = vec![race];
+        m.current_trial_idx = Some(0);
+        m.state = TrialState::Countdown { remaining: 3.0 };
+        assert!(m.ghosted());
+        m.state = TrialState::Racing { elapsed: 4.9 };
+        assert!(m.ghosted());
+        m.state = TrialState::Racing { elapsed: 5.0 };
+        assert!(!m.ghosted());
+        m.trials[0].versus = false;
+        m.state = TrialState::Racing { elapsed: 1.0 };
+        assert!(!m.ghosted());
     }
 
     #[test]
