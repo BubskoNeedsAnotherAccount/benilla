@@ -446,6 +446,10 @@ pub fn ghost_cars(
     let ghosted = manager.ghosted();
     let changed = ghosted != *shown;
     *shown = ghosted;
+    // Nothing to swap: skip walking every part of every car.
+    if !changed && !ghosted {
+        return;
+    }
     for (part, mut material) in &mut parts {
         if changed || (ghosted && part.is_added()) {
             let twin = if ghosted {
@@ -839,8 +843,8 @@ fn step(car: &mut Car, input: &Input, dt: f32, world: &WorldCollision) {
             car.vel -= car.up * downforce * dt;
         }
 
-        let points: Vec<Vec3> = contacts.iter().flatten().copied().collect();
-        let avg = points.iter().sum::<Vec3>() / points.len() as f32;
+        // `grounded` means two wheels touch, so `found >= 2`: the mean is never of nothing.
+        let avg = contacts.iter().flatten().sum::<Vec3>() / found as f32;
         let h = (car.pos - avg).dot(car.up);
         // Pushes only while compressed; the rest height includes the sag under gravity.
         let compress = RIDE + GRAVITY / SPRING_K - h;
