@@ -46,13 +46,14 @@ function cleanState(m) {
   const p = vec3(m.p, 1e6), v = vec3(m.v, 1e4), u = vec3(m.u, 2);
   const y = num(m.y, 1e4);
   if (!p || !v || !u || y === null) return null;
-  const out = { t: "s", p, v, y, u, n: m.n ? 1 : 0, d: m.d === 1 || m.d === 2 || m.d === 3 ? m.d : 0 };
-  // The versus course the driver is on, and whether its start is counting down.
-  if (typeof m.r === "string" && m.r.length > 0 && m.r.length <= 64) {
-    out.r = m.r;
-    out.c = m.c ? 1 : 0;
-  }
-  return out;
+  return { t: "s", p, v, y, u, n: m.n ? 1 : 0, d: m.d === 1 || m.d === 2 || m.d === 3 ? m.d : 0 };
+}
+
+/** Rebuilds a versus-start message: the course, 0 racing / 1 counting down / 2 loading, and the count left. */
+function cleanGrid(m) {
+  if (typeof m.r !== "string" || m.r.length === 0 || m.r.length > 64) return null;
+  const k = num(m.k, 60);
+  return { t: "g", r: m.r, c: m.c === 1 || m.c === 2 ? m.c : 0, k: k === null ? 0 : k };
 }
 
 function send(ws, msg) {
@@ -93,8 +94,8 @@ wss.on("connection", (ws, req) => {
     if (++inWindow > MAX_STATES_PER_SEC) return;
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
-    if (!msg || msg.t !== "s") return;
-    const state = cleanState(msg);
+    if (!msg || (msg.t !== "s" && msg.t !== "g")) return;
+    const state = msg.t === "g" ? cleanGrid(msg) : cleanState(msg);
     if (!state) return;
     state.id = id;
     const out = JSON.stringify(state);

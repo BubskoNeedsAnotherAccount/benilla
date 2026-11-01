@@ -15,7 +15,7 @@ use benilla_world::view::WorldCamera;
 use crate::car::{orientation, smooth, spawn_model, wheel_rotation, Car, CarAssets, Wheels};
 use crate::model::WHEEL_RADIUS;
 use crate::smoke::{puff, smoke_interval, smoke_level, TireSmokeAssets};
-use crate::trial::{TimeTrialManager, VersusLobby};
+use crate::trial::{GridPhase, Rival, TimeTrialManager, VersusLobby, VERSUS_COUNTDOWN};
 
 #[wasm_bindgen]
 extern "C" {
@@ -55,6 +55,17 @@ enum Incoming {
     Leave { id: u32 },
     #[serde(rename = "s")]
     State(State),
+    /// A driver's place in a versus start (`send_grid`).
+    #[serde(rename = "g")]
+    Grid {
+        id: u32,
+        r: String,
+        /// 0 past the start, 1 counting down, 2 loading.
+        c: u8,
+        /// Seconds left on the count, when counting.
+        #[serde(default)]
+        k: f32,
+    },
     #[serde(other)]
     Other,
 }
@@ -77,16 +88,20 @@ struct State {
     /// Tyre smoke level (smoke::smoke_level); older clients send none.
     #[serde(default)]
     d: u8,
-    /// The versus course the driver is on, if any.
-    #[serde(default)]
-    r: Option<String>,
-    /// 1 while that course's start is counting down.
-    #[serde(default)]
-    c: u8,
 }
 
-/// A driver counting down this long ago or less is still on the grid.
+/// What a driver last said about their versus start, and when.
+struct GridTag {
+    course: String,
+    phase: GridPhase,
+    /// `Time::elapsed_secs` of the message.
+    seen: f32,
+}
+
+/// A driver heard from this long ago or less is still on the grid.
 const GRID_FRESH: f32 = 2.0;
+/// Grid messages per second.
+const GRID_HZ: f32 = 10.0;
 
 /// The other drivers on the server.
 #[derive(Resource, Default)]
@@ -99,25 +114,66 @@ struct Roster {
     was_open: bool,
     /// This client's id, from the relay's welcome.
     my_id: Option<u32>,
+    /// Each driver's latest word on their versus start.
+    grids: HashMap<u32, GridTag>,
+    /// Seconds since the last grid message went out.
+    since_grid: f32,
 }
 
-/// Tells the race code who is online and who is counting down on the same versus course.
+/// Tells the race code who is online and who is loading or counting down on the same versus course.
 fn fill_lobby(
     time: Res<Time>,
+    roster: Res<Roster>,
     manager: Res<TimeTrialManager>,
     mut lobby: ResMut<VersusLobby>,
-    cars: Query<&RemoteCar>,
 ) {
     let now = time.elapsed_secs();
     lobby.online = net_state() == 2;
+    lobby.my_id = roster.my_id;
     lobby.rivals.clear();
-    if let Some((course, _)) = manager.versus_tag() {
-        lobby.rivals.extend(cars.iter().filter_map(|car| {
-            let (r, said) = car.grid.as_ref()?;
-            (r == course && now - said <= GRID_FRESH).then_some(car.id)
-        }));
+    if let Some((course, _)) = manager.versus_tag(true) {
+        lobby
+            .rivals
+            .extend(roster.grids.iter().filter_map(|(&id, tag)| {
+                let age = now - tag.seen;
+                if tag.course != course || age > GRID_FRESH {
+                    return None;
+                }
+                // A count's reading was taken `age` ago.
+                let phase = match tag.phase {
+                    GridPhase::Counting(left) => GridPhase::Counting((left - age).max(0.0)),
+                    GridPhase::Racing => return None,
+                    loading => loading,
+                };
+                Some(Rival { id, phase })
+            }));
     }
-    lobby.rivals.sort_unstable();
+    lobby.rivals.sort_unstable_by_key(|r| r.id);
+}
+
+/// Tells the others where this car is in a versus start, ten times a second, loading included:
+/// the car is held in the air then and sends no state.
+fn send_grid(
+    time: Res<Time>,
+    mut roster: ResMut<Roster>,
+    manager: Res<TimeTrialManager>,
+    car: Query<&Car>,
+) {
+    roster.since_grid += time.delta_secs();
+    if roster.since_grid < 1.0 / GRID_HZ || net_state() != 2 {
+        return;
+    }
+    let placed = car.single().is_ok_and(|c| c.placed);
+    let Some((course, phase)) = manager.versus_tag(placed) else {
+        return;
+    };
+    roster.since_grid = 0.0;
+    let (c, k) = match phase {
+        GridPhase::Racing => (0, 0.0),
+        GridPhase::Counting(left) => (1, left),
+        GridPhase::Loading => (2, 0.0),
+    };
+    net_send(&serde_json::json!({ "t": "g", "r": course, "c": c, "k": k }).to_string());
 }
 
 /// A car driven by another player.
@@ -138,8 +194,6 @@ struct RemoteCar {
     smoke_wait: f32,
     /// Wheel roll angle, from the speed along the car's heading.
     spin: f32,
-    /// The versus course this driver is counting down on, and when that was last said.
-    grid: Option<(String, f32)>,
 }
 
 pub struct NetPlugin;
@@ -153,6 +207,7 @@ impl Plugin for NetPlugin {
                     receive,
                     fill_lobby,
                     send_state,
+                    send_grid,
                     ease_remote_cars,
                     roll_remote_wheels,
                     smoke_remote_cars,
@@ -170,6 +225,7 @@ fn drop_all(commands: &mut Commands, roster: &mut Roster) {
         commands.entity(e).despawn();
     }
     roster.names.clear();
+    roster.grids.clear();
 }
 
 /// Reads what the socket has received: who is here, and where their cars are.
@@ -203,6 +259,7 @@ fn receive(
             }
             Incoming::Leave { id } => {
                 roster.names.remove(&id);
+                roster.grids.remove(&id);
                 if let Some(e) = roster.cars.remove(&id) {
                     commands.entity(e).despawn();
                 }
@@ -214,7 +271,6 @@ fn receive(
                 }
                 let up = up.normalize_or(Vec3::Y);
                 let seen = time.elapsed_secs();
-                let grid = s.r.filter(|_| s.c != 0).map(|r| (r, seen));
                 if let Some(&e) = roster.cars.get(&s.id) {
                     if let Ok(mut car) = cars.get_mut(e) {
                         car.pos = pos;
@@ -224,7 +280,6 @@ fn receive(
                         car.nitro = s.n != 0;
                         car.smoke = s.d.min(3);
                         car.seen = seen;
-                        car.grid = grid;
                     }
                     continue;
                 }
@@ -247,10 +302,24 @@ fn receive(
                         spin: 0.0,
                         smoke: s.d.min(3),
                         smoke_wait: 0.0,
-                        grid,
                     },
                 );
                 roster.cars.insert(s.id, e);
+            }
+            Incoming::Grid { id, r, c, k } => {
+                let phase = match c {
+                    1 if k.is_finite() => GridPhase::Counting(k.clamp(0.0, VERSUS_COUNTDOWN)),
+                    2 => GridPhase::Loading,
+                    _ => GridPhase::Racing,
+                };
+                roster.grids.insert(
+                    id,
+                    GridTag {
+                        course: r,
+                        phase,
+                        seen: time.elapsed_secs(),
+                    },
+                );
             }
             Incoming::Other => {}
         }
@@ -350,10 +419,7 @@ fn send_state(
         return;
     }
     roster.since_send = 0.0;
-    let grid = manager.versus_tag();
     let msg = serde_json::json!({
-        "r": grid.map(|(course, _)| course),
-        "c": u8::from(grid.is_some_and(|(_, counting)| counting)),
         "t": "s",
         "p": [car.pos.x, car.pos.y, car.pos.z],
         "v": [car.vel.x, car.vel.y, car.vel.z],
@@ -410,6 +476,7 @@ const MAX_PUSH: f32 = 2.0;
 /// without any shared physics.
 fn collide_cars(
     manager: Res<TimeTrialManager>,
+    lobby: Res<VersusLobby>,
     mut local: Query<(&mut Car, &mut Transform), Without<RemoteCar>>,
     remotes: Query<(&RemoteCar, &Transform), Without<Car>>,
 ) {
@@ -417,7 +484,7 @@ fn collide_cars(
         return;
     };
     // A race starts with everyone on one spot: no bumping until the field has spread out.
-    if !car.placed || manager.ghosted() {
+    if !car.placed || manager.ghosted(lobby.online) {
         return;
     }
     let heading = |yaw: f32| Vec3::new(-yaw.sin(), 0.0, -yaw.cos());

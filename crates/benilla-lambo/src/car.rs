@@ -439,11 +439,12 @@ pub fn spawn_model(commands: &mut Commands, assets: &CarAssets, parent: Entity) 
 /// that appears meanwhile is swapped as it spawns.
 pub fn ghost_cars(
     manager: Res<crate::trial::TimeTrialManager>,
+    lobby: Res<crate::trial::VersusLobby>,
     assets: Res<CarAssets>,
     mut parts: Query<(Ref<CarPart>, &mut MeshMaterial3d<CarMaterial>)>,
     mut shown: Local<bool>,
 ) {
-    let ghosted = manager.ghosted();
+    let ghosted = manager.ghosted(lobby.online);
     let changed = ghosted != *shown;
     *shown = ghosted;
     for (part, mut material) in &mut parts {

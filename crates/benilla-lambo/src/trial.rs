@@ -317,31 +317,55 @@ pub const VERSUS_GHOST: f32 = 5.0;
 pub struct VersusLobby {
     /// Connected to a relay.
     pub online: bool,
-    /// The other drivers counting down on the same course, sorted by id.
-    pub rivals: Vec<u32>,
+    /// This client's relay id.
+    pub my_id: Option<u32>,
+    /// The other drivers on the same course that are loading or counting down, sorted by id.
+    pub rivals: Vec<Rival>,
+}
+
+/// Where a driver is in a versus start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GridPhase {
+    /// The map is loading or the car is still dropping onto the start: the count waits for it.
+    Loading,
+    /// On the grid, with this many seconds left on the count.
+    Counting(f32),
+    /// Past the start, or waiting for a relay.
+    Racing,
+}
+
+/// Another driver on this versus course's grid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rival {
+    pub id: u32,
+    pub phase: GridPhase,
 }
 
 impl TimeTrialManager {
-    /// The versus course this car is on, and whether its start is counting down. Only the
-    /// browser build has a relay to tell.
+    /// The versus course this car is on and where it is in the start, for the other drivers.
+    /// `placed` is whether the car has landed. Only the browser build has a relay to tell.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub fn versus_tag(&self) -> Option<(&str, bool)> {
+    pub fn versus_tag(&self, placed: bool) -> Option<(&str, GridPhase)> {
         let trial = self.current_trial().filter(|t| t.versus)?;
-        match self.state {
-            TrialState::Countdown { .. } => Some((&trial.name, true)),
-            TrialState::Racing { .. } | TrialState::WaitingToStart => Some((&trial.name, false)),
-            _ => None,
-        }
+        let phase = match self.state {
+            TrialState::WaitingToStart if self.loading => GridPhase::Loading,
+            TrialState::Countdown { .. } if !placed => GridPhase::Loading,
+            TrialState::Countdown { remaining } => GridPhase::Counting(remaining),
+            TrialState::Racing { .. } | TrialState::WaitingToStart => GridPhase::Racing,
+            _ => return None,
+        };
+        Some((&trial.name, phase))
     }
 
-    /// Cars do not bump: a versus race is counting down, or started less than `VERSUS_GHOST` ago.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub fn ghosted(&self) -> bool {
-        if !self.current_trial().is_some_and(|t| t.versus) {
+    /// Cars do not bump: a versus course, online, is loading or counting down, or its race started
+    /// less than `VERSUS_GHOST` ago. Alone, nobody ghosts.
+    pub fn ghosted(&self, online: bool) -> bool {
+        if !online || !self.current_trial().is_some_and(|t| t.versus) {
             return false;
         }
         match self.state {
             TrialState::Countdown { .. } => true,
+            TrialState::WaitingToStart => self.loading,
             TrialState::Racing { elapsed } => elapsed < VERSUS_GHOST,
             _ => false,
         }
@@ -856,14 +880,30 @@ pub fn update_versus(
         return;
     }
 
-    let joined = lobby
-        .rivals
-        .iter()
-        .any(|id| !manager.versus_known.contains(id));
-    if joined {
+    // The count holds at its full length while a driver is still loading, and starts over when one
+    // appears; once everyone is on the grid the lowest id's count is the one all of them follow,
+    // so the starts land together.
+    let ids: Vec<u32> = lobby.rivals.iter().map(|r| r.id).collect();
+    let joined = ids.iter().any(|id| !manager.versus_known.contains(id));
+    let waiting = lobby.rivals.iter().any(|r| r.phase == GridPhase::Loading);
+    manager.versus_known = ids;
+    if joined || waiting {
         remaining = VERSUS_COUNTDOWN;
+    } else {
+        let leader = lobby
+            .rivals
+            .iter()
+            .filter_map(|r| match r.phase {
+                GridPhase::Counting(left) => Some((r.id, left)),
+                _ => None,
+            })
+            .min_by_key(|&(id, _)| id);
+        if let Some((id, left)) = leader {
+            if lobby.my_id.is_none_or(|me| id < me) {
+                remaining = left;
+            }
+        }
     }
-    manager.versus_known = lobby.rivals.clone();
 
     // Every car starts on the same spot, put there once per countdown.
     if !manager.on_grid {
@@ -991,9 +1031,10 @@ pub fn handle_trial_input(
     }
 
     // 'R' returns to the last checkpoint of a race in progress, else restarts the current mode;
-    // Delete always restarts the run from its start.
+    // Delete always restarts the run from its start. Neither works while the car is held (a
+    // countdown, a map loading): restarting would walk off the grid and start the count over.
     let restart = keys.just_pressed(KeyCode::Delete);
-    if restart || keys.just_pressed(KeyCode::KeyR) {
+    if (restart || keys.just_pressed(KeyCode::KeyR)) && !manager.frozen() {
         let respawn = match (manager.current_trial(), &manager.state) {
             (Some(trial), TrialState::Racing { .. }) if !restart => {
                 checkpoint_respawn(trial, &manager.progress)
@@ -1712,16 +1753,24 @@ pub fn render_trial_ui(
 
                             match manager.state {
                                 TrialState::Countdown { remaining } => {
+                                    let waiting = lobby
+                                        .rivals
+                                        .iter()
+                                        .any(|r| r.phase == GridPhase::Loading);
                                     ui.label(
-                                        egui::RichText::new(format!("{}", remaining.ceil() as u32))
-                                            .color(egui::Color32::from_rgb(255, 230, 80))
-                                            .size(52.0)
-                                            .monospace()
-                                            .strong(),
+                                        egui::RichText::new(if waiting {
+                                            "WAITING FOR PLAYERS".to_string()
+                                        } else {
+                                            format!("{}", remaining.ceil() as u32)
+                                        })
+                                        .color(egui::Color32::from_rgb(255, 230, 80))
+                                        .size(if waiting { 30.0 } else { 52.0 })
+                                        .monospace()
+                                        .strong(),
                                     );
                                     ui.label(
                                         egui::RichText::new(
-                                            "Cars are held until the count ends — a driver joining restarts it",
+                                            "Cars are held until the count ends — the count waits for drivers still loading",
                                         )
                                         .color(egui::Color32::LIGHT_GRAY)
                                         .size(13.0),
@@ -2615,14 +2664,19 @@ mod tests {
         m.trials = vec![race];
         m.current_trial_idx = Some(0);
         m.state = TrialState::Countdown { remaining: 3.0 };
-        assert!(m.ghosted());
+        assert!(m.ghosted(true));
         m.state = TrialState::Racing { elapsed: 4.9 };
-        assert!(m.ghosted());
+        assert!(m.ghosted(true));
+        // Alone, a versus course runs as a plain one.
+        assert!(!m.ghosted(false));
         m.state = TrialState::Racing { elapsed: 5.0 };
-        assert!(!m.ghosted());
+        assert!(!m.ghosted(true));
+        m.state = TrialState::WaitingToStart;
+        m.loading = true;
+        assert!(m.ghosted(true));
         m.trials[0].versus = false;
         m.state = TrialState::Racing { elapsed: 1.0 };
-        assert!(!m.ghosted());
+        assert!(!m.ghosted(true));
     }
 
     #[test]
