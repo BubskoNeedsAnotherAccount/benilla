@@ -2695,9 +2695,9 @@ mod tests {
         assert_eq!(trials[1].map_id, 0);
         assert_eq!(trials[1].checkpoints.len(), 8);
         assert!(!trials[1].circuit && trials[1].lap_count() == 1);
-        assert_eq!(trials[2].name, "Dusty Dunes");
+        assert_eq!(trials[2].name, "Hyjal Run");
         assert_eq!(trials[2].map_id, 1);
-        assert_eq!(trials[2].checkpoints.len(), 9);
+        assert_eq!(trials[2].checkpoints.len(), 6);
         assert!(!trials[2].circuit && trials[2].lap_count() == 1);
         // A two-lap circuit finishing at its start.
         assert_eq!(trials[3].name, "Mirage Raceway");

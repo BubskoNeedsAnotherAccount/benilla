@@ -50,7 +50,7 @@ pub const BLOODHOOF_WOW: [f32; 3] = [-2354.0, -380.0, 150.0];
 pub const GADGETZAN_WOW: [f32; 3] = [-7176.0, -3785.0, 150.0];
 
 /// Mount Hyjal, below Nordrassil in Kalimdor.
-pub const HYJAL_WOW: [f32; 3] = [5540.0, -3623.0, 2800.0];
+pub const HYJAL_WOW: [f32; 3] = [5660.0, -3671.0, 1628.0];
 
 /// Southshore, Hillsbrad Foothills in Eastern Kingdoms.
 pub const SOUTHSHORE_WOW: [f32; 3] = [-850.0, -540.0, 150.0];
