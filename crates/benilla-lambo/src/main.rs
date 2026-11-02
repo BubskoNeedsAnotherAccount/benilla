@@ -39,6 +39,10 @@ use bevy::prelude::*;
 use benilla_world::build_id::BuildId;
 use benilla_world::schedule::{WorldLive, WorldStage};
 
+/// GPU upload bytes a frame may take before the rest wait: a tile's terrain texture arrays are a
+/// few MB, so a fresh row lands over a handful of frames.
+const UPLOAD_BYTES_PER_FRAME: usize = 4 * 1024 * 1024;
+
 fn main() -> AppExit {
     // The server-less map pick (`world_map`): 0 is Eastern Kingdoms (Redridge Mountains / Lakeshire), 1 is Kalimdor.
     // A browser has no environment to set, and the default is already 0.
@@ -107,6 +111,18 @@ fn main() -> AppExit {
     .add_plugins(benilla_world::world_plugins::WorldPlugins)
     .add_plugins(bevy::gltf::GltfPlugin::default())
     .add_plugins(bevy_egui::EguiPlugin::default());
+
+    // Cap the GPU upload a frame takes, so a fresh tile's textures spread over a few frames rather
+    // than stalling one. In bevy 0.18 the cap holds back images; mesh bytes upload regardless and
+    // only count against it. `WOW_UPLOAD_BUDGET` (the world's lever) wins when set.
+    if !app
+        .world()
+        .contains_resource::<bevy::render::render_asset::RenderAssetBytesPerFrame>()
+    {
+        app.insert_resource(bevy::render::render_asset::RenderAssetBytesPerFrame::new(
+            UPLOAD_BYTES_PER_FRAME,
+        ));
+    }
 
     // Other drivers, over the page's socket to the relay (`server/`).
     #[cfg(target_arch = "wasm32")]

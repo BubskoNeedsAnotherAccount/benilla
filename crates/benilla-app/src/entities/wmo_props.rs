@@ -276,6 +276,7 @@ pub(super) fn spawn_wmo_gameobject_props(
                 materials,
                 light,
                 &m.submeshes,
+                0..m.submeshes.len(),
                 forms.slices(&prop.handle),
                 prop.local, // doodad-local; the parent composes the world pose
                 &object,

@@ -61,6 +61,9 @@ pub fn spawn_model_entities<B: Bundle + Clone>(
     materials: &mut Assets<WowModelMaterial>,
     light: &Buffer,
     submeshes: &[ModelSubmesh],
+    // The batches to spawn this call, by their index in `submeshes`, so a large WMO can spawn in
+    // slices across frames; every index stays absolute. An M2 passes the whole range.
+    batches: std::ops::Range<usize>,
     // Index-parallel with `submeshes`; complete, as callers gate on `ModelForms::require`.
     forms: crate::model_forms::FormSlices<'_>,
     transform: Transform,
@@ -147,7 +150,12 @@ pub fn spawn_model_entities<B: Bundle + Clone>(
             .map(|s| s.geometry.section)
             .collect::<Vec<_>>(),
     );
-    for (batch_idx, sub) in submeshes.iter().enumerate() {
+    for (batch_idx, sub) in submeshes
+        .iter()
+        .enumerate()
+        .take(batches.end)
+        .skip(batches.start)
+    {
         // A missing form is a broken caller contract: skip the batch rather than panic.
         let Some((stat_mesh, stat_aabb)) = forms.stat.get(batch_idx) else {
             continue;

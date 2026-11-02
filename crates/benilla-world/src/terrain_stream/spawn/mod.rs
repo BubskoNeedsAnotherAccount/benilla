@@ -66,6 +66,10 @@ type SpawnTables<'w> = (
     Option<Res<'w, crate::stream_budget::StreamBudget>>,
 );
 
+/// WMO batches spawned per slice while paced; the frame's spawn budget is checked between slices,
+/// so a city building (~100k batches) spreads over frames instead of spawning in one.
+const WMO_BATCH_CHUNK: usize = 256;
+
 /// Retires a placement, or a WMO prop, whose model load failed: it spawns nothing and stops
 /// counting as pending, as a missing WDT falls back rather than stalling the world; warned once.
 fn retire_failed_placements(placements: &mut Placements, asset_server: &AssetServer) {
@@ -158,6 +162,7 @@ pub(super) fn spawn_loaded_placements(
         by_id,
         materials: mat_cache,
         pending_spawns,
+        ..
     } = placements;
 
     // At most `SPAWN_BUDGET` per frame, resumed next frame through the `spawned` flags; the check
@@ -222,6 +227,7 @@ pub(super) fn spawn_loaded_placements(
                         materials,
                         light,
                         &m.submeshes,
+                        0..m.submeshes.len(),
                         FormSlices {
                             stat: forms.static_meshes(key).unwrap_or(&[]),
                             skin: forms.skinned_meshes(key),
@@ -338,115 +344,140 @@ pub(super) fn spawn_loaded_placements(
                         id: unique_id,
                         detail: String::new(),
                     });
+                    // The building's one-off work (instance, pools, colliders, lights) runs on its
+                    // first turn; its batches may take several turns ([`WMO_BATCH_CHUNK`]).
+                    let root = p.batch_cursor.is_none();
                     // The portal-cull instance, spawned before the batches: the retained pass keys
                     // its region on it, and the region lives as long as it does.
-                    let instance = (has_portals || m.wmo_id != 0).then(|| {
-                        commands
-                            .spawn(WmoPortalInstance {
-                                handle: h.clone(),
-                                world_from_local: p.transform.compute_affine(),
-                                name_set: p.name_set,
-                                visible: vec![true; m.group_nav.len()],
-                                // Fogged only once a flood puts the group on the chain.
-                                interior_fog: vec![false; m.group_nav.len()],
-                                liquid_visited: vec![false; m.group_nav.len()],
-                                // MOGP `groupLiquid`: a room wholly submerged, with no liquid grid.
-                                flooded: m
-                                    .group_nav
-                                    .iter()
-                                    .map(|g| {
-                                        (g.group_liquid != benilla_formats::NO_GROUP_LIQUID)
-                                            .then(|| {
-                                                benilla_formats::LiquidKind::from_nibble(
-                                                    (g.group_liquid & 0xf) as u8,
-                                                )
-                                            })
-                                            .flatten()
-                                    })
-                                    .collect(),
-                            })
-                            .id()
-                    });
-                    let SpawnedModel {
-                        entities: mut ents,
-                        by_batch,
-                        ..
-                    } = spawn_model_entities(
-                        &mut commands,
-                        mat_cache,
-                        materials,
-                        light,
-                        &m.submeshes,
-                        FormSlices {
-                            stat: forms.static_meshes(key).unwrap_or(&[]),
-                            skin: None,
-                        },
-                        p.transform,
-                        &object,
-                        ShadeSel::Matte, // unread: WMO lights on the FFP N·L path
-                        None, // WMO groups carry their own per-submesh interior flag + batch class
-                        Some(&fade),
-                        f32::INFINITY,
-                        Vec3::ZERO,
-                        None, // no authored M2 box: group geometry never animates
-                        None, // not an M2: its doodad props animate below
-                        &mut uv_reg,
-                        &mut tint_reg,
-                        &mut anim_table,
-                        false, // world-static: not the entity-hosted lane
-                        None,  // world-static placement: cards bake their world pivot
-                        Some((
-                            &mut *merge,
-                            MergeSite::Wmo {
-                                uid: unique_id,
-                                groups: &m.submesh_group,
-                                portal_gated: has_portals,
-                            },
-                        )),
-                        // A retained region keyed by the instance; without one there is no PVS key.
-                        instance.and_then(|i| {
-                            staticgx.as_deref_mut().map(|gx| {
-                                (
-                                    gx,
-                                    crate::static_gx::GxSite::Wmo {
-                                        instance: i,
-                                        groups: &m.submesh_group,
-                                    },
-                                )
-                            })
-                        }),
-                        // A world WMO is exterior scene too (`0x6856c0`, fed by the same walk
-                        // `0x682fa0`): from inside one building, another draws only through a
-                        // portal window. The tag is unconditional; the camera's own building is
-                        // exempted per frame from `CameraInteriorClaim`.
-                        (crate::exterior_cull::ExteriorScene, (*object).clone()),
-                    );
-                    // Every entity so far is a batch, already carrying the identity.
-                    let batch_end = ents.len();
-                    if let Some((target, r)) = fade_near_target() {
-                        let pos = p.transform.translation;
-                        let d = bevy::math::Vec2::new(pos.x, pos.z).distance(target);
-                        if d <= r {
-                            log_fade_near(
-                                "wmo",
-                                &handle_label(h),
-                                unique_id,
-                                pos,
-                                d,
-                                (f32::INFINITY, p.transform.scale.x),
-                                &by_batch,
-                            );
-                        }
+                    let instance = if !root {
+                        p.portal_instance
+                    } else {
+                        (has_portals || m.wmo_id != 0).then(|| {
+                            commands
+                                .spawn(WmoPortalInstance {
+                                    handle: h.clone(),
+                                    world_from_local: p.transform.compute_affine(),
+                                    name_set: p.name_set,
+                                    visible: vec![true; m.group_nav.len()],
+                                    // Fogged only once a flood puts the group on the chain.
+                                    interior_fog: vec![false; m.group_nav.len()],
+                                    liquid_visited: vec![false; m.group_nav.len()],
+                                    // MOGP `groupLiquid`: a room wholly submerged, with no liquid grid.
+                                    flooded: m
+                                        .group_nav
+                                        .iter()
+                                        .map(|g| {
+                                            (g.group_liquid != benilla_formats::NO_GROUP_LIQUID)
+                                                .then(|| {
+                                                    benilla_formats::LiquidKind::from_nibble(
+                                                        (g.group_liquid & 0xf) as u8,
+                                                    )
+                                                })
+                                                .flatten()
+                                        })
+                                        .collect(),
+                                })
+                                .id()
+                        })
+                    };
+                    if root {
+                        // Held for the batches and props, which may spawn on later turns, and for
+                        // any instance: it also scopes the building's embedded pools.
+                        p.portal_instance = instance;
                     }
-                    // Tie each group's submeshes (`by_batch` is index-parallel with them) to the
-                    // instance. A portal-less building keeps every group visible but still gets an
-                    // instance when it has a WMOAreaTable identity, for the interior down-ray.
-                    if let Some(instance) = instance {
-                        if has_portals {
-                            // One shared key per group, not per submesh (a city has ~100k).
-                            let group_key: Vec<Arc<[u16]>> = (0..m.group_nav.len() as u16)
-                                .map(|g| Arc::from([g].as_slice()))
-                                .collect();
+                    // One shared key per group, not per submesh (a city has ~100k).
+                    let group_key: Vec<Arc<[u16]>> = if instance.is_some() && has_portals {
+                        (0..m.group_nav.len() as u16)
+                            .map(|g| Arc::from([g].as_slice()))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    // The batches, a slice at a time while paced, until done or the frame's budget
+                    // is spent; under the loading cover, all at once.
+                    let total = m.submeshes.len();
+                    let mut cursor = p.batch_cursor.unwrap_or(0);
+                    let mut ents: Vec<Entity> = Vec::new();
+                    loop {
+                        let end = if focus.paced {
+                            (cursor + WMO_BATCH_CHUNK).min(total)
+                        } else {
+                            total
+                        };
+                        let SpawnedModel {
+                            entities: chunk_ents,
+                            by_batch,
+                            ..
+                        } = spawn_model_entities(
+                            &mut commands,
+                            mat_cache,
+                            materials,
+                            light,
+                            &m.submeshes,
+                            cursor..end,
+                            FormSlices {
+                                stat: forms.static_meshes(key).unwrap_or(&[]),
+                                skin: None,
+                            },
+                            p.transform,
+                            &object,
+                            ShadeSel::Matte, // unread: WMO lights on the FFP N·L path
+                            None, // WMO groups carry their own per-submesh interior flag + batch class
+                            Some(&fade),
+                            f32::INFINITY,
+                            Vec3::ZERO,
+                            None, // no authored M2 box: group geometry never animates
+                            None, // not an M2: its doodad props animate below
+                            &mut uv_reg,
+                            &mut tint_reg,
+                            &mut anim_table,
+                            false, // world-static: not the entity-hosted lane
+                            None,  // world-static placement: cards bake their world pivot
+                            Some((
+                                &mut *merge,
+                                MergeSite::Wmo {
+                                    uid: unique_id,
+                                    groups: &m.submesh_group,
+                                    portal_gated: has_portals,
+                                },
+                            )),
+                            // A retained region keyed by the instance; without one there is no PVS key.
+                            instance.and_then(|i| {
+                                staticgx.as_deref_mut().map(|gx| {
+                                    (
+                                        gx,
+                                        crate::static_gx::GxSite::Wmo {
+                                            instance: i,
+                                            groups: &m.submesh_group,
+                                        },
+                                    )
+                                })
+                            }),
+                            // A world WMO is exterior scene too (`0x6856c0`, fed by the same walk
+                            // `0x682fa0`): from inside one building, another draws only through a
+                            // portal window. The tag is unconditional; the camera's own building is
+                            // exempted per frame from `CameraInteriorClaim`.
+                            (crate::exterior_cull::ExteriorScene, (*object).clone()),
+                        );
+                        if let Some((target, r)) = fade_near_target() {
+                            let pos = p.transform.translation;
+                            let d = bevy::math::Vec2::new(pos.x, pos.z).distance(target);
+                            if d <= r {
+                                log_fade_near(
+                                    "wmo",
+                                    &handle_label(h),
+                                    unique_id,
+                                    pos,
+                                    d,
+                                    (f32::INFINITY, p.transform.scale.x),
+                                    &by_batch,
+                                );
+                            }
+                        }
+                        // Tie each group's submeshes (`by_batch` is index-parallel with them) to the
+                        // instance. A portal-less building keeps every group visible but still gets an
+                        // instance when it has a WMOAreaTable identity, for the interior down-ray.
+                        if let (Some(instance), false) = (instance, group_key.is_empty()) {
                             for (&entity, &group) in by_batch.iter().zip(&m.submesh_group) {
                                 let Some(entity) = entity else { continue };
                                 let Some(groups) = group_key.get(group as usize).cloned() else {
@@ -457,100 +488,117 @@ pub(super) fn spawn_loaded_placements(
                                     .insert(WmoGroupVis { instance, groups });
                             }
                         }
-                        // Held for the props, which spawn later, and for any instance: it also
-                        // scopes the building's embedded pools, portals or not.
-                        p.portal_instance = Some(instance);
-                        ents.push(instance); // despawns with the placement
-                    }
-                    // The embedded MLIQ liquid, spawned a group at a time so each surface takes its
-                    // room's cull key: a culled room's lava goes with it.
-                    for (gi, lq) in m.group_liquids.iter().enumerate() {
-                        let Some(lq) = lq else { continue };
-                        let first = ents.len();
-                        spawn_wmo_liquids(
-                            &mut commands,
-                            std::iter::once(lq),
-                            liquid_assets.as_deref(),
-                            &mut meshes,
-                            p.transform,
-                            // Interior (`MOGI & 0x48 == 0`): the pool takes the room's fog.
-                            m.group_bounds.get(gi).is_some_and(|g| g.interior),
-                            crate::liquid::WmoPool::new(
-                                p.portal_instance.map(|instance| WmoRoom {
-                                    instance,
-                                    group: gi as u16,
-                                }),
-                                &p.transform,
-                                m.group_bounds.get(gi),
-                            ),
-                            // The root's MOMT diffColor table: an interior pool's body colour.
-                            &m.material_diff_color,
-                            &mut ents,
-                        );
-                        // Another building's pool is exterior scene like its walls (`0x6856c0`),
-                        // tagged unconditionally: an instance-less placement is never the camera's
-                        // room, so the tag alone is right for it.
-                        for &e in &ents[first..] {
-                            commands
-                                .entity(e)
-                                .insert(crate::exterior_cull::ExteriorScene);
+                        // Every batch entity already carries the identity.
+                        ents.extend(chunk_ents);
+                        cursor = end;
+                        if cursor >= total || Instant::now() >= deadline {
+                            break;
                         }
-                        if let Some(instance) = p.portal_instance {
-                            let groups: Arc<[u16]> = Arc::from([gi as u16].as_slice());
+                    }
+                    let batch_end = ents.len();
+                    if root {
+                        if let Some(instance) = instance {
+                            ents.push(instance); // despawns with the placement
+                        }
+                        // The embedded MLIQ liquid, spawned a group at a time so each surface takes its
+                        // room's cull key: a culled room's lava goes with it.
+                        for (gi, lq) in m.group_liquids.iter().enumerate() {
+                            let Some(lq) = lq else { continue };
+                            let first = ents.len();
+                            spawn_wmo_liquids(
+                                &mut commands,
+                                std::iter::once(lq),
+                                liquid_assets.as_deref(),
+                                &mut meshes,
+                                p.transform,
+                                // Interior (`MOGI & 0x48 == 0`): the pool takes the room's fog.
+                                m.group_bounds.get(gi).is_some_and(|g| g.interior),
+                                crate::liquid::WmoPool::new(
+                                    p.portal_instance.map(|instance| WmoRoom {
+                                        instance,
+                                        group: gi as u16,
+                                    }),
+                                    &p.transform,
+                                    m.group_bounds.get(gi),
+                                ),
+                                // The root's MOMT diffColor table: an interior pool's body colour.
+                                &m.material_diff_color,
+                                &mut ents,
+                            );
+                            // Another building's pool is exterior scene like its walls (`0x6856c0`),
+                            // tagged unconditionally: an instance-less placement is never the camera's
+                            // room, so the tag alone is right for it.
                             for &e in &ents[first..] {
-                                // With an instance the pool rides its room and the exemption;
-                                // `WmoGroupVis` moves it to the model-visibility authority.
-                                commands.entity(e).insert(WmoGroupVis {
-                                    instance,
-                                    groups: groups.clone(),
-                                });
+                                commands
+                                    .entity(e)
+                                    .insert(crate::exterior_cull::ExteriorScene);
+                            }
+                            if let Some(instance) = p.portal_instance {
+                                let groups: Arc<[u16]> = Arc::from([gi as u16].as_slice());
+                                for &e in &ents[first..] {
+                                    // With an instance the pool rides its room and the exemption;
+                                    // `WmoGroupVis` moves it to the model-visibility authority.
+                                    commands.entity(e).insert(WmoGroupVis {
+                                        instance,
+                                        groups: groups.clone(),
+                                    });
+                                }
                             }
                         }
-                    }
-                    // Two colliders, each on its layer: the reference gathers different faces for
-                    // the body (drops DETAIL) and the camera (drops NOCAMCOLLIDE, keeps DETAIL).
-                    if let Some(task) =
-                        build_placement_collider_task(m.collision.as_ref(), p.transform)
-                    {
-                        ents.push(
-                            commands
-                                .spawn((
-                                    PendingCollider::new(task, Some(walk_layers()), true),
-                                    // The walk faces take the selection ring (floors, steps).
-                                    GroundDecalSurface,
-                                    // Clamps the mouse pick. The reference's occluder faces are
-                                    // MOPY reject-mask 0x84; the walk bake (0x04) is the nearest.
-                                    PickOccluder,
-                                ))
-                                .id(),
+                        // Two colliders, each on its layer: the reference gathers different faces for
+                        // the body (drops DETAIL) and the camera (drops NOCAMCOLLIDE, keeps DETAIL).
+                        if let Some(task) =
+                            build_placement_collider_task(m.collision.as_ref(), p.transform)
+                        {
+                            ents.push(
+                                commands
+                                    .spawn((
+                                        PendingCollider::new(task, Some(walk_layers()), true),
+                                        // The walk faces take the selection ring (floors, steps).
+                                        GroundDecalSurface,
+                                        // Clamps the mouse pick. The reference's occluder faces are
+                                        // MOPY reject-mask 0x84; the walk bake (0x04) is the nearest.
+                                        PickOccluder,
+                                    ))
+                                    .id(),
+                            );
+                        }
+                        if let Some(task) =
+                            build_placement_collider_task(m.collision_camera.as_ref(), p.transform)
+                        {
+                            ents.push(
+                                commands
+                                    .spawn(PendingCollider::new(task, Some(camera_layers()), true))
+                                    .id(),
+                            );
+                        }
+                        // MOLT lights: they light nearby models and the walls over their baked MOCV.
+                        spawn_wmo_lights_for(
+                            &mut commands,
+                            &m.lights,
+                            &m.group_light_refs,
+                            p.portal_instance,
+                            p.transform,
+                            &mut ents,
                         );
+                        tag_world_object(&mut commands, ents[batch_end..].iter().copied(), &object);
                     }
-                    if let Some(task) =
-                        build_placement_collider_task(m.collision_camera.as_ref(), p.transform)
-                    {
-                        ents.push(
-                            commands
-                                .spawn(PendingCollider::new(task, Some(camera_layers()), true))
-                                .id(),
-                        );
+                    p.batch_cursor = Some(cursor);
+                    if cursor < total {
+                        // The budget is spent with batches left: the rest wait a frame. The
+                        // placement stays pending, and its props resolve once it is whole, so the
+                        // pending count never holds props of a building still arriving.
+                        p.entities.extend(ents);
+                        break 'placements;
                     }
-                    // MOLT lights: they light nearby models and the walls over their baked MOCV.
-                    spawn_wmo_lights_for(
-                        &mut commands,
-                        &m.lights,
-                        &m.group_light_refs,
-                        p.portal_instance,
-                        p.transform,
-                        &mut ents,
-                    );
-                    tag_world_object(&mut commands, ents[batch_end..].iter().copied(), &object);
                     p.doodads =
                         resolve_wmo_doodads(m, p.doodad_set, p.transform, focus.body_bevy());
                     ents
                 }
             };
             p.spawned = true;
-            p.entities = entities;
+            // Extended, not replaced: a WMO that spawned over several turns holds its earlier ones.
+            p.entities.extend(entities);
             // The model landed; a WMO's just-resolved props join the pending count.
             *pending_spawns += p.doodads.iter().filter(|d| !d.spawned).count();
             *pending_spawns -= 1;
@@ -658,6 +706,7 @@ pub(super) fn spawn_loaded_placements(
                 materials,
                 light,
                 &m.submeshes,
+                0..m.submeshes.len(),
                 FormSlices {
                     stat: forms.static_meshes(key).unwrap_or(&[]),
                     skin: forms.skinned_meshes(key),
@@ -1023,6 +1072,7 @@ mod retire_tests {
             name_set: 0,
             doodads,
             portal_instance: None,
+            batch_cursor: None,
             refs: 1,
             owner: (0, 0),
         }

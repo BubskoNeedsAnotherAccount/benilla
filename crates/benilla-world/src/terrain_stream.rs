@@ -198,6 +198,8 @@ pub(crate) struct Placements {
     /// Placements awaiting their model plus WMO props awaiting their M2s; at zero the spawner skips
     /// its [`Self::by_id`] walk. Every register, handoff, release and spawn site keeps it.
     pending_spawns: usize,
+    /// Released placements' entities still to despawn, a slice a frame ([`drain_despawns`]).
+    despawn_queue: Vec<Entity>,
 }
 
 impl Placements {
@@ -226,6 +228,9 @@ struct Placement {
     doodads: Vec<WmoDoodadInst>,
     /// The building's portal instance, held so later props cull with the group that owns them.
     portal_instance: Option<Entity>,
+    /// A WMO's spawn progress: `None` before its first turn, then the next batch to spawn. Its
+    /// batches spawn in slices while paced, and `spawned` waits for the last one.
+    batch_cursor: Option<usize>,
     /// How many loaded tiles reference this placement; despawned when it hits zero.
     refs: u32,
     /// The tile owning an M2 doodad's hull weld and merged blobs, first the registering tile;
@@ -490,6 +495,7 @@ impl Plugin for TerrainPlugin {
                 Update,
                 (
                     stream_terrain,
+                    drain_despawns,
                     await_reads_and_attach,
                     spawn_streamed_tiles,
                     attach_inner_colliders,
@@ -751,7 +757,8 @@ fn stream_terrain(
             despawn_tile_owned(&mut commands, &t);
             activity.tiles_dropped += 1;
             for &uid in &t.placements {
-                release_placement(&mut commands, placements, uid, &mut activity);
+                // Spread over frames while paced; under a cover, at once.
+                release_placement(&mut commands, placements, uid, &mut activity, focus.paced);
             }
             handoff_straddlers(
                 &mut commands,
@@ -1193,6 +1200,7 @@ fn register_doodad(
             name_set: 0,
             doodads: Vec::new(),
             portal_instance: None,
+            batch_cursor: None,
             refs: 1,
             owner: tile,
         },
@@ -1222,6 +1230,7 @@ fn register_wmo(placements: &mut Placements, asset_server: &AssetServer, w: &Wmo
             name_set: w.name_set,
             doodads: Vec::new(),
             portal_instance: None,
+            batch_cursor: None,
             refs: 1,
             owner: (0, 0), // unread for WMOs: their prop hulls weld per placement
         },
@@ -1244,14 +1253,18 @@ fn drop_streamed_world(
         despawn_tile_owned(commands, &t);
         activity.tiles_dropped += 1;
         for uid in t.placements {
-            release_placement(commands, placements, uid, activity);
+            release_placement(commands, placements, uid, activity, false);
         }
     }
     state.inner.clear();
     state.window = None;
     state.settled = false;
     if std::mem::take(&mut state.global_wmo) {
-        release_placement(commands, placements, GLOBAL_WMO_UID, activity);
+        release_placement(commands, placements, GLOBAL_WMO_UID, activity, false);
+    }
+    // A swap or a leave is covered, and the chain that drains the queue may stop with the world.
+    for e in placements.despawn_queue.drain(..) {
+        commands.entity(e).try_despawn();
     }
     state.one_object = false;
     placements.materials.clear();
@@ -1472,6 +1485,7 @@ fn handoff_straddlers(
                 commands.entity(e).try_despawn();
             }
             p.spawned = false;
+            p.batch_cursor = None;
             placements.pending_spawns += 1;
         }
         handed += 1;
@@ -1484,12 +1498,15 @@ fn handoff_straddlers(
     }
 }
 
-/// Drop one ref of a placement, despawning its entities, collider included, at zero.
+/// Drop one ref of a placement, despawning its entities, collider included, at zero. With `defer`
+/// the entities join [`Placements::despawn_queue`], which [`drain_despawns`] works off a slice a
+/// frame: a released tile's placements are thousands of entities, a spike if despawned at once.
 fn release_placement(
     commands: &mut Commands,
     placements: &mut Placements,
     uid: u32,
     activity: &mut StreamActivity,
+    defer: bool,
 ) {
     let drop_it = match placements.by_id.get_mut(&uid) {
         Some(p) => {
@@ -1505,10 +1522,35 @@ fn release_placement(
                 usize::from(!p.spawned) + p.doodads.iter().filter(|d| !d.spawned).count();
             activity.placements_dropped += 1;
             activity.placement_entities_dropped += p.entities.len() as u32;
-            for e in p.entities {
-                commands.entity(e).try_despawn();
+            if defer {
+                placements.despawn_queue.extend(p.entities);
+            } else {
+                for e in p.entities {
+                    commands.entity(e).try_despawn();
+                }
             }
         }
+    }
+}
+
+/// Released placements' entities despawned per frame, scaled by the stream budget.
+const DESPAWN_CAP: usize = 512;
+
+/// Despawns the head of [`Placements::despawn_queue`], at most [`DESPAWN_CAP`] a frame. The
+/// queued entities are a released tile's, past the keep band and out of the view's reach, so the
+/// frames they linger draw nothing near.
+fn drain_despawns(
+    mut commands: Commands,
+    mut placements: ResMut<Placements>,
+    budget: Option<Res<crate::stream_budget::StreamBudget>>,
+) {
+    if placements.despawn_queue.is_empty() {
+        return;
+    }
+    let n = crate::stream_budget::count(budget.as_deref(), DESPAWN_CAP)
+        .min(placements.despawn_queue.len());
+    for e in placements.despawn_queue.drain(..n) {
+        commands.entity(e).try_despawn();
     }
 }
 
@@ -1612,6 +1654,7 @@ mod straddler_tests {
             name_set: 0,
             doodads: Vec::new(),
             portal_instance: None,
+            batch_cursor: None,
             refs: 1,
             owner,
         }
@@ -1634,6 +1677,66 @@ mod straddler_tests {
                 },
             )
             .unwrap();
+    }
+
+    /// A deferred release queues its entities, and the drain works them off a capped slice a run.
+    #[test]
+    fn a_deferred_release_despawns_a_slice_a_frame() {
+        let mut world = World::new();
+        let ents: Vec<Entity> = (0..DESPAWN_CAP + 10)
+            .map(|_| world.spawn_empty().id())
+            .collect();
+        let mut placements = Placements::default();
+        placements.by_id.insert(7, straddler((0, 0), ents.clone()));
+        world.insert_resource(placements);
+        world
+            .run_system_once(
+                |mut commands: Commands, mut placements: ResMut<Placements>| {
+                    let mut activity = StreamActivity::default();
+                    release_placement(&mut commands, &mut placements, 7, &mut activity, true);
+                },
+            )
+            .unwrap();
+        let placements = world.resource::<Placements>();
+        assert!(!placements.by_id.contains_key(&7), "released at once");
+        assert_eq!(placements.despawn_queue.len(), ents.len());
+        assert!(
+            ents.iter().all(|&e| world.get_entity(e).is_ok()),
+            "none yet"
+        );
+
+        world.run_system_once(drain_despawns).unwrap();
+        let gone = ents
+            .iter()
+            .filter(|&&e| world.get_entity(e).is_err())
+            .count();
+        assert_eq!(gone, DESPAWN_CAP, "one capped slice");
+        world.run_system_once(drain_despawns).unwrap();
+        assert!(
+            ents.iter().all(|&e| world.get_entity(e).is_err()),
+            "the rest"
+        );
+        assert!(world.resource::<Placements>().despawn_queue.is_empty());
+    }
+
+    /// An undeferred release (a swap, a leave) despawns at once.
+    #[test]
+    fn an_undeferred_release_despawns_at_once() {
+        let mut world = World::new();
+        let e = world.spawn_empty().id();
+        let mut placements = Placements::default();
+        placements.by_id.insert(7, straddler((0, 0), vec![e]));
+        world.insert_resource(placements);
+        world
+            .run_system_once(
+                |mut commands: Commands, mut placements: ResMut<Placements>| {
+                    let mut activity = StreamActivity::default();
+                    release_placement(&mut commands, &mut placements, 7, &mut activity, false);
+                },
+            )
+            .unwrap();
+        assert!(world.get_entity(e).is_err());
+        assert!(world.resource::<Placements>().despawn_queue.is_empty());
     }
 
     #[test]

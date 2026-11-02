@@ -776,6 +776,7 @@ mod tests {
             name_set: 0,
             doodads: Vec::new(),
             portal_instance,
+            batch_cursor: None,
             refs: 1,
             owner: (0, 0),
         }
