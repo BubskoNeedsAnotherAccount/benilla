@@ -14,7 +14,9 @@ use benilla_world::view::WorldCamera;
 use benilla_world::world_map::CurrentMap;
 
 use crate::camera::ChaseCam;
-use crate::car::{orientation, smooth, spawn_model, wheel_rotation, Car, CarAssets, Wheels};
+use crate::car::{
+    orientation, smooth, spawn_model, wheel_rotation, Car, CarAssets, CarColor, Wheels,
+};
 use crate::model::WHEEL_RADIUS;
 use crate::smoke::{puff, smoke_interval, smoke_level, TireSmokeAssets};
 use crate::trial::{GridPhase, Rival, TimeTrialManager, TrialState, VersusLobby, VERSUS_COUNTDOWN};
@@ -90,6 +92,18 @@ struct State {
     /// Tyre smoke level (smoke::smoke_level); older clients send none.
     #[serde(default)]
     d: u8,
+    /// Body colour, 0xRRGGBB; older clients send none and wear the stock paint.
+    #[serde(default)]
+    c: Option<u32>,
+}
+
+impl State {
+    fn color(&self) -> CarColor {
+        CarColor(match self.c {
+            Some(c) if c <= 0xff_ffff => [(c >> 16) as u8, (c >> 8) as u8, c as u8],
+            _ => crate::model::STOCK_PAINT,
+        })
+    }
 }
 
 /// What a driver last said about their versus start, and when.
@@ -243,7 +257,7 @@ fn receive(
     time: Res<Time>,
     assets: Res<CarAssets>,
     mut roster: ResMut<Roster>,
-    mut cars: Query<&mut RemoteCar>,
+    mut cars: Query<(&mut RemoteCar, &mut CarColor)>,
 ) {
     let open = net_state() == 2;
     if roster.was_open && !open {
@@ -281,7 +295,8 @@ fn receive(
                 let up = up.normalize_or(Vec3::Y);
                 let seen = time.elapsed_secs();
                 if let Some(&e) = roster.cars.get(&s.id) {
-                    if let Ok(mut car) = cars.get_mut(e) {
+                    if let Ok((mut car, mut color)) = cars.get_mut(e) {
+                        color.set_if_neq(s.color());
                         car.pos = pos;
                         car.vel = vel;
                         car.yaw = s.y;
@@ -295,6 +310,7 @@ fn receive(
                 let e = spawn_remote_car(
                     &mut commands,
                     &assets,
+                    s.color(),
                     RemoteCar {
                         id: s.id,
                         pos,
@@ -351,10 +367,15 @@ fn receive(
     }
 }
 
-/// A remote car looks like the local one, wheels included.
-fn spawn_remote_car(commands: &mut Commands, assets: &CarAssets, mut car: RemoteCar) -> Entity {
+/// A remote car looks like the local one, wheels included, in its driver's colour.
+fn spawn_remote_car(
+    commands: &mut Commands,
+    assets: &CarAssets,
+    color: CarColor,
+    mut car: RemoteCar,
+) -> Entity {
     let at = Transform::from_translation(car.pos).with_rotation(orientation(car.yaw, car.up));
-    let e = commands.spawn((at, Visibility::default())).id();
+    let e = commands.spawn((at, Visibility::default(), color)).id();
     car.wheels = spawn_model(commands, assets, e, false);
     commands.entity(e).insert(car);
     e
@@ -439,13 +460,16 @@ fn send_state(
     time: Res<Time>,
     mut roster: ResMut<Roster>,
     manager: Res<TimeTrialManager>,
-    car: Query<&Car>,
+    car: Query<(&Car, &CarColor)>,
 ) {
     roster.since_send += time.delta_secs();
     if roster.since_send < 1.0 / SEND_HZ || net_state() != 2 {
         return;
     }
-    let Ok(car) = car.single() else { return };
+    let Ok((car, color)) = car.single() else {
+        return;
+    };
+    let [r, g, b] = color.0;
     // A replay being watched is not where this driver is.
     if !car.placed || manager.state == TrialState::Replay {
         return;
@@ -459,6 +483,7 @@ fn send_state(
         "u": [car.up.x, car.up.y, car.up.z],
         "n": u8::from(car.nitro_timer > 0.0),
         "d": smoke_level(car),
+        "c": (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b),
     });
     net_send(&msg.to_string());
 }

@@ -65,7 +65,17 @@ pub enum Finish {
     /// The material's colour over the glb's texture.
     Textured,
     Glass,
+    /// The body colour, which the player picks (`CarPaint::tint`); its vertices are white.
+    Paint,
 }
+
+/// The glb's own body colour (its one saturated plain material), as the shader takes a colour:
+/// the stock paint.
+pub const STOCK_PAINT: [u8; 3] = [63, 154, 27];
+
+/// A plain material this far between its strongest and weakest channel is the body paint, not a
+/// grey trim or black rubber.
+const PAINT_SATURATION: f32 = 0.25;
 
 /// glb space to model space; the raw mesh is stored mirrored.
 fn point(p: [f32; 3]) -> Vec3 {
@@ -203,8 +213,17 @@ pub fn load() -> (Vec<Part>, Image) {
             } else if let Some(info) = pbr.base_color_texture() {
                 texture.get_or_insert(info.texture().source());
                 Finish::Textured
+            } else if base.truncate().max_element() - base.truncate().min_element()
+                >= PAINT_SATURATION
+            {
+                Finish::Paint
             } else {
                 Finish::Plain
+            };
+            let base = if finish == Finish::Paint {
+                Vec4::ONE
+            } else {
+                base
             };
             let p: Vec<[f32; 3]> = reader.read_positions().into_iter().flatten().collect();
             let n: Vec<[f32; 3]> = reader.read_normals().into_iter().flatten().collect();
@@ -337,6 +356,22 @@ mod tests {
             );
             let tip = wall.iter().map(|v| v.z).fold(f32::MAX, f32::min);
             assert!((tip - EXHAUST.z).abs() < 0.03, "pipe ends at z {tip}");
+        }
+    }
+
+    #[test]
+    fn the_body_paint_is_its_own_part() {
+        let (parts, _) = load();
+        let paint: Vec<&Part> = parts.iter().filter(|p| p.finish == Finish::Paint).collect();
+        assert!(paint.iter().any(|p| p.kind == PartKind::Body));
+        // White, so the picked colour shows as picked.
+        for p in paint {
+            let Some(bevy::mesh::VertexAttributeValues::Float32x4(col)) =
+                p.mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+            else {
+                panic!("paint part has no vertex colours");
+            };
+            assert!(col.iter().all(|c| *c == [1.0; 4]));
         }
     }
 }

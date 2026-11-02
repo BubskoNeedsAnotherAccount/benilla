@@ -13,6 +13,7 @@ struct Paint {
     spec: vec4<f32>,    // rgb, Light.dbc specular: the highlight's colour
     sky: vec4<f32>,     // rgb, the horizon (fog) colour the paint reflects
     finish: vec4<f32>,  // x = highlight strength, y = highlight exponent, z = reflection strength
+    tint: vec4<f32>,    // rgb, the picked body colour on the paint, white elsewhere
 };
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> paint: Paint;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var paint_texture: texture_2d<f32>;
@@ -30,6 +31,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef VERTEX_UVS_A
     base = base * textureSample(paint_texture, paint_sampler, in.uv);
 #endif
+    base = vec4<f32>(base.rgb * paint.tint.rgb, base.a);
 
     let p = in.world_position.xyz;
     let v = normalize(view.world_position.xyz - p);

@@ -1,5 +1,5 @@
 //! Player settings, edited in the ESC menu's Settings tab and applied live: master volume, engine
-//! sound, view distance, tyre smoke, render resolution and the player's name. In a browser they are remembered in the page's
+//! sound, view distance, tyre smoke, render resolution, the player's name and car colour. In a browser they are remembered in the page's
 //! local storage.
 
 use bevy::prelude::*;
@@ -33,6 +33,8 @@ pub struct Settings {
     pub render_scale: f32,
     /// The name saved replays carry.
     pub player_name: String,
+    /// The car's body colour, sRGB; other drivers see it too.
+    pub paint: [u8; 3],
 }
 
 impl Default for Settings {
@@ -45,6 +47,7 @@ impl Default for Settings {
             camera_effects: true,
             render_scale: 1.0,
             player_name: crate::replay::default_player_name(),
+            paint: crate::model::STOCK_PAINT,
         }
     }
 }

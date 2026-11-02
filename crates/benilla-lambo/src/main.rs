@@ -212,6 +212,7 @@ fn main() -> AppExit {
             camera::speedometer,
             car::prepare_car_materials,
             car::ghost_cars,
+            (car::color_local_car, car::paint_cars).chain(),
             // After `drive`, so a one-frame flag such as an upshift is read once.
             exhaust::time_pops.after(WorldStage::Input),
             sound::update_car_audio.after(exhaust::time_pops),

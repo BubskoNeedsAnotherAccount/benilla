@@ -1303,6 +1303,18 @@ pub fn update_trial_progress(
     }
 }
 
+/// One-click car colours, the stock green first.
+const PAINT_PRESETS: [[u8; 3]; 8] = [
+    crate::model::STOCK_PAINT,
+    [255, 170, 0],
+    [200, 20, 20],
+    [20, 70, 200],
+    [235, 235, 235],
+    [25, 25, 28],
+    [150, 40, 190],
+    [255, 105, 180],
+];
+
 /// The Settings page: what changes here is applied the moment it changes.
 fn settings_page(ui: &mut egui::Ui, s: &mut Settings) {
     ui.add_space(8.0);
@@ -1326,6 +1338,34 @@ fn settings_page(ui: &mut egui::Ui, s: &mut Settings) {
     });
     ui.label(
         egui::RichText::new("Saved into the replays you save.")
+            .color(egui::Color32::GRAY)
+            .size(12.0),
+    );
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label("Car colour");
+        egui::color_picker::color_edit_button_srgb(ui, &mut s.paint);
+        for preset in PAINT_PRESETS {
+            let [r, g, b] = preset;
+            let swatch = egui::Button::new("")
+                .fill(egui::Color32::from_rgb(r, g, b))
+                .stroke(if s.paint == preset {
+                    egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
+                } else {
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_gray(60))
+                })
+                .min_size(egui::vec2(20.0, 20.0));
+            if ui
+                .add(swatch)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                s.paint = preset;
+            }
+        }
+    });
+    ui.label(
+        egui::RichText::new("Other drivers see your colour.")
             .color(egui::Color32::GRAY)
             .size(12.0),
     );

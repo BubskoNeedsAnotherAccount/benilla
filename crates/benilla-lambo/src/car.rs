@@ -11,7 +11,7 @@ use std::f32::consts::PI;
 use bevy::prelude::*;
 
 use crate::model::{self, Finish, PartKind};
-use crate::paint::{self, CarMaterial, CarMaterials};
+use crate::paint::{self, CarMaterial};
 use crate::shadow::CarSilhouette;
 
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
@@ -296,6 +296,8 @@ pub struct CarAssets {
     parts: Vec<(PartKind, Vec3, Handle<Mesh>, Handle<CarMaterial>)>,
     /// Each part's translucent twin, shown while cars are ghosts (`ghost_cars`).
     ghosts: Vec<Handle<CarMaterial>>,
+    /// Which parts are the body paint, recoloured per car (`paint_cars`).
+    paint: Vec<bool>,
     /// The tail lights' mesh and paints.
     lights: crate::body::LightAssets,
 }
@@ -333,7 +335,6 @@ pub fn load_car_assets(
     mut materials: ResMut<Assets<CarMaterial>>,
     mut plain: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    mut painted: ResMut<CarMaterials>,
 ) {
     let lights = crate::body::LightAssets::new(&mut meshes, &mut plain);
     let (parts, texture) = model::load();
@@ -342,6 +343,7 @@ pub fn load_car_assets(
     let mut made: HashMap<(bool, Finish), Handle<CarMaterial>> = HashMap::new();
     let mut ghosts = Vec::new();
     let mut ghost_of: HashMap<AssetId<CarMaterial>, Handle<CarMaterial>> = HashMap::new();
+    let paint = parts.iter().map(|p| p.finish == Finish::Paint).collect();
     let parts = parts
         .into_iter()
         .map(|p| {
@@ -349,7 +351,7 @@ pub fn load_car_assets(
             let material = made
                 .entry((body, p.finish))
                 .or_insert_with(|| {
-                    let handle = materials.add(CarMaterial {
+                    materials.add(CarMaterial {
                         base: StandardMaterial {
                             unlit: true,
                             cull_mode: None,
@@ -362,11 +364,14 @@ pub fn load_car_assets(
                         },
                         extension: paint::paint(
                             paint::finish(p.kind, p.finish),
+                            if p.finish == Finish::Paint {
+                                paint::tint(model::STOCK_PAINT)
+                            } else {
+                                Vec4::ONE
+                            },
                             (p.finish == Finish::Textured).then(|| texture.clone()),
                         ),
-                    });
-                    painted.0.push(handle.clone());
-                    handle
+                    })
                 })
                 .clone();
             // One twin per paint, made when the paint is first met.
@@ -374,9 +379,7 @@ pub fn load_car_assets(
                 let mut twin = materials.get(&material).expect("a paint just made").clone();
                 twin.base.alpha_mode = AlphaMode::Blend;
                 twin.extension.finish.w = GHOST_FADE;
-                let handle = materials.add(twin);
-                painted.0.push(handle.clone());
-                handle
+                materials.add(twin)
             });
             ghosts.push(ghost.clone());
             (p.kind, p.pivot, meshes.add(p.mesh), material)
@@ -385,8 +388,88 @@ pub fn load_car_assets(
     commands.insert_resource(CarAssets {
         parts,
         ghosts,
+        paint,
         lights,
     });
+}
+
+/// A car's body colour. A car without one, such as the gold medal ghost, wears the stock paint.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CarColor(pub [u8; 3]);
+
+/// The paints a car with its own colour wears, by the shared paint each stands in for, and the
+/// colour they are in. Dropped with the car.
+#[derive(Component, Default)]
+pub struct OwnPaint {
+    mats: HashMap<AssetId<CarMaterial>, Handle<CarMaterial>>,
+    color: Option<[u8; 3]>,
+}
+
+/// A body-paint part, and the car whose `CarColor` it wears.
+#[derive(Component)]
+pub struct PaintPart(Entity);
+
+/// Dresses every body-paint part in its car's colour, ghosted or not: a car in the stock colour
+/// shares the stock paints, any other gets its own, recoloured in place when its colour changes.
+pub fn paint_cars(
+    manager: Res<crate::trial::TimeTrialManager>,
+    lobby: Res<crate::trial::VersusLobby>,
+    assets: Res<CarAssets>,
+    mut materials: ResMut<Assets<CarMaterial>>,
+    mut cars: Query<(&CarColor, &mut OwnPaint)>,
+    mut parts: Query<(
+        &CarPart,
+        &PaintPart,
+        Has<AlwaysGhost>,
+        &mut MeshMaterial3d<CarMaterial>,
+    )>,
+) {
+    let ghosted = manager.ghosted(lobby.online);
+    for (part, of, always, mut material) in &mut parts {
+        let shared = if ghosted || always {
+            &assets.ghosts[part.0]
+        } else {
+            &assets.parts[part.0].3
+        };
+        let want = match cars.get_mut(of.0) {
+            Ok((color, mut own)) if color.0 != model::STOCK_PAINT => {
+                let tint = paint::tint(color.0);
+                if own.color != Some(color.0) {
+                    own.color = Some(color.0);
+                    for handle in own.mats.values() {
+                        if let Some(mat) = materials.get_mut(handle) {
+                            mat.extension.tint = tint;
+                        }
+                    }
+                }
+                own.mats
+                    .entry(shared.id())
+                    .or_insert_with(|| {
+                        let mut mat = materials.get(shared).expect("a car paint").clone();
+                        mat.extension.tint = tint;
+                        materials.add(mat)
+                    })
+                    .clone()
+            }
+            _ => shared.clone(),
+        };
+        if material.0 != want {
+            material.0 = want;
+        }
+    }
+}
+
+/// The player's car wears the colour picked in Settings.
+pub fn color_local_car(
+    settings: Res<crate::settings::Settings>,
+    mut car: Query<&mut CarColor, With<Car>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    for mut color in &mut car {
+        color.set_if_neq(CarColor(settings.paint));
+    }
 }
 
 /// The shadow's outline from every vertex of the model, in car space as `spawn_model` places it.
@@ -448,6 +531,7 @@ pub fn spawn_model(
             ChildOf(lean),
         ))
         .id();
+    commands.entity(parent).insert(OwnPaint::default());
     let (lamps, halos) = crate::body::spawn_lights(commands, &assets.lights, body_root);
     let mut wheels = Wheels {
         back: Entity::PLACEHOLDER,
@@ -475,6 +559,9 @@ pub fn spawn_model(
         if ghost {
             commands.entity(id).insert(AlwaysGhost);
         }
+        if assets.paint[i] {
+            commands.entity(id).insert(PaintPart(parent));
+        }
         let slot = match kind {
             PartKind::Body => continue,
             PartKind::BackWheels => &mut wheels.back,
@@ -495,12 +582,16 @@ pub fn spawn_model(
 
 /// While cars pass through each other (`TimeTrialManager::ghosted`) every car is drawn
 /// translucent: the parts swap to their ghost paint when it starts and back when it ends, and a car
-/// that appears meanwhile is swapped as it spawns.
+/// that appears meanwhile is swapped as it spawns. The body paint is `paint_cars`' to dress.
+#[allow(clippy::type_complexity)]
 pub fn ghost_cars(
     manager: Res<crate::trial::TimeTrialManager>,
     lobby: Res<crate::trial::VersusLobby>,
     assets: Res<CarAssets>,
-    mut parts: Query<(Ref<CarPart>, &mut MeshMaterial3d<CarMaterial>), Without<AlwaysGhost>>,
+    mut parts: Query<
+        (Ref<CarPart>, &mut MeshMaterial3d<CarMaterial>),
+        (Without<AlwaysGhost>, Without<PaintPart>),
+    >,
     mut shown: Local<bool>,
 ) {
     let ghosted = manager.ghosted(lobby.online);
@@ -519,10 +610,15 @@ pub fn ghost_cars(
 }
 
 /// Spawns the player's car.
-pub fn spawn_car(mut commands: Commands, assets: Res<CarAssets>) {
+pub fn spawn_car(
+    mut commands: Commands,
+    assets: Res<CarAssets>,
+    settings: Res<crate::settings::Settings>,
+) {
     let car = commands
         .spawn((
             Car::new(),
+            CarColor(settings.paint),
             Transform::from_translation(wow_to_bevy(SPAWN_WOW)),
             Visibility::default(),
         ))

@@ -33,6 +33,10 @@ pub struct CarPaint {
     /// ghost car is (0 for an ordinary one).
     #[uniform(100)]
     pub finish: Vec4,
+    /// rgb the colour the surface is multiplied by: the picked body colour on the paint, white
+    /// elsewhere.
+    #[uniform(100)]
+    pub tint: Vec4,
     /// The glb's texture; untextured parts sample white.
     #[texture(101)]
     #[sampler(102)]
@@ -49,14 +53,24 @@ impl MaterialExtension for CarPaint {
 pub fn finish(part: crate::model::PartKind, finish: Finish) -> Vec4 {
     match (part, finish) {
         (_, Finish::Glass) => Vec4::new(1.0, 120.0, 0.9, 0.0),
-        (crate::model::PartKind::Body, _) => Vec4::new(0.9, 64.0, 0.55, 0.0),
+        (crate::model::PartKind::Body, _) | (_, Finish::Paint) => Vec4::new(0.9, 64.0, 0.55, 0.0),
         // Tyres and rims: a dull sheen.
         _ => Vec4::new(0.25, 24.0, 0.12, 0.0),
     }
 }
 
+/// A body colour as the shader takes it.
+pub fn tint(rgb: [u8; 3]) -> Vec4 {
+    Vec4::new(
+        rgb[0] as f32 / 255.0,
+        rgb[1] as f32 / 255.0,
+        rgb[2] as f32 / 255.0,
+        1.0,
+    )
+}
+
 /// A paint lit as an ordinary afternoon until the first `WowLighting` resolve.
-pub fn paint(finish: Vec4, texture: Option<Handle<Image>>) -> CarPaint {
+pub fn paint(finish: Vec4, tint: Vec4, texture: Option<Handle<Image>>) -> CarPaint {
     let mut paint = CarPaint {
         sun: Vec3::new(-0.4, -0.8, -0.45).extend(0.0),
         ambient: Vec4::splat(0.45),
@@ -64,15 +78,12 @@ pub fn paint(finish: Vec4, texture: Option<Handle<Image>>) -> CarPaint {
         spec: Vec4::splat(0.5),
         sky: Vec4::new(0.6, 0.7, 0.8, 1.0),
         finish,
+        tint,
         texture,
     };
     paint.sun = paint.sun.normalize();
     paint
 }
-
-/// The car's materials, which follow the world's light.
-#[derive(Resource, Default)]
-pub struct CarMaterials(pub Vec<Handle<CarMaterial>>);
 
 pub struct CarPaintPlugin;
 
@@ -80,7 +91,6 @@ impl Plugin for CarPaintPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "shaders/car.wgsl");
         app.add_plugins(MaterialPlugin::<CarMaterial>::default())
-            .init_resource::<CarMaterials>()
             .add_systems(Update, follow_light.in_set(LightingConsumeSet));
     }
 }
@@ -89,11 +99,11 @@ fn rgb(c: [f32; 3]) -> Vec4 {
     Vec4::new(c[0], c[1], c[2], 1.0)
 }
 
-/// Copies the resolved light into the car's materials when it changes; a material written is
-/// re-uploaded, so an unchanged light writes nothing.
+/// Copies the resolved light into every car material when it changes, a car's own paint included;
+/// a material written is re-uploaded, so an unchanged light writes nothing. A paint made later is
+/// cloned from a lit one.
 fn follow_light(
     light: Option<Res<WowLighting>>,
-    cars: Res<CarMaterials>,
     mut materials: ResMut<Assets<CarMaterial>>,
     mut last: Local<Option<WowLighting>>,
 ) {
@@ -104,14 +114,12 @@ fn follow_light(
         return;
     }
     *last = Some(*light);
-    for handle in &cars.0 {
-        if let Some(mat) = materials.get_mut(handle) {
-            let p = &mut mat.extension;
-            p.sun = light.sun_dir.normalize().extend(0.0);
-            p.ambient = rgb(light.ambient);
-            p.diffuse = rgb(light.diffuse);
-            p.spec = rgb(light.spec);
-            p.sky = rgb(light.fog_color);
-        }
+    for (_, mat) in materials.iter_mut() {
+        let p = &mut mat.extension;
+        p.sun = light.sun_dir.normalize().extend(0.0);
+        p.ambient = rgb(light.ambient);
+        p.diffuse = rgb(light.diffuse);
+        p.spec = rgb(light.spec);
+        p.sky = rgb(light.fog_color);
     }
 }
