@@ -50,7 +50,7 @@ pub const BLOODHOOF_WOW: [f32; 3] = [-2354.0, -380.0, 150.0];
 pub const GADGETZAN_WOW: [f32; 3] = [-7176.0, -3785.0, 150.0];
 
 /// Mount Hyjal, below Nordrassil in Kalimdor.
-pub const HYJAL_WOW: [f32; 3] = [5440.0, -3523.0, 1700.0];
+pub const HYJAL_WOW: [f32; 3] = [5540.0, -3623.0, 2800.0];
 
 /// Southshore, Hillsbrad Foothills in Eastern Kingdoms.
 pub const SOUTHSHORE_WOW: [f32; 3] = [-850.0, -540.0, 150.0];
@@ -82,15 +82,16 @@ const REVERSE_ACCEL: f32 = 18.0;
 const REVERSE_MAX: f32 = 33.0;
 /// Top speed in yd/s. nitro boosts it even further. (Scaled 1.5x to match 1.5x model scale)
 pub const TOP_SPEED: f32 = 175.0;
-/// Speed bands for the 7 gears in yd/s (1 yd/s ≈ 3.3 km/h).
+/// Speed bands for the 7 gears in yd/s (1 yd/s ≈ 3.3 km/h). The gearbox shifts up at 95% of a
+/// band's top, so the last upshift (6 to 7) comes at ~285 km/h.
 pub const GEAR_BOUNDS: [(f32, f32); 7] = [
-    (0.0, 16.0),    // Gear 1: 0..16 yd/s (~0..53 km/h)
-    (16.0, 30.0),   // Gear 2: 16..30 yd/s (~53..100 km/h)
-    (30.0, 46.0),   // Gear 3: 30..46 yd/s (~100..152 km/h)
-    (46.0, 64.0),   // Gear 4: 46..64 yd/s (~152..211 km/h)
-    (64.0, 82.0),   // Gear 5: 64..82 yd/s (~211..270 km/h)
-    (82.0, 100.0),  // Gear 6: 82..100 yd/s (~270..330 km/h)
-    (100.0, 150.0), // Gear 7: 100+ yd/s (~330..500 km/h)
+    (0.0, 14.58),    // Gear 1: ~0..48 km/h
+    (14.58, 27.35),  // Gear 2: ~48..90 km/h
+    (27.35, 41.93),  // Gear 3: ~90..138 km/h
+    (41.93, 58.34),  // Gear 4: ~138..192 km/h
+    (58.34, 74.74),  // Gear 5: ~192..246 km/h
+    (74.74, 91.15),  // Gear 6: ~246..300 km/h
+    (91.15, 136.73), // Gear 7: ~300..450 km/h
 ];
 const GRIP: f32 = 7.5;
 const GRIP_HANDBRAKE: f32 = 1.3;
