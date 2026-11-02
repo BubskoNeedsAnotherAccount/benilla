@@ -2691,9 +2691,9 @@ mod tests {
         assert_eq!(trials[0].rotation, Some(181.9));
         assert_eq!(trials[0].checkpoints.len(), 6);
         assert!(!trials[0].circuit && trials[0].lap_count() == 1);
-        assert_eq!(trials[1].name, "Foothills Run");
+        assert_eq!(trials[1].name, "Stranglethorn Run");
         assert_eq!(trials[1].map_id, 0);
-        assert_eq!(trials[1].checkpoints.len(), 6);
+        assert_eq!(trials[1].checkpoints.len(), 8);
         assert!(!trials[1].circuit && trials[1].lap_count() == 1);
         assert_eq!(trials[2].name, "Dusty Dunes");
         assert_eq!(trials[2].map_id, 1);
