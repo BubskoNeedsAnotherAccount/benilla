@@ -48,10 +48,19 @@ const CENSUS_SETTLE_FRAMES: u32 = 60;
 /// The ceiling on that hold (~10 s), so counts that never settle, as on a flight path, still print.
 const CENSUS_MAX_HOLD_FRAMES: u32 = 600;
 
+/// Wall clock per frame for cell bakes before the rest wait a frame. A new tile's doodads fill up
+/// to sixteen cells that come due together, and each bake walks every vertex of every item.
+const CELL_BAKE_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
+
 /// Bake dirty-and-quiet cells into retained draw data; publish into [`render::GxWorld`].
-pub(super) fn flush_static_gx(mut gx: ResMut<StaticGx>, mut meshes: ResMut<Assets<Mesh>>) {
+pub(super) fn flush_static_gx(
+    mut gx: ResMut<StaticGx>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    budget: Option<Res<crate::stream_budget::StreamBudget>>,
+) {
     let _t = super::gx_perf_guard(0);
-    flush(&mut gx, &mut meshes);
+    let cell_budget = crate::stream_budget::duration(budget.as_deref(), CELL_BAKE_BUDGET);
+    flush(&mut gx, &mut meshes, Some(cell_budget));
 }
 
 /// A region's bake from the compute pool: the mesh the flush adds, and the draw data whose
@@ -65,12 +74,19 @@ pub(super) struct Baked {
 /// bake in the frame it lands. WMO and prop regions bake on the compute pool: a city building is
 /// hundreds of thousands of vertices, tens of milliseconds in one frame, and its previous bake
 /// draws until the new one lands. A [`StaticGx::flush_now`] request bakes regions here too.
-fn flush(gx: &mut StaticGx, meshes: &mut Assets<Mesh>) {
+///
+/// Cell bakes stop once `cell_budget` is spent, at least one a flush; a cell left over stays dirty
+/// and due, so it bakes on a later flush. `None`, or a `flush_now` request, bakes every due cell.
+fn flush(gx: &mut StaticGx, meshes: &mut Assets<Mesh>, cell_budget: Option<std::time::Duration>) {
     gx.frame = gx.frame.wrapping_add(1);
     let frame = gx.frame;
     census_declines(gx, frame);
     // A `StaticGx::flush_now` request bakes one flush's worth; the windows resume next frame.
     let now = std::mem::take(&mut gx.flush_now);
+    let deadline = cell_budget
+        .filter(|_| !now)
+        .map(|b| web_time::Instant::now() + b);
+    let mut baked_any = false;
     let StaticGx {
         cells,
         wmos,
@@ -82,6 +98,11 @@ fn flush(gx: &mut StaticGx, meshes: &mut Assets<Mesh>) {
         if !bake_due(state, world.cells.contains_key(&cell), frame, now) {
             continue;
         }
+        // Past the budget the rest wait a flush; the published bake, if any, draws meanwhile.
+        if baked_any && deadline.is_some_and(|d| web_time::Instant::now() >= d) {
+            break;
+        }
+        baked_any = true;
         state.dirty = false;
         if state.items.is_empty() {
             world.cells.remove(&cell);
@@ -174,9 +195,12 @@ fn flush_region(
         publish(instance, bake_region(&state.items, sets), published, meshes);
     } else {
         // A snapshot of Arcs and handles; the sort above fixed its order, which the draws index.
+        // Through `offload`, as every streamed build is: a browser build has no compute threads,
+        // so without it a city building's bake runs on the page's thread in one block.
         let items = state.items.clone();
-        state.baking =
-            Some(AsyncComputeTaskPool::get().spawn(async move { bake_region(&items, sets) }));
+        state.baking = Some(AsyncComputeTaskPool::get().spawn(async move {
+            benilla_assets::offload::run(move || bake_region(&items, sets)).await
+        }));
     }
 }
 
@@ -763,7 +787,7 @@ mod tests {
     /// Flush until `instance`'s region has published, or panic.
     fn flush_until_published(gx: &mut StaticGx, meshes: &mut Assets<Mesh>, instance: Entity) {
         for _ in 0..1000 {
-            flush(gx, meshes);
+            flush(gx, meshes, None);
             if gx.wmos[&instance].baking.is_none() && gx.world.wmos.contains_key(&instance) {
                 return;
             }
@@ -781,7 +805,7 @@ mod tests {
         let instance = Entity::PLACEHOLDER;
         assert!(gx.divert(wmo_batch_at(&g, Vec3::ONE, instance)));
         for _ in 0..IDLE_FRAMES {
-            flush(&mut gx, &mut meshes);
+            flush(&mut gx, &mut meshes, None);
         }
         let state = &gx.wmos[&instance];
         assert!(
@@ -810,7 +834,7 @@ mod tests {
         // A divert after publishing re-bakes off the pool too, and the old bake draws meanwhile.
         assert!(gx.divert(wmo_batch_at(&g, Vec3::splat(2.0), instance)));
         for _ in 0..REBAKE_FRAMES {
-            flush(&mut gx, &mut meshes);
+            flush(&mut gx, &mut meshes, None);
         }
         assert_eq!(
             gx.world.wmos[&instance].draws.len(),
@@ -830,13 +854,48 @@ mod tests {
         let instance = Entity::PLACEHOLDER;
         assert!(gx.divert(wmo_batch_at(&g, Vec3::ONE, instance)));
         gx.flush_now();
-        flush(&mut gx, &mut meshes);
+        flush(&mut gx, &mut meshes, None);
         assert!(
             gx.wmos[&instance].baking.is_none(),
             "no task: baked in the flush"
         );
         assert!(gx.world.wmos.contains_key(&instance));
         assert_eq!(gx.undrawn_regions(), 0);
+    }
+
+    /// Cells due together bake one a flush past a spent budget, and none is left behind.
+    #[test]
+    fn the_cell_budget_spreads_a_burst_of_due_cells() {
+        let mut gx = StaticGx::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let g = tri([0.0; 3]);
+        for at in [
+            Vec3::ZERO,
+            Vec3::new(500.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 500.0),
+        ] {
+            assert!(gx.divert(batch(&g, at, None, ModelBlend::Opaque)));
+        }
+        assert_eq!(gx.cells.len(), 3, "three cells");
+        let zero = Some(std::time::Duration::ZERO);
+        for _ in 0..IDLE_FRAMES - 1 {
+            flush(&mut gx, &mut meshes, zero);
+        }
+        assert!(gx.world.cells.is_empty(), "none due yet");
+        for want in 1..=3 {
+            flush(&mut gx, &mut meshes, zero);
+            assert_eq!(gx.world.cells.len(), want, "one cell a flush");
+        }
+        assert_eq!(gx.undrawn_regions(), 0);
+
+        // A `flush_now` request ignores the budget.
+        let mut gx = StaticGx::default();
+        for at in [Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0)] {
+            assert!(gx.divert(batch(&g, at, None, ModelBlend::Opaque)));
+        }
+        gx.flush_now();
+        flush(&mut gx, &mut meshes, zero);
+        assert_eq!(gx.world.cells.len(), 2);
     }
 
     /// Raw, as `model.rs` inserts `vertex_colors` on the entity mesh.
