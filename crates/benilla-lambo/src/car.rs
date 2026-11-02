@@ -296,6 +296,14 @@ pub struct CarAssets {
     parts: Vec<(PartKind, Vec3, Handle<Mesh>, Handle<CarMaterial>)>,
     /// Each part's translucent twin, shown while cars are ghosts (`ghost_cars`).
     ghosts: Vec<Handle<CarMaterial>>,
+    /// The tail lights' mesh and paints.
+    lights: crate::body::LightAssets,
+}
+
+impl CarAssets {
+    pub fn lights(&self) -> &crate::body::LightAssets {
+        &self.lights
+    }
 }
 
 /// A spawned model part, by its index in `CarAssets`.
@@ -310,6 +318,11 @@ const GHOST_FADE: f32 = 0.6;
 pub struct Wheels {
     pub back: Entity,
     pub front: [Entity; 2],
+    /// The body's lean pivot, which carries the body and its lights but not the wheels.
+    pub body: Entity,
+    /// The tail lamps and their halos.
+    pub lamps: [Entity; 3],
+    pub halos: [Entity; 3],
 }
 
 /// Builds the car's parts from the embedded glb, one paint per finish, the body's apart from the
@@ -318,9 +331,11 @@ pub fn load_car_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<CarMaterial>>,
+    mut plain: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut painted: ResMut<CarMaterials>,
 ) {
+    let lights = crate::body::LightAssets::new(&mut meshes, &mut plain);
     let (parts, texture) = model::load();
     commands.insert_resource(silhouette(&parts));
     let texture = images.add(texture);
@@ -367,7 +382,11 @@ pub fn load_car_assets(
             (p.kind, p.pivot, meshes.add(p.mesh), material)
         })
         .collect();
-    commands.insert_resource(CarAssets { parts, ghosts });
+    commands.insert_resource(CarAssets {
+        parts,
+        ghosts,
+        lights,
+    });
 }
 
 /// The shadow's outline from every vertex of the model, in car space as `spawn_model` places it.
@@ -413,19 +432,44 @@ pub fn spawn_model(
     let root = commands
         .spawn((model_root(), Visibility::default(), ChildOf(parent)))
         .id();
+    // The body hangs from its own pivot so it can lean while the wheels stay on the road.
+    let lean = commands
+        .spawn((
+            Transform::from_translation(crate::body::LEAN_PIVOT),
+            Visibility::default(),
+            ChildOf(parent),
+        ))
+        .id();
+    let body_root = model_root();
+    let body_root = commands
+        .spawn((
+            body_root.with_translation(body_root.translation - crate::body::LEAN_PIVOT),
+            Visibility::default(),
+            ChildOf(lean),
+        ))
+        .id();
+    let (lamps, halos) = crate::body::spawn_lights(commands, &assets.lights, body_root);
     let mut wheels = Wheels {
         back: Entity::PLACEHOLDER,
         front: [Entity::PLACEHOLDER; 2],
+        body: lean,
+        lamps,
+        halos,
     };
     for (i, (kind, pivot, mesh, material)) in assets.parts.iter().enumerate() {
         let paint = if ghost { &assets.ghosts[i] } else { material };
+        let holder = if *kind == PartKind::Body {
+            body_root
+        } else {
+            root
+        };
         let id = commands
             .spawn((
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(paint.clone()),
                 CarPart(i),
                 Transform::from_translation(*pivot),
-                ChildOf(root),
+                ChildOf(holder),
             ))
             .id();
         if ghost {
@@ -484,6 +528,10 @@ pub fn spawn_car(mut commands: Commands, assets: Res<CarAssets>) {
         ))
         .id();
     let wheels = spawn_model(&mut commands, &assets, car, false);
+    commands
+        .entity(wheels.body)
+        .insert(crate::body::BodyLean::default());
+    crate::body::mark_local_lights(&mut commands, wheels.lamps, wheels.halos);
     commands.entity(wheels.back).insert(Wheel { front: false });
     for w in wheels.front {
         commands.entity(w).insert(Wheel { front: true });

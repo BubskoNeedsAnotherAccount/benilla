@@ -307,6 +307,9 @@ fn receive(
                         wheels: Wheels {
                             back: Entity::PLACEHOLDER,
                             front: [Entity::PLACEHOLDER; 2],
+                            body: Entity::PLACEHOLDER,
+                            lamps: [Entity::PLACEHOLDER; 3],
+                            halos: [Entity::PLACEHOLDER; 3],
                         },
                         spin: 0.0,
                         smoke: s.d.min(3),

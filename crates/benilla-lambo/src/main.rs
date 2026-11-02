@@ -12,6 +12,7 @@
 //! The same crate builds for the browser, where the player picks their `Data` folder on the page
 //! (`web/README.md`).
 
+mod body;
 mod camera;
 mod car;
 mod engine_synth;
@@ -24,8 +25,10 @@ mod preload;
 mod replay;
 mod settings;
 mod shadow;
+mod skids;
 mod smoke;
 mod sound;
+mod streaks;
 mod trial;
 mod warmup;
 #[cfg(target_arch = "wasm32")]
@@ -148,8 +151,26 @@ fn main() -> AppExit {
             trial::setup_markers,
             smoke::setup_tire_smoke,
             shadow::setup_car_shadow,
+            skids::setup_skid_marks,
+            streaks::setup_streaks.after(camera::spawn_camera),
         )
             .after(benilla_assets::AssetSet::Open),
+    )
+    // The look of speed and weight, read from the car once it has moved this frame.
+    .add_systems(
+        Update,
+        (
+            body::lean_body,
+            body::brake_lights,
+            skids::lay_skid_marks,
+            streaks::fly_streaks,
+            smoke::spawn_road_dust,
+        )
+            .after(WorldStage::Input),
+    )
+    .add_systems(
+        PostUpdate,
+        skids::push_skid_marks.after(benilla_world::particles::buffer::begin_effect_frame),
     )
     .add_systems(
         Update,

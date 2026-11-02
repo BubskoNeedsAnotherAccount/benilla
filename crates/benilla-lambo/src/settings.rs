@@ -27,6 +27,8 @@ pub struct Settings {
     pub view_distance: f32,
     /// Puffs of tyre smoke from drifting and burnouts, on every car.
     pub tire_smoke: bool,
+    /// The chase camera's shake and its tilt into corners.
+    pub camera_effects: bool,
     /// Render resolution, one of [`RENDER_SCALES`].
     pub render_scale: f32,
     /// The name saved replays carry.
@@ -40,6 +42,7 @@ impl Default for Settings {
             engine_sound: true,
             view_distance: DEFAULT_VIEW_DISTANCE,
             tire_smoke: true,
+            camera_effects: true,
             render_scale: 1.0,
             player_name: crate::replay::default_player_name(),
         }

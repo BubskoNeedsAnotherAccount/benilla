@@ -27,6 +27,19 @@ const DRAG_PITCH_MIN: f32 = -0.45;
 const DRAG_PITCH_MAX: f32 = 0.9;
 /// How fast the camera swings back behind the car once the button is let go.
 const DRAG_RETURN_RATE: f32 = 6.0;
+/// Extra trailing distance at top speed, and at the start of a nitro burst.
+const SPEED_PULLBACK: f32 = 1.6;
+const NITRO_PULLBACK: f32 = 1.1;
+/// The share of top speed the road starts to shake the camera at.
+const SHAKE_FROM: f32 = 0.55;
+/// Shake at full strength: position in yards, roll in radians.
+const SHAKE_POS: f32 = 0.07;
+const SHAKE_ROLL: f32 = 0.006;
+/// How fast a jolt (landing, nitro) dies away, per second.
+const TRAUMA_DECAY: f32 = 1.8;
+/// Most the camera tilts into a corner, radians (2°), and the tilt per yd/s² of turn.
+const TILT_MAX: f32 = 0.035;
+const TILT_PER_ACCEL: f32 = 0.0007;
 
 /// The camera's own heading, which trails the car's, plus a mouse-drag orbit offset.
 #[derive(Component)]
@@ -37,6 +50,23 @@ pub struct ChaseCam {
     pub drag_yaw: f32,
     pub drag_pitch: f32,
     pub dragging: bool,
+    /// The followed position before shake; the smoothing runs on it, never on the shaken one.
+    pub base: Vec3,
+    /// A jolt's strength, 0 to 1, from landings and nitro; the shake goes as its square.
+    pub trauma: f32,
+    /// The current tilt into the corner.
+    pub tilt: f32,
+    /// Last frame's car state, for the landing and the turn rate.
+    pub was_grounded: bool,
+    pub last_fall: f32,
+    pub last_yaw: f32,
+    /// Seconds of shake noise, its phase.
+    pub clock: f32,
+}
+
+/// A smooth wobble in −1..1 at about `rate` Hz, from two sines that never line up.
+fn wobble(t: f32, rate: f32, phase: f32) -> f32 {
+    ((t * rate * TAU + phase).sin() + 0.6 * (t * rate * 2.37 * TAU + phase * 1.9).sin()) / 1.6
 }
 
 /// The world camera, as the world viewer spawns it, with the chase state on top.
@@ -61,6 +91,13 @@ pub fn spawn_camera(mut commands: Commands, msaa: Res<MsaaSetting>) {
             drag_yaw: 0.0,
             drag_pitch: 0.0,
             dragging: false,
+            base: Vec3::ZERO,
+            trauma: 0.0,
+            tilt: 0.0,
+            was_grounded: false,
+            last_fall: 0.0,
+            last_yaw: crate::car::SPAWN_YAW_DEG.to_radians(),
+            clock: 0.0,
         },
         AmbientLight {
             color: Color::WHITE,
@@ -112,6 +149,7 @@ pub fn chase(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     world: WorldCollision,
+    settings: Res<crate::settings::Settings>,
     car: Query<&Car>,
     mut cam: Query<(&mut Transform, &mut Projection, &mut ChaseCam), Without<Car>>,
 ) {
@@ -119,6 +157,13 @@ pub fn chase(
         return;
     };
     let dt = time.delta_secs().min(1.0 / 20.0);
+    // A teleport (reset, a race start) is no turn and no landing.
+    if !chase.snapped {
+        chase.last_yaw = car.yaw;
+        chase.was_grounded = car.grounded;
+        chase.trauma = 0.0;
+        chase.tilt = 0.0;
+    }
 
     let target_yaw = car.yaw + if keys.pressed(KeyCode::KeyC) { PI } else { 0.0 };
     let diff = (target_yaw - chase.yaw + PI).rem_euclid(TAU) - PI;
@@ -136,9 +181,12 @@ pub fn chase(
     }
 
     let speed = car.speed();
+    let speed_frac = (speed / TOP_SPEED).clamp(0.0, 1.0);
+    // Speed stretches the camera away from the car; a nitro burst kicks it back further.
+    let distance = DISTANCE + speed_frac * SPEED_PULLBACK + car.nitro_timer * NITRO_PULLBACK;
     let height = HEIGHT + speed * 0.01;
-    let reach = DISTANCE.hypot(height);
-    let pitch = height.atan2(DISTANCE) + chase.drag_pitch;
+    let reach = distance.hypot(height);
+    let pitch = height.atan2(distance) + chase.drag_pitch;
     let yaw = chase.yaw + chase.drag_yaw;
     let back = Vec3::new(yaw.sin(), 0.0, yaw.cos());
     let ideal_cam = car.pos + (back * pitch.cos() + Vec3::Y * pitch.sin()) * reach;
@@ -164,18 +212,64 @@ pub fn chase(
 
     // When direct LoS is blocked, jump immediately closer to avoid clipping inside geometry.
     // Otherwise, smoothly follow the desired camera position.
-    tf.translation = if chase.snapped && !occluded {
-        tf.translation.lerp(want, smooth(dt, 10.0))
+    chase.base = if chase.snapped && !occluded {
+        chase.base.lerp(want, smooth(dt, 10.0))
     } else {
         want
     };
     chase.snapped = true;
 
-    let cam_dist = (tf.translation - focus).length();
+    let cam_dist = (chase.base - focus).length();
     // Looking ahead of the car only makes sense from behind it; an orbit looks at the car itself.
     let look_ahead = (cam_dist * 0.35).clamp(0.5, 3.0) * chase.drag_yaw.cos().max(0.0);
     let look = car.pos + car.up * 0.8 + car.basis().0 * look_ahead;
+    tf.translation = chase.base;
     tf.look_at(look, Vec3::Y);
+
+    // Jolts: a hard landing by how fast the car came down, and the nitro's kick.
+    if car.grounded && !chase.was_grounded {
+        chase.trauma += ((chase.last_fall - 4.0) / 25.0).clamp(0.0, 0.8);
+    }
+    if car.just_used_nitro {
+        chase.trauma += 0.45;
+    }
+    chase.trauma = (chase.trauma - TRAUMA_DECAY * dt).clamp(0.0, 1.0);
+    chase.was_grounded = car.grounded;
+    chase.last_fall = -car.vel.y;
+
+    // The turn's sideways pull, yaw rate times speed; right turns are falling yaw.
+    let yaw_rate = if dt > 0.0 {
+        ((car.yaw - chase.last_yaw + PI).rem_euclid(TAU) - PI) / dt
+    } else {
+        0.0
+    };
+    chase.last_yaw = car.yaw;
+    let pull = if car.grounded {
+        yaw_rate * car.vel.dot(car.basis().0)
+    } else {
+        0.0
+    };
+    // The camera leans into the turn, its top toward the corner's inside.
+    let tilt = (pull * TILT_PER_ACCEL).clamp(-TILT_MAX, TILT_MAX);
+    chase.tilt += (tilt - chase.tilt) * smooth(dt, 4.0);
+
+    if settings.camera_effects {
+        chase.clock += dt;
+        let t = chase.clock;
+        // A fine road buzz near top speed, and a slower heavier shake for a jolt.
+        let road = if car.grounded {
+            ((speed_frac - SHAKE_FROM) / (1.0 - SHAKE_FROM)).clamp(0.0, 1.0) * 0.35
+        } else {
+            0.0
+        };
+        let jolt = chase.trauma * chase.trauma;
+        let (right, up) = (*tf.right(), *tf.up());
+        let offset = right * (wobble(t, 17.0, 0.0) * road + wobble(t, 7.0, 3.1) * jolt)
+            + up * (wobble(t, 19.0, 1.3) * road + wobble(t, 8.0, 0.4) * jolt);
+        tf.translation += offset * SHAKE_POS;
+        let roll = wobble(t, 6.0, 2.2) * (road * 0.5 + jolt) * SHAKE_ROLL;
+        tf.rotate_local_z(chase.tilt + roll);
+    }
 
     if let Projection::Perspective(p) = &mut *proj {
         let nitro_fov = if car.nitro_timer > 0.0 {

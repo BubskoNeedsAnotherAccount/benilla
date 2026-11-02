@@ -1380,6 +1380,7 @@ fn settings_page(ui: &mut egui::Ui, s: &mut Settings) {
     );
     ui.add_space(6.0);
     ui.checkbox(&mut s.tire_smoke, "Tyre smoke (drifts and burnouts)");
+    ui.checkbox(&mut s.camera_effects, "Camera shake and tilt");
 
     ui.add_space(12.0);
     if ui.button("Reset to defaults").clicked() {

@@ -14,8 +14,16 @@ pub struct TireSmokeParticle {
     pub max_scale: f32,
     /// Showing and animating; a finished puff waits hidden in the pool.
     pub active: bool,
-    /// From a ghost car: drawn at half the opacity.
-    pub ghost: bool,
+    /// Which fade stages it is drawn with.
+    pub tint: Tint,
+}
+
+/// A puff's look: tyre smoke, a ghost car's fainter smoke, or road dust.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tint {
+    Smoke,
+    Ghost,
+    Dust,
 }
 
 /// Pre-allocated mesh and tiered alpha materials for zero-allocation runtime smoke.
@@ -25,7 +33,10 @@ pub struct TireSmokeAssets {
     pub materials: [Handle<StandardMaterial>; 8],
     /// The same stages at half the opacity, for ghost cars.
     pub ghost_materials: [Handle<StandardMaterial>; 8],
+    /// Tan and fainter, for the dust a fast car raises.
+    dust_materials: [Handle<StandardMaterial>; 8],
     pub spawn_timer: f32,
+    dust_timer: f32,
     rng_state: u64,
     /// Finished puffs, ready to be reused.
     free: Vec<Entity>,
@@ -40,12 +51,12 @@ impl TireSmokeAssets {
         self.total - self.free.len()
     }
 
-    /// The fade stages for a car's puffs, a ghost's at half opacity.
-    fn stages(&self, ghost: bool) -> &[Handle<StandardMaterial>; 8] {
-        if ghost {
-            &self.ghost_materials
-        } else {
-            &self.materials
+    /// The fade stages for a puff's tint.
+    fn stages(&self, tint: Tint) -> &[Handle<StandardMaterial>; 8] {
+        match tint {
+            Tint::Smoke => &self.materials,
+            Tint::Ghost => &self.ghost_materials,
+            Tint::Dust => &self.dust_materials,
         }
     }
 
@@ -72,26 +83,30 @@ pub fn setup_tire_smoke(
 
     // 8 stages of fading alpha from dense puff to transparent dissipation
     const ALPHAS: [f32; 8] = [0.45, 0.38, 0.30, 0.22, 0.15, 0.09, 0.04, 0.01];
-    let mut stages = |opacity: f32| {
+    let mut stages = |rgb: [f32; 3], opacity: f32| {
         ALPHAS.map(|a| {
             materials.add(StandardMaterial {
                 // Only the front faces are drawn, half the blended pixels of a double-sided sphere;
                 // `2a - a²` is the cover the two layers gave, so a puff looks as dense as before.
-                base_color: Color::srgba(0.92, 0.90, 0.88, (2.0 * a - a * a) * opacity),
+                base_color: Color::srgba(rgb[0], rgb[1], rgb[2], (2.0 * a - a * a) * opacity),
                 alpha_mode: AlphaMode::Blend,
                 unlit: true,
                 ..default()
             })
         })
     };
-    let smoke_mats = stages(1.0);
-    let ghost_mats = stages(0.5);
+    let smoke = [0.92, 0.90, 0.88];
+    let smoke_mats = stages(smoke, 1.0);
+    let ghost_mats = stages(smoke, 0.5);
+    let dust_mats = stages([0.66, 0.58, 0.45], 0.35);
 
     commands.insert_resource(TireSmokeAssets {
         mesh,
         materials: smoke_mats,
         ghost_materials: ghost_mats,
+        dust_materials: dust_mats,
         spawn_timer: 0.0,
+        dust_timer: 0.0,
         rng_state: 0x853c49e6748fea9b,
         free: Vec::new(),
         total: 0,
@@ -191,6 +206,7 @@ pub fn puff(
     level: u8,
     ghost: bool,
 ) {
+    let tint = if ghost { Tint::Ghost } else { Tint::Smoke };
     let (fwd, right, up) = (rot * Vec3::NEG_Z, rot * Vec3::X, rot * Vec3::Y);
     let ground = -(RIDE - 0.05);
     let wheel_offsets = [
@@ -227,7 +243,9 @@ pub fn puff(
         };
         let max_lifetime = 0.55 + r3 * 0.35;
 
-        let bundle = (
+        emit(
+            commands,
+            smoke_assets,
             TireSmokeParticle {
                 lifetime: 0.0,
                 max_lifetime,
@@ -235,22 +253,93 @@ pub fn puff(
                 initial_scale,
                 max_scale,
                 active: true,
-                ghost,
+                tint,
             },
-            MeshMaterial3d(smoke_assets.stages(ghost)[0].clone()),
-            Transform::from_translation(spawn_pos).with_scale(Vec3::splat(initial_scale)),
-            Visibility::Inherited,
+            spawn_pos,
         );
-        match smoke_assets.free.pop() {
-            // Overwrites the pooled puff's components in place: no new entity, no archetype move.
-            Some(e) => {
-                commands.entity(e).try_insert(bundle);
-            }
-            None => {
-                smoke_assets.total += 1;
-                commands.spawn((bundle, Mesh3d(smoke_assets.mesh.clone())));
-            }
+    }
+}
+
+/// Shows one puff at `at`, reusing a finished one from the pool when there is one.
+fn emit(
+    commands: &mut Commands,
+    smoke_assets: &mut TireSmokeAssets,
+    particle: TireSmokeParticle,
+    at: Vec3,
+) {
+    let bundle = (
+        MeshMaterial3d(smoke_assets.stages(particle.tint)[0].clone()),
+        Transform::from_translation(at).with_scale(Vec3::splat(particle.initial_scale)),
+        Visibility::Inherited,
+        particle,
+    );
+    match smoke_assets.free.pop() {
+        // Overwrites the pooled puff's components in place: no new entity, no archetype move.
+        Some(e) => {
+            commands.entity(e).try_insert(bundle);
         }
+        None => {
+            smoke_assets.total += 1;
+            commands.spawn((bundle, Mesh3d(smoke_assets.mesh.clone())));
+        }
+    }
+}
+
+/// The share of top speed a car starts raising dust at, and seconds between puffs at full speed.
+const DUST_FROM: f32 = 0.4;
+const DUST_INTERVAL: f32 = 0.05;
+
+/// A fast car raises a faint trail of dust off its rear tyres, thicker with speed; in a slide the
+/// tyre smoke takes its place.
+pub fn spawn_road_dust(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut smoke_assets: ResMut<TireSmokeAssets>,
+    settings: Res<crate::settings::Settings>,
+    car_q: Query<(&Car, &Transform)>,
+) {
+    let Ok((car, tf)) = car_q.single() else {
+        return;
+    };
+    let frac = car.speed() / crate::car::TOP_SPEED;
+    if !settings.tire_smoke
+        || !car.placed
+        || !car.grounded
+        || frac < DUST_FROM
+        || car.lateral_speed > 3.2
+        || car.burnout
+        || car.handbrake_input
+    {
+        return;
+    }
+    smoke_assets.dust_timer -= time.delta_secs();
+    if smoke_assets.dust_timer > 0.0 {
+        return;
+    }
+    let thick = ((frac - DUST_FROM) / (1.0 - DUST_FROM)).clamp(0.0, 1.0);
+    smoke_assets.dust_timer = DUST_INTERVAL / (0.3 + 0.7 * thick);
+    let rot = tf.rotation;
+    let (right, up) = (rot * Vec3::X, rot * Vec3::Y);
+    for side in [-1.0, 1.0] {
+        let (r1, r2, r3) = (
+            smoke_assets.next_f32(),
+            smoke_assets.next_f32(),
+            smoke_assets.next_f32(),
+        );
+        let offset = Vec3::new(side * SMOKE_X, -(RIDE - 0.05), SMOKE_Z + 0.3);
+        let at = tf.translation + rot * offset + right * ((r1 - 0.5) * 0.4);
+        // Kicked up and out, and dragged along a little behind the car.
+        let vel = car.vel * 0.25 + up * (0.6 + r2 * 0.8) + right * side * (0.5 + r3 * 0.8);
+        let particle = TireSmokeParticle {
+            lifetime: 0.0,
+            max_lifetime: 0.7 + r3 * 0.5,
+            vel,
+            initial_scale: 0.5 + r1 * 0.3,
+            max_scale: 2.4 + r2 * 1.2,
+            active: true,
+            tint: Tint::Dust,
+        };
+        emit(&mut commands, &mut smoke_assets, particle, at);
     }
 }
 
@@ -297,7 +386,7 @@ pub fn update_tire_smoke(
         tf.scale = Vec3::splat(current_scale);
 
         // A changed material re-specialises the mesh: swap only when the fade moves a stage.
-        let stage = &smoke_assets.stages(particle.ghost)[((progress * 7.99) as usize).min(7)];
+        let stage = &smoke_assets.stages(particle.tint)[((progress * 7.99) as usize).min(7)];
         if mat.0 != *stage {
             mat.0 = stage.clone();
         }
